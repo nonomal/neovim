@@ -327,7 +327,7 @@ function M.get_captures_at_cursor(winnr)
 end
 
 --- Optional keyword arguments:
---- @class vim.treesitter.get_node.Opts
+--- @class vim.treesitter.get_node.Opts : vim.treesitter.LanguageTree.tree_for_range.Opts
 --- @inlinedoc
 ---
 --- Buffer number (nil or 0 for current buffer)
@@ -335,7 +335,7 @@ end
 ---
 --- 0-indexed (row, col) tuple. Defaults to cursor position in the
 --- current window. Required if {bufnr} is not the current buffer
---- @field pos { [1]: integer, [2]: integer }?
+--- @field pos [integer, integer]?
 ---
 --- Parser language. (default: from buffer filetype)
 --- @field lang string?

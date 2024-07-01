@@ -118,16 +118,16 @@ end
 --- vim.ui.open("https://neovim.io/")
 --- vim.ui.open("~/path/to/file")
 --- -- Synchronous (wait until the process exits).
---- local ok, cmd = vim.ui.open("$VIMRUNTIME")
---- if ok then
+--- local cmd, err = vim.ui.open("$VIMRUNTIME")
+--- if cmd then
 ---   cmd:wait()
 --- end
 --- ```
 ---
 ---@param path string Path or URL to open
 ---
----@return boolean # false if command not found, else true.
----@return vim.SystemObj|string # Command object, or error message on failure
+---@return vim.SystemObj|nil # Command object, or nil if not found.
+---@return nil|string # Error message on failure, or nil on success.
 ---
 ---@see |vim.system()|
 function M.open(path)
@@ -147,7 +147,7 @@ function M.open(path)
     if vim.fn.executable('rundll32') == 1 then
       cmd = { 'rundll32', 'url.dll,FileProtocolHandler', path }
     else
-      return false, 'vim.ui.open: rundll32 not found'
+      return nil, 'vim.ui.open: rundll32 not found'
     end
   elseif vim.fn.executable('wslview') == 1 then
     cmd = { 'wslview', path }
@@ -156,10 +156,35 @@ function M.open(path)
   elseif vim.fn.executable('xdg-open') == 1 then
     cmd = { 'xdg-open', path }
   else
-    return false, 'vim.ui.open: no handler found (tried: wslview, explorer.exe, xdg-open)'
+    return nil, 'vim.ui.open: no handler found (tried: wslview, explorer.exe, xdg-open)'
   end
 
-  return true, vim.system(cmd, { text = true, detach = true })
+  return vim.system(cmd, { text = true, detach = true }), nil
+end
+
+--- Gets the URL at cursor, if any.
+function M._get_url()
+  if vim.bo.filetype == 'markdown' then
+    local range = vim.api.nvim_win_get_cursor(0)
+    vim.treesitter.get_parser():parse(range)
+    -- marking the node as `markdown_inline` is required. Setting it to `markdown` does not
+    -- work.
+    local current_node = vim.treesitter.get_node { lang = 'markdown_inline' }
+    while current_node do
+      local type = current_node:type()
+      if type == 'inline_link' or type == 'image' then
+        local child = assert(current_node:named_child(1))
+        return vim.treesitter.get_node_text(child, 0)
+      end
+      current_node = current_node:parent()
+    end
+  end
+
+  local url = vim._with({ go = { isfname = vim.o.isfname .. ',@-@' } }, function()
+    return vim.fn.expand('<cfile>')
+  end)
+
+  return url
 end
 
 return M

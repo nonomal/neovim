@@ -11,7 +11,8 @@ low-risk/isolated tasks:
 - Fix bugs found by [Coverity](#coverity).
 - [Merge a Vim patch] (requires strong familiarity with Vim)
   - NOTE: read the above link before sending improvements to "runtime files" (anything in `runtime/`).
-    - Vimscript and documentation files are (mostly) maintained by [Vim](https://github.com/vim/vim), not Nvim.
+    - Vimscript and documentation files are (mostly) maintained by [Vim], not Nvim.
+    - Nvim's [filetype detection](https://github.com/neovim/neovim/blob/master/runtime/lua/vim/filetype.lua) behavior matches Vim, so changes to filetype detection should be submitted to [Vim] first.
     - Lua files are maintained by Nvim.
 
 Reporting problems
@@ -41,10 +42,10 @@ Developer guidelines
   make distclean
   make  # Nvim build system uses ninja automatically, if available.
   ```
-- Install `ccache` for faster rebuilds of Nvim. Nvim will use it automatically
-  if it's found. To disable caching use:
+- Install `ccache` or `sccache` for faster rebuilds of Nvim. Nvim will use one
+  of these automatically if it's found. To disable caching use:
   ```bash
-  CCACHE_DISABLE=true make
+  cmake -B build -D CACHE_PRG=OFF
   ```
 
 Pull requests (PRs)
@@ -112,11 +113,6 @@ the VCS/git logs more valuable. The structure of a commit message is:
 
   BREAKING CHANGE: refactor to use Python 3 features since Python 2 is no longer supported.
   ```
-
-### News
-
-High level release notes are maintained in [news.txt](runtime/doc/news.txt). A PR is not required to add a news item
-but is generally recommended.
 
 ### Automated builds (CI)
 
@@ -352,6 +348,7 @@ as context, use the `-W` argument as well.
 [Cirrus CI]: https://cirrus-ci.com/github/neovim/neovim
 [Clang report]: https://neovim.io/doc/reports/clang/
 [GitHub Actions]: https://github.com/neovim/neovim/actions
+[Vim]: https://github.com/vim/vim
 [clangd]: https://clangd.llvm.org
 [Merge a Vim patch]: https://neovim.io/doc/user/dev_vimpatch.html
 [complexity:low]: https://github.com/neovim/neovim/issues?q=is%3Aopen+is%3Aissue+label%3Acomplexity%3Alow

@@ -1,8 +1,10 @@
 -- Tests for adjusting window and contents
 
 local n = require('test.functional.testnvim')()
+local t = require('test.testutil')
 local Screen = require('test.functional.ui.screen')
 
+local describe, it, setup = t.describe, t.it, t.setup
 local clear, command = n.clear, n.command
 local insert = n.insert
 
@@ -11,7 +13,6 @@ describe('063: Test for ":match", "matchadd()" and related functions', function(
 
   it('is working', function()
     local screen = Screen.new(40, 5)
-    screen:attach()
 
     command('highlight MyGroup1 term=bold ctermbg=red guibg=red')
     command('highlight MyGroup2 term=italic ctermbg=green guibg=green')

@@ -315,7 +315,7 @@ msgstr " Bevelreëlvoltooiing (^V^N^P)"
 #~ msgstr " Etiketvoltooiing (^]^N^P)"
 
 #, fuzzy
-#~ msgid " Spelling suggestion (s^N^P)"
+#~ msgid " Spelling suggestion (^S^N^P)"
 #~ msgstr " Hele-reël voltooiing (^L^N^P)"
 
 msgid " Keyword Local completion (^N^P)"
@@ -1353,8 +1353,8 @@ msgid "E146: Regular expressions can't be delimited by letters"
 msgstr "E146: Patrone kan nie deur letters afgebaken word nie"
 
 #, c-format
-msgid "replace with %s (y/n/a/q/l/^E/^Y)?"
-msgstr "vervang met %s (y/n/a/q/l/^E/^Y)?"
+msgid "replace with %s? (y)es/(n)o/(a)ll/(q)uit/(l)ast/scroll up(^E)/down(^Y)"
+msgstr "vervang met %s? (y)es/(n)o/(a)ll/(q)uit/(l)ast/scroll up (^E)/down(^Y)"
 
 msgid "(Interrupted) "
 msgstr "(Onderbreek) "
@@ -1399,16 +1399,16 @@ msgid "E478: Don't panic!"
 msgstr "E478: Bly kalm!"
 
 #, c-format
-msgid "E661: Sorry, no '%s' help for %s"
-msgstr "E661: Jammer, geen '%s' hulp vir %s nie"
+msgid "E661: No '%s' help for %s"
+msgstr "E661: Geen '%s' hulp vir %s nie"
 
 #, c-format
-msgid "E149: Sorry, no help for %s"
-msgstr "E149: Jammer, geen hulp vir %s nie"
+msgid "E149: No help for %s"
+msgstr "E149: Geen hulp vir %s nie"
 
 #, c-format
-msgid "Sorry, help file \"%s\" not found"
-msgstr "Jammer, hulplêer \"%s\" kan nie gevind word nie"
+msgid "Help file \"%s\" not found"
+msgstr "Hulplêer \"%s\" kan nie gevind word nie"
 
 #, fuzzy, c-format
 #~ msgid "E151: No match: %s"
@@ -2469,9 +2469,6 @@ msgstr "E471: Parameter benodig"
 
 msgid "E10: \\ should be followed by /, ? or &"
 msgstr "E10: \\ moet gevolg word deur /, ? of &"
-
-msgid "E11: Invalid in command-line window; <CR> executes, CTRL-C quits"
-msgstr "E11: Ongeldig in bevelreël venster: <CR> voer uit, CTRL-C stop"
 
 msgid "E12: Command not allowed from exrc/vimrc in current dir or tag search"
 msgstr ""
@@ -3575,12 +3572,8 @@ msgstr "E317: wyser blok id verkeerd 2"
 msgid "E325: ATTENTION"
 msgstr "E325: LET OP"
 
-msgid ""
-"\n"
-"Found a swap file by the name \""
-msgstr ""
-"\n"
-"Het 'n ruillêer gevind met die naam \""
+msgid "Found a swap file by the name \""
+msgstr "Het 'n ruillêer gevind met die naam \""
 
 msgid "While opening file \""
 msgstr "Tydens oopmaak van lêer \""
@@ -3608,8 +3601,8 @@ msgstr ""
 #~ "\n"
 #~ "(2) 'n Bewerkingsessie van hierdie lêer het ineengestort.\n"
 
-msgid "    If this is the case, use \":recover\" or \"vim -r "
-msgstr "    Indien wel, gebruik \":recover\" of \"vim -r"
+msgid "    If this is the case, use \":recover\" or \"nvim -r "
+msgstr "    Indien wel, gebruik \":recover\" of \"nvim -r"
 
 msgid ""
 "\"\n"
@@ -4114,12 +4107,8 @@ msgstr "E358: 'langmap: Ekstra karakters na kommapunt: %s"
 msgid "Vim: Error reading input, exiting...\n"
 msgstr "Vim: Fout met lees van invoer, verlaat...\n"
 
-msgid ""
-"\n"
-"shell returned "
-msgstr ""
-"\n"
-"dop lewer "
+msgid "shell returned "
+msgstr "dop lewer "
 
 #~ msgid ""
 #~ "\n"
@@ -4659,11 +4648,11 @@ msgstr " GEFAAL"
 #~ msgid "Warning: region %s not supported"
 #~ msgstr "E519: Opsie is nie ondersteun nie"
 
-#~ msgid "Sorry, no suggestions"
+#~ msgid "No suggestions"
 #~ msgstr ""
 
 #, fuzzy, c-format
-#~ msgid "Sorry, only %<PRId64> suggestions"
+#~ msgid "Only %<PRId64> suggestions"
 #~ msgstr " op %<PRId64> reëls"
 
 #. for when 'cmdheight' > 1

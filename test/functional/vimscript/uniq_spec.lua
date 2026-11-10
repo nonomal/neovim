@@ -1,19 +1,19 @@
 local t = require('test.testutil')
 local n = require('test.functional.testnvim')()
 
+local describe, it, setup = t.describe, t.it, t.setup
 local eq = t.eq
 local clear = n.clear
 local command = n.command
-local exc_exec = n.exc_exec
 local pcall_err = t.pcall_err
 
-before_each(clear)
+setup(clear)
 
 describe('uniq()', function()
   it('errors out when processing special values', function()
     eq(
       'Vim(call):E362: Using a boolean value as a Float',
-      exc_exec('call uniq([v:true, v:false], "f")')
+      pcall_err(command, 'call uniq([v:true, v:false], "f")')
     )
   end)
 

@@ -4,9 +4,10 @@
                             NVIM REFERENCE MANUAL
 
 
+==============================================================================
 Nvim style guide                                        *dev-style*
 
-This is style guide for developers working on Nvim's source code.
+Style guidelines for developers working on Nvim's source code.
 
 License: CC-By 3.0 https://creativecommons.org/licenses/by/3.0/
 
@@ -64,9 +65,8 @@ Symbols:
   - `extern` variables (including the `EXTERN` macro)
 
 Non-symbols:
-  - macros, i.e. `#define`.
-  - static inline functions, but only if its function declaration has a
-    `REAL_FATTR_ALWAYS_INLINE` attribute.
+  - macros, i.e. `#define`
+  - static inline functions with the `FUNC_ATTR_ALWAYS_INLINE` attribute
   - typedefs
   - structs
   - enums
@@ -95,9 +95,9 @@ variable is and what it was initialized to. In particular, initialization
 should be used instead of declaration and assignment, e.g. >c
 
     int i;
-    i = f();      // BAD: initialization separate from declaration.
+    i = f();      // ❌: initialization separate from declaration.
 
-    int j = g();  // GOOD: declaration has initialization.
+    int j = g();  // ✅: declaration has initialization.
 
 
 Initialization ~
@@ -107,25 +107,22 @@ but each initialization should be done on a separate line.
 
 >c
     int i;
-    int j; // GOOD
-
-    int i, j;   // GOOD: multiple declarations, no initialization.
-
+    int j;              // ✅
+    int i, j;           // ✅: multiple declarations, no initialization.
     int i = 0;
-    int j = 0;  // GOOD: one initialization per line.
+    int j = 0;          // ✅: one initialization per line.
 
-    int i = 0, j;  // BAD: multiple declarations with initialization.
-
-    int i = 0, j = 0;  // BAD: multiple declarations with initialization.
+    int i = 0, j;       // ❌: multiple declarations with initialization.
+    int i = 0, j = 0;   // ❌: multiple declarations with initialization.
 
 ==============================================================================
 Nvim-Specific Magic
 
 clint ~
 
-Use `clint.py` to detect style errors.
+Use `clint.lua` to detect style errors.
 
-`src/clint.py` is a Python script that reads a source file and identifies
+`src/clint.lua` is a Lua script that reads a source file and identifies
 style errors. It is not perfect, and has both false positives and false
 negatives, but it is still a valuable tool. False positives can be ignored by
 putting `// NOLINT` at the end of the line.
@@ -133,7 +130,7 @@ putting `// NOLINT` at the end of the line.
 uncrustify ~
 
 src/uncrustify.cfg is the authority for expected code formatting, for cases
-not covered by clint.py.  We remove checks in clint.py if they are covered by
+not covered by clint.lua.  We remove checks in clint.lua if they are covered by
 uncrustify rules.
 
 ==============================================================================
@@ -152,10 +149,10 @@ Postincrement and Postdecrement ~
 Use postfix form (`i++`) in statements. >c
 
     for (int i = 0; i < 3; i++) { }
-    int j = ++i;  // OK: ++i is used as an expression.
+    int j = ++i;  // ✅: ++i is used as an expression.
 
     for (int i = 0; i < 3; ++i) { }
-    ++i;  // BAD: ++i is used as a statement.
+    ++i;  // ❌: ++i is used as a statement.
 
 
 Use of const ~
@@ -217,7 +214,7 @@ Booleans ~
 
 Use `bool` to represent boolean values. >c
 
-    int loaded = 1;  // BAD: loaded should have type bool.
+    int loaded = 1;  // ❌: loaded should have type bool.
 
 
 Conditions ~
@@ -259,8 +256,7 @@ functions. >c
 
 Integration with declarations generator ~
 
-Every C file must contain #include of the generated header file, guarded by
-#ifdef INCLUDE_GENERATED_DECLARATIONS.
+Every C file must contain #include of the generated header file.
 
 Include must go after other #includes and typedefs in .c files and after
 everything else in header files. It is allowed to omit #include in a .c file
@@ -276,9 +272,7 @@ contain only non-static function declarations. >c
 
     typedef int FooType;
 
-    #ifdef INCLUDE_GENERATED_DECLARATIONS
-    # include "foo.c.generated.h"
-    #endif
+    #include "foo.c.generated.h"
 
     …
 
@@ -288,9 +282,7 @@ contain only non-static function declarations. >c
 
     …
 
-    #ifdef INCLUDE_GENERATED_DECLARATIONS
-    # include "foo.h.generated.h"
-    #endif
+    #include "foo.h.generated.h"
 
 
 64-bit Portability ~
@@ -382,7 +374,7 @@ Filenames should be all lowercase and can include underscores (`_`).
 Use underscores to separate words. Examples of acceptable file names: >
 
     my_useful_file.c
-    getline_fix.c  // OK: getline refers to the glibc function.
+    getline_fix.c  // ✅: getline refers to the glibc function.
 
 C files should end in `.c` and header files should end in `.h`.
 
@@ -415,10 +407,10 @@ instance: `my_exciting_local_variable`.
 
     For example: >c
 
-        string table_name;  // OK: uses underscore.
-        string tablename;   // OK: all lowercase.
+        string table_name;  // ✅: uses underscore.
+        string tablename;   // ✅: all lowercase.
 
-        string tableName;   // BAD: mixed case.
+        string tableName;   // ❌: mixed case.
 <
 
     Struct Variables ~
@@ -905,8 +897,8 @@ Return Values ~
 
 Do not needlessly surround the `return` expression with parentheses.
 
-Use parentheses in `return expr`; only where you would use them in `x =
-expr;`. >c
+Use parentheses in `return expr;` only where you would also use them in
+`x = expr;`. >c
 
     return result;
     return (some_long_condition && another_condition);

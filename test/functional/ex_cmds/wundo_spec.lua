@@ -1,12 +1,12 @@
 -- Specs for :wundo and underlying functions
 
 local n = require('test.functional.testnvim')()
+local t = require('test.testutil')
 
+local describe, it, before_each, after_each = t.describe, t.it, t.before_each, t.after_each
 local command = n.command
 local clear = n.clear
 local eval = n.eval
-local spawn = n.spawn
-local nvim_prog = n.nvim_prog
 local set_session = n.set_session
 
 describe(':wundo', function()
@@ -24,15 +24,11 @@ end)
 
 describe('u_* functions', function()
   it('safely fail on new, non-empty buffer', function()
-    local session = spawn({
-      nvim_prog,
-      '-u',
-      'NONE',
-      '-i',
-      'NONE',
-      '--embed',
-      '-c',
-      'set undodir=. undofile',
+    local session = n.new_session(false, {
+      args = {
+        '-c',
+        'set undodir=. undofile',
+      },
     })
     set_session(session)
     command('echo "True"') -- Should not error out due to crashed Neovim

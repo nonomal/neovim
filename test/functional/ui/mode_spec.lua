@@ -2,6 +2,7 @@ local t = require('test.testutil')
 local n = require('test.functional.testnvim')()
 local Screen = require('test.functional.ui.screen')
 
+local describe, it, before_each = t.describe, t.it, t.before_each
 local clear, feed, insert = n.clear, n.feed, n.insert
 local command = n.command
 local retry = t.retry
@@ -11,8 +12,7 @@ describe('ui mode_change event', function()
 
   before_each(function()
     clear()
-    screen = Screen.new(25, 4)
-    screen:attach({ rgb = true })
+    screen = Screen.new(25, 4, { rgb = true })
   end)
 
   it('works in normal mode', function()
@@ -44,6 +44,11 @@ describe('ui mode_change event', function()
     ]],
       mode = 'normal',
     }
+
+    n.feed(':append<cr>')
+    screen:expect({ mode = 'cmdline_normal' })
+    n.feed('<esc>')
+    screen:expect({ mode = 'normal' })
   end)
 
   -- oldtest: Test_mouse_shape_after_failed_change()
@@ -95,6 +100,46 @@ describe('ui mode_change event', function()
     }
   end)
 
+  -- oldtest: Test_mouse_shape_indent_norm_with_gq()
+  it('is restored to Normal mode after "gq" indents using :normal #12309', function()
+    screen:try_resize(60, 6)
+    n.exec([[
+      func Indent()
+        exe "normal! \<Ignore>"
+        return 0
+      endfunc
+
+      setlocal indentexpr=Indent()
+      call setline(1, [repeat('a', 80), repeat('b', 80)])
+    ]])
+
+    feed('ggVG')
+    screen:expect {
+      grid = [[
+      {17:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}|
+      {17:aaaaaaaaaaaaaaaaaaaa}                                        |
+      {17:^bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb}|
+      {17:bbbbbbbbbbbbbbbbbbbb}                                        |
+      {1:~                                                           }|
+      {5:-- VISUAL LINE --}                                           |
+    ]],
+      mode = 'visual',
+    }
+
+    feed('gq')
+    screen:expect {
+      grid = [[
+      aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|
+      aaaaaaaaaaaaaaaaaaaa                                        |
+      ^bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb|
+      bbbbbbbbbbbbbbbbbbbb                                        |
+      {1:~                                                           }|
+                                                                  |
+    ]],
+      mode = 'normal',
+    }
+  end)
+
   it('works in insert mode', function()
     feed('i')
     screen:expect {
@@ -119,6 +164,11 @@ describe('ui mode_change event', function()
     local matchtime = 0
     command('set showmatch')
     retry(nil, nil, function()
+      if matchtime > 0 then
+        feed([[<c-\><c-n>]])
+        command("call setline(1, 'word')")
+      end
+
       matchtime = matchtime + 1
       local screen_timeout = 1000 * matchtime -- fail faster for retry.
 
@@ -236,7 +286,7 @@ describe('ui mode_change event', function()
     feed('v')
     screen:expect {
       grid = [[
-      tex^t                     |
+      tex{17:^t}                     |
       {1:~                        }|*2
       {5:-- VISUAL --}             |
     ]],

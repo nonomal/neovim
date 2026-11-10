@@ -2,7 +2,8 @@ local t = require('test.testutil')
 local n = require('test.functional.testnvim')()
 local Screen = require('test.functional.ui.screen')
 
-local clear, feed_command = n.clear, n.feed_command
+local describe, it, before_each, after_each = t.describe, t.it, t.before_each, t.after_each
+local clear = n.clear
 local feed, next_msg, eq = n.feed, n.next_msg, t.eq
 local command = n.command
 local expect = n.expect
@@ -22,7 +23,7 @@ describe('mappings', function()
       .. " :call rpcnotify(1, 'mapped', '"
       .. send:gsub('<', '<lt>')
       .. "')<cr>"
-    feed_command(cmd)
+    command(cmd)
   end
 
   local check_mapping = function(mapping, expected)
@@ -62,6 +63,8 @@ describe('mappings', function()
     add_mapping('<kenter>', '<kenter>')
     add_mapping('<kcomma>', '<kcomma>')
     add_mapping('<kequal>', '<kequal>')
+    add_mapping('<find>', '<find>')
+    add_mapping('<select>', '<select>')
     add_mapping('<f38>', '<f38>')
     add_mapping('<f63>', '<f63>')
   end)
@@ -130,6 +133,8 @@ describe('mappings', function()
     check_mapping('<KPComma>', '<kcomma>')
     check_mapping('<kequal>', '<kequal>')
     check_mapping('<KPEquals>', '<kequal>')
+    check_mapping('<Find>', '<find>')
+    check_mapping('<Select>', '<select>')
     check_mapping('<f38>', '<f38>')
     check_mapping('<f63>', '<f63>')
   end)
@@ -177,6 +182,7 @@ describe('input split utf sequences', function()
 
   it('can be mapped', function()
     command('inoremap ► E296BA')
+    command('set ttimeoutlen=100') -- CI test runners may cause timeout otherwise
     local str = '►'
     feed('i' .. str:sub(1, 1))
     vim.uv.sleep(10)
@@ -282,9 +288,8 @@ end)
 
 it('typing a simplifiable key at hit-enter prompt triggers mapping vim-patch:8.2.0839', function()
   local screen = Screen.new(60, 8)
-  screen:attach()
   command([[nnoremap <C-6> <Cmd>echo 'hit ctrl-6'<CR>]])
-  feed_command('ls')
+  feed(':ls<CR>')
   screen:expect([[
                                                                 |
     {1:~                                                           }|*3
@@ -328,10 +333,9 @@ describe('input non-printable chars', function()
   it("doesn't crash when echoing them back", function()
     write_file('Xtest-overwrite', [[foobar]])
     local screen = Screen.new(60, 8)
-    screen:attach()
     command('set shortmess-=F')
 
-    feed_command('e Xtest-overwrite')
+    command('e Xtest-overwrite')
     screen:expect([[
       ^foobar                                                      |
       {1:~                                                           }|*6
@@ -341,7 +345,7 @@ describe('input non-printable chars', function()
     -- Wait for some time so that the timestamp changes.
     vim.uv.sleep(10)
     write_file('Xtest-overwrite', [[smurf]])
-    feed_command('w')
+    feed(':w<CR>')
     screen:expect([[
       foobar                                                      |
       {1:~                                                           }|*3
@@ -370,7 +374,7 @@ describe('input non-printable chars', function()
       "Xtest-overwrite"                                           |
       {9:WARNING: The file has been changed since reading it!!!}      |
       {6:Do you really want to write to it (y/n)?}u                   |
-      {6:Do you really want to write to it (y/n)?}                    |
+      {6:Do you really want to write to it (y/n)?}{18:^E}                  |
       {6:Do you really want to write to it (y/n)?}^                    |
     ]])
 
@@ -381,7 +385,7 @@ describe('input non-printable chars', function()
       "Xtest-overwrite"                                           |
       {9:WARNING: The file has been changed since reading it!!!}      |
       {6:Do you really want to write to it (y/n)?}u                   |
-      {6:Do you really want to write to it (y/n)?}                    |
+      {6:Do you really want to write to it (y/n)?}{18:^E}                  |
       {6:Do you really want to write to it (y/n)?}n                   |
       {6:Press ENTER or type command to continue}^                     |
     ]])
@@ -428,7 +432,6 @@ describe('display is updated', function()
   local screen
   before_each(function()
     screen = Screen.new(60, 8)
-    screen:attach()
   end)
 
   it('in Insert mode after <Nop> mapping #17911', function()

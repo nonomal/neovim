@@ -204,12 +204,33 @@ func Test_tabline_showcmd()
   call StopVimInTerminal(buf)
 endfunc
 
+func Test_tabline_showcmd_redraw_tabline()
+  CheckRunVimInTerminal
+
+  let lines =<< trim END
+    set showcmd showcmdloc=tabline showtabline=2 tabline=%S timeoutlen=0
+    nnoremap g :redraw<CR>
+    nnoremap gc <Nop>
+  END
+  call writefile(lines, 'XTest_tabline_showcmd_redraw', 'D')
+
+  let buf = RunVimInTerminal('-S XTest_tabline_showcmd_redraw', #{rows: 6, cols: 40})
+  call term_sendkeys(buf, 'g')
+  call WaitForAssert({-> assert_match(':redraw', term_getline(buf, 6))})
+  call WaitForAssert({-> assert_notmatch('^:', term_getline(buf, 1))})
+
+  call StopVimInTerminal(buf)
+endfunc
+
 func TruncTabLine()
   return '%1T口口%2Ta' .. repeat('b', &columns - 4) .. '%999X%#TabLine#c'
 endfunc
 
 " Test 'tabline' with truncated double-width label at the start.
 func Test_tabline_truncated_double_width()
+  let save_TabLine = nvim_get_hl(0, #{name: 'TabLine'})
+  " Nvim: avoid combining TabLine with TabLineFill in custom tabline
+  hi TabLine cterm=underline,nocombine gui=underline,nocombine
   tabnew
   redraw
   call assert_match('X$', Screenline(1))
@@ -226,6 +247,17 @@ func Test_tabline_truncated_double_width()
 
   bw!
   set tabline=
+  call nvim_set_hl(0, 'TabLine', save_TabLine)
+endfunc
+
+func Test_tabline_empty()
+  set showtabline=2 tabline=%!'%{}%'
+  try
+    redraw!
+  catch
+  endtry
+  set showtabline&
+  set tabline&
 endfunc
 
 " vim: shiftwidth=2 sts=2 expandtab

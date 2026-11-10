@@ -1,4 +1,6 @@
 local t = require('test.testutil')
+local describe, it, setup = t.describe, t.it, t.setup
+local pcall_err = t.pcall_err
 local n = require('test.functional.testnvim')()
 
 local clear = n.clear
@@ -6,11 +8,9 @@ local fn = n.fn
 local eval, eq = n.eval, t.eq
 local command = n.command
 local api = n.api
-local exc_exec = n.exc_exec
-local is_os = t.is_os
 
 describe('msgpack*() functions', function()
-  before_each(clear)
+  setup(clear)
 
   local obj_test = function(msg, obj)
     it(msg, function()
@@ -371,13 +371,14 @@ describe('msgpack*() functions', function()
     eq(1, eval('dumped ==# dumped2'))
   end)
 
-  it('can restore and dump STR string with zero byte', function()
+  it('can restore and dump STR string contents with zero byte', function()
     command('let dumped = ["\\xA1\\n"]')
     command('let parsed = msgpackparse(dumped)')
     command('let dumped2 = msgpackdump(parsed)')
-    eq({ { _TYPE = {}, _VAL = { '\n' } } }, eval('parsed'))
-    eq(1, eval('parsed[0]._TYPE is v:msgpack_types.string'))
-    eq(1, eval('dumped ==# dumped2'))
+    eq({ '\000' }, eval('parsed'))
+    eq(eval('v:t_blob'), eval('type(parsed[0])'))
+    -- type is not preserved: prefer BIN for binary contents
+    eq(0, eval('dumped ==# dumped2'))
   end)
 
   it('can restore and dump BIN string with NL', function()
@@ -414,7 +415,7 @@ local parse_eq = function(expect, list_arg)
 end
 
 describe('msgpackparse() function', function()
-  before_each(clear)
+  setup(clear)
 
   it('restores nil as v:null', function()
     parse_eq(eval('[v:null]'), { '\192' })
@@ -428,26 +429,24 @@ describe('msgpackparse() function', function()
     parse_eq({ true }, { '\195' })
   end)
 
-  it('restores FIXSTR as special dict', function()
-    parse_eq({ { _TYPE = {}, _VAL = { 'ab' } } }, { '\162ab' })
-    eq(1, eval('g:parsed[0]._TYPE is v:msgpack_types.string'))
+  it('restores FIXSTR as string', function()
+    parse_eq({ 'ab' }, { '\162ab' })
   end)
 
   it('restores BIN 8 as string', function()
     parse_eq({ 'ab' }, { '\196\002ab' })
   end)
 
-  it('restores FIXEXT1 as special dictionary', function()
+  it('restores FIXEXT1 as special dict', function()
     parse_eq({ { _TYPE = {}, _VAL = { 0x10, { '', '' } } } }, { '\212\016', '' })
     eq(1, eval('g:parsed[0]._TYPE is v:msgpack_types.ext'))
   end)
 
-  it('restores MAP with BIN key as special dictionary', function()
-    parse_eq({ { _TYPE = {}, _VAL = { { 'a', '' } } } }, { '\129\196\001a\196\n' })
-    eq(1, eval('g:parsed[0]._TYPE is v:msgpack_types.map'))
+  it('restores MAP with BIN key as ordinary dict', function()
+    parse_eq({ { a = '' } }, { '\129\196\001a\196\n' })
   end)
 
-  it('restores MAP with duplicate STR keys as special dictionary', function()
+  it('restores MAP with duplicate STR keys as special dict', function()
     command('let dumped = ["\\x82\\xA1a\\xC4\\n\\xA1a\\xC4\\n"]')
     -- FIXME Internal error bug, can't use parse_eq() here
     command('silent! let parsed = msgpackparse(dumped)')
@@ -455,17 +454,17 @@ describe('msgpackparse() function', function()
       {
         _TYPE = {},
         _VAL = {
-          { { _TYPE = {}, _VAL = { 'a' } }, '' },
-          { { _TYPE = {}, _VAL = { 'a' } }, '' },
+          { 'a', '' },
+          { 'a', '' },
         },
       },
     }, eval('parsed'))
     eq(1, eval('g:parsed[0]._TYPE is v:msgpack_types.map'))
-    eq(1, eval('g:parsed[0]._VAL[0][0]._TYPE is v:msgpack_types.string'))
-    eq(1, eval('g:parsed[0]._VAL[1][0]._TYPE is v:msgpack_types.string'))
+    eq(eval('v:t_string'), eval('type(g:parsed[0]._VAL[0][0])'))
+    eq(eval('v:t_string'), eval('type(g:parsed[0]._VAL[1][0])'))
   end)
 
-  it('restores MAP with MAP key as special dictionary', function()
+  it('restores MAP with MAP key as special dict', function()
     parse_eq({ { _TYPE = {}, _VAL = { { {}, '' } } } }, { '\129\128\196\n' })
     eq(1, eval('g:parsed[0]._TYPE is v:msgpack_types.map'))
   end)
@@ -475,88 +474,84 @@ describe('msgpackparse() function', function()
     eval(cmd)
     eval(cmd) -- do it again (try to force segfault)
     local api_info = eval(cmd) -- do it again
-    if is_os('win') then
-      n.assert_alive()
-      pending('msgpackparse() has a bug on windows')
-      return
-    end
+    n.assert_alive()
     eq({ 'error_types', 'functions', 'types', 'ui_events', 'ui_options', 'version' }, api_info)
   end)
 
   it('fails when called with no arguments', function()
     eq(
       'Vim(call):E119: Not enough arguments for function: msgpackparse',
-      exc_exec('call msgpackparse()')
+      pcall_err(command, 'call msgpackparse()')
     )
   end)
 
   it('fails when called with two arguments', function()
     eq(
       'Vim(call):E118: Too many arguments for function: msgpackparse',
-      exc_exec('call msgpackparse(["", ""], 1)')
+      pcall_err(command, 'call msgpackparse(["", ""], 1)')
     )
   end)
 
   it('fails to parse a string', function()
     eq(
       'Vim(call):E899: Argument of msgpackparse() must be a List or Blob',
-      exc_exec('call msgpackparse("abcdefghijklmnopqrstuvwxyz")')
+      pcall_err(command, 'call msgpackparse("abcdefghijklmnopqrstuvwxyz")')
     )
   end)
 
   it('fails to parse a number', function()
     eq(
       'Vim(call):E899: Argument of msgpackparse() must be a List or Blob',
-      exc_exec('call msgpackparse(127)')
+      pcall_err(command, 'call msgpackparse(127)')
     )
   end)
 
-  it('fails to parse a dictionary', function()
+  it('fails to parse a dict', function()
     eq(
       'Vim(call):E899: Argument of msgpackparse() must be a List or Blob',
-      exc_exec('call msgpackparse({})')
+      pcall_err(command, 'call msgpackparse({})')
     )
   end)
 
   it('fails to parse a funcref', function()
     eq(
       'Vim(call):E899: Argument of msgpackparse() must be a List or Blob',
-      exc_exec('call msgpackparse(function("tr"))')
+      pcall_err(command, 'call msgpackparse(function("tr"))')
     )
   end)
 
   it('fails to parse a partial', function()
-    command('function T() dict\nendfunction')
+    command('function! T() dict\nendfunction')
     eq(
       'Vim(call):E899: Argument of msgpackparse() must be a List or Blob',
-      exc_exec('call msgpackparse(function("T", [1, 2], {}))')
+      pcall_err(command, 'call msgpackparse(function("T", [1, 2], {}))')
     )
   end)
 
   it('fails to parse a float', function()
     eq(
       'Vim(call):E899: Argument of msgpackparse() must be a List or Blob',
-      exc_exec('call msgpackparse(0.0)')
+      pcall_err(command, 'call msgpackparse(0.0)')
     )
   end)
 
   it('fails on incomplete msgpack string', function()
     local expected = 'Vim(call):E475: Invalid argument: Incomplete msgpack string'
-    eq(expected, exc_exec([[call msgpackparse(["\xc4"])]]))
-    eq(expected, exc_exec([[call msgpackparse(["\xca", "\x02\x03"])]]))
-    eq(expected, exc_exec('call msgpackparse(0zc4)'))
-    eq(expected, exc_exec('call msgpackparse(0zca0a0203)'))
+    eq(expected, pcall_err(command, [[call msgpackparse(["\xc4"])]]))
+    eq(expected, pcall_err(command, [[call msgpackparse(["\xca", "\x02\x03"])]]))
+    eq(expected, pcall_err(command, 'call msgpackparse(0zc4)'))
+    eq(expected, pcall_err(command, 'call msgpackparse(0zca0a0203)'))
   end)
 
   it('fails when unable to parse msgpack string', function()
     local expected = 'Vim(call):E475: Invalid argument: Failed to parse msgpack string'
-    eq(expected, exc_exec([[call msgpackparse(["\xc1"])]]))
-    eq(expected, exc_exec('call msgpackparse(0zc1)'))
+    eq(expected, pcall_err(command, [[call msgpackparse(["\xc1"])]]))
+    eq(expected, pcall_err(command, 'call msgpackparse(0zc1)'))
   end)
 end)
 
 describe('msgpackdump() function', function()
-  before_each(clear)
+  setup(clear)
 
   local dump_eq = function(exp_list, arg_expr)
     eq(exp_list, eval('msgpackdump(' .. arg_expr .. ')'))
@@ -632,16 +627,16 @@ describe('msgpackdump() function', function()
     command('let Todump = function("tr")')
     eq(
       'Vim(call):E5004: Error while dumping msgpackdump() argument, index 0, itself: attempt to dump function reference',
-      exc_exec('call msgpackdump([Todump])')
+      pcall_err(command, 'call msgpackdump([Todump])')
     )
   end)
 
   it('fails to dump a partial', function()
-    command('function T() dict\nendfunction')
+    command('function! T() dict\nendfunction')
     command('let Todump = function("T", [1, 2], {})')
     eq(
       'Vim(call):E5004: Error while dumping msgpackdump() argument, index 0, itself: attempt to dump function reference',
-      exc_exec('call msgpackdump([Todump])')
+      pcall_err(command, 'call msgpackdump([Todump])')
     )
   end)
 
@@ -649,7 +644,7 @@ describe('msgpackdump() function', function()
     command('let todump = [function("tr")]')
     eq(
       'Vim(call):E5004: Error while dumping msgpackdump() argument, index 0, index 0: attempt to dump function reference',
-      exc_exec('call msgpackdump([todump])')
+      pcall_err(command, 'call msgpackdump([todump])')
     )
   end)
 
@@ -658,7 +653,7 @@ describe('msgpackdump() function', function()
     command('call add(todump[0][0], todump)')
     eq(
       'Vim(call):E5005: Unable to dump msgpackdump() argument, index 0: container references itself in index 0, index 0, index 0',
-      exc_exec('call msgpackdump([todump])')
+      pcall_err(command, 'call msgpackdump([todump])')
     )
   end)
 
@@ -667,7 +662,7 @@ describe('msgpackdump() function', function()
     command('call extend(todump.d.d, {"d": todump})')
     eq(
       "Vim(call):E5005: Unable to dump msgpackdump() argument, index 0: container references itself in key 'd', key 'd', key 'd'",
-      exc_exec('call msgpackdump([todump])')
+      pcall_err(command, 'call msgpackdump([todump])')
     )
   end)
 
@@ -688,7 +683,7 @@ describe('msgpackdump() function', function()
     command('call add(todump._VAL, todump)')
     eq(
       'Vim(call):E5005: Unable to dump msgpackdump() argument, index 0: container references itself in index 0',
-      exc_exec('call msgpackdump([todump])')
+      pcall_err(command, 'call msgpackdump([todump])')
     )
   end)
 
@@ -697,7 +692,7 @@ describe('msgpackdump() function', function()
     command('call add(todump._VAL, [todump, 0])')
     eq(
       'Vim(call):E5005: Unable to dump msgpackdump() argument, index 0: container references itself in index 0',
-      exc_exec('call msgpackdump([todump])')
+      pcall_err(command, 'call msgpackdump([todump])')
     )
   end)
 
@@ -706,7 +701,7 @@ describe('msgpackdump() function', function()
     command('call add(todump._VAL, [0, todump])')
     eq(
       'Vim(call):E5005: Unable to dump msgpackdump() argument, index 0: container references itself in key 0 at index 0 from special map',
-      exc_exec('call msgpackdump([todump])')
+      pcall_err(command, 'call msgpackdump([todump])')
     )
   end)
 
@@ -715,7 +710,7 @@ describe('msgpackdump() function', function()
     command('call add(todump._VAL[0][0], todump._VAL)')
     eq(
       'Vim(call):E5005: Unable to dump msgpackdump() argument, index 0: container references itself in key [[[[...@0], []]]] at index 0 from special map, index 0',
-      exc_exec('call msgpackdump([todump])')
+      pcall_err(command, 'call msgpackdump([todump])')
     )
   end)
 
@@ -724,7 +719,7 @@ describe('msgpackdump() function', function()
     command('call add(todump._VAL[0][1], todump._VAL)')
     eq(
       'Vim(call):E5005: Unable to dump msgpackdump() argument, index 0: container references itself in key [] at index 0 from special map, index 0',
-      exc_exec('call msgpackdump([todump])')
+      pcall_err(command, 'call msgpackdump([todump])')
     )
   end)
 
@@ -733,61 +728,64 @@ describe('msgpackdump() function', function()
     command('call add(todump._VAL, [0, todump._VAL])')
     eq(
       'Vim(call):E5005: Unable to dump msgpackdump() argument, index 0: container references itself in index 0, index 1',
-      exc_exec('call msgpackdump([todump])')
+      pcall_err(command, 'call msgpackdump([todump])')
     )
   end)
 
   it('fails when called with no arguments', function()
     eq(
       'Vim(call):E119: Not enough arguments for function: msgpackdump',
-      exc_exec('call msgpackdump()')
+      pcall_err(command, 'call msgpackdump()')
     )
   end)
 
   it('fails when called with three arguments', function()
     eq(
       'Vim(call):E118: Too many arguments for function: msgpackdump',
-      exc_exec('call msgpackdump(["", ""], 1, 2)')
+      pcall_err(command, 'call msgpackdump(["", ""], 1, 2)')
     )
   end)
 
   it('fails to dump a string', function()
     eq(
       'Vim(call):E686: Argument of msgpackdump() must be a List',
-      exc_exec('call msgpackdump("abcdefghijklmnopqrstuvwxyz")')
+      pcall_err(command, 'call msgpackdump("abcdefghijklmnopqrstuvwxyz")')
     )
   end)
 
   it('fails to dump a number', function()
     eq(
       'Vim(call):E686: Argument of msgpackdump() must be a List',
-      exc_exec('call msgpackdump(127)')
+      pcall_err(command, 'call msgpackdump(127)')
     )
   end)
 
-  it('fails to dump a dictionary', function()
-    eq('Vim(call):E686: Argument of msgpackdump() must be a List', exc_exec('call msgpackdump({})'))
+  it('fails to dump a dict', function()
+    eq(
+      'Vim(call):E686: Argument of msgpackdump() must be a List',
+      pcall_err(command, 'call msgpackdump({})')
+    )
   end)
 
   it('fails to dump a funcref', function()
     eq(
       'Vim(call):E686: Argument of msgpackdump() must be a List',
-      exc_exec('call msgpackdump(function("tr"))')
+      pcall_err(command, 'call msgpackdump(function("tr"))')
     )
   end)
 
   it('fails to dump a partial', function()
-    command('function T() dict\nendfunction')
+    command('function! T() dict\nendfunction')
     eq(
       'Vim(call):E686: Argument of msgpackdump() must be a List',
-      exc_exec('call msgpackdump(function("T", [1, 2], {}))')
+      pcall_err(command, 'call msgpackdump(function("T", [1, 2], {}))')
     )
   end)
 
   it('fails to dump a float', function()
     eq(
       'Vim(call):E686: Argument of msgpackdump() must be a List',
-      exc_exec('call msgpackdump(0.0)')
+      pcall_err(command, 'call msgpackdump(0.0)')
     )
   end)
 
@@ -795,14 +793,14 @@ describe('msgpackdump() function', function()
     for _, val in ipairs({ 'v:true', 'v:false', 'v:null' }) do
       eq(
         'Vim(call):E686: Argument of msgpackdump() must be a List',
-        exc_exec('call msgpackdump(' .. val .. ')')
+        pcall_err(command, 'call msgpackdump(' .. val .. ')')
       )
     end
   end)
 
   it('can dump NULL string', function()
     dump_eq({ '\196\n' }, '[$XXX_UNEXISTENT_VAR_XXX]')
-    dump_eq({ '\196\n' }, '[{"_TYPE": v:msgpack_types.binary, "_VAL": [$XXX_UNEXISTENT_VAR_XXX]}]')
+    dump_eq({ '\196\n' }, '[v:_null_blob]')
     dump_eq({ '\160' }, '[{"_TYPE": v:msgpack_types.string, "_VAL": [$XXX_UNEXISTENT_VAR_XXX]}]')
   end)
 
@@ -814,7 +812,7 @@ describe('msgpackdump() function', function()
     eq({ '\144' }, eval('msgpackdump([v:_null_list])'))
   end)
 
-  it('can dump NULL dictionary', function()
+  it('can dump NULL dict', function()
     eq({ '\128' }, eval('msgpackdump([v:_null_dict])'))
   end)
 end)

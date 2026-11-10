@@ -1,6 +1,8 @@
 local t = require('test.testutil')
 local n = require('test.functional.testnvim')()
 
+local describe, it, before_each, after_each, pending =
+  t.describe, t.it, t.before_each, t.after_each, t.pending
 local clear = n.clear
 local eval = n.eval
 local eq = t.eq
@@ -13,10 +15,9 @@ local load_adjust = n.load_adjust
 local write_file = t.write_file
 local is_os = t.is_os
 local is_ci = t.is_ci
-local is_asan = n.is_asan
 
 clear()
-if is_asan() then
+if t.is_asan() then
   pending('ASAN build is difficult to estimate memory usage', function() end)
   return
 elseif is_os('win') then

@@ -10,9 +10,7 @@
 #include "nvim/os/time.h"
 #include "nvim/types_defs.h"
 
-#ifdef INCLUDE_GENERATED_DECLARATIONS
-# include "event/loop.c.generated.h"
-#endif
+#include "event/loop.c.generated.h"
 
 void loop_init(Loop *loop, void *data)
 {
@@ -20,10 +18,10 @@ void loop_init(Loop *loop, void *data)
   loop->recursive = 0;
   loop->closing = false;
   loop->uv.data = loop;
-  loop->children = kl_init(WatcherPtr);
-  loop->events = multiqueue_new_parent(loop_on_put, loop);
+  kv_init(loop->children);
+  loop->events = multiqueue_new(loop_on_put, loop);
   loop->fast_events = multiqueue_new_child(loop->events);
-  loop->thread_events = multiqueue_new_parent(NULL, NULL);
+  loop->thread_events = multiqueue_new(NULL, NULL);
   uv_mutex_init(&loop->mutex);
   uv_async_init(&loop->uv, &loop->async, async_cb);
   uv_signal_init(&loop->uv, &loop->children_watcher);
@@ -126,10 +124,14 @@ void loop_on_put(MultiQueue *queue, void *data)
   // of the queues, the event would only be processed after the poll
   // returns (user hits a key for example). To avoid this scenario, we call
   // uv_stop when a event is enqueued.
-  uv_stop(&loop->uv);
+  // Only call uv_stop() when the loop is actually running, otherwise it will
+  // instead make the next uv_run() stop immediately.
+  if (loop->recursive) {
+    uv_stop(&loop->uv);
+  }
 }
 
-#if !defined(EXITFREE)
+#ifndef EXITFREE
 static void loop_walk_cb(uv_handle_t *handle, void *arg)
 {
   if (!uv_is_closing(handle)) {
@@ -163,7 +165,7 @@ bool loop_close(Loop *loop, bool wait)
     if ((uv_loop_close(&loop->uv) != UV_EBUSY) || !wait) {
       break;
     }
-    uint64_t elapsed_s = (os_hrtime() - start) / 1000000000;  // seconds
+    uint64_t elapsed_s = (os_hrtime() - start) / NS_PER_SEC;
     if (elapsed_s >= 2) {
       // Some libuv resource was not correctly deref'd. Log and bail.
       rv = false;
@@ -171,7 +173,7 @@ bool loop_close(Loop *loop, bool wait)
       log_uv_handles(&loop->uv);
       break;
     }
-#if defined(EXITFREE)
+#ifdef EXITFREE
     (void)didstop;
 #else
     if (!didstop) {
@@ -187,7 +189,7 @@ bool loop_close(Loop *loop, bool wait)
   multiqueue_free(loop->fast_events);
   multiqueue_free(loop->thread_events);
   multiqueue_free(loop->events);
-  kl_destroy(WatcherPtr, loop->children);
+  kv_destroy(loop->children);
   return rv;
 }
 
@@ -212,10 +214,7 @@ static void async_cb(uv_async_t *handle)
   Loop *l = handle->loop->data;
   uv_mutex_lock(&l->mutex);
   // Flush thread_events to fast_events for processing on main loop.
-  while (!multiqueue_empty(l->thread_events)) {
-    Event ev = multiqueue_get(l->thread_events);
-    multiqueue_put_event(l->fast_events, ev);
-  }
+  multiqueue_move_events(l->fast_events, l->thread_events);
   uv_mutex_unlock(&l->mutex);
 }
 

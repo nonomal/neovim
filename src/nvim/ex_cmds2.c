@@ -17,6 +17,9 @@
 #include "nvim/bufwrite.h"
 #include "nvim/change.h"
 #include "nvim/channel.h"
+#include "nvim/context.h"
+#include "nvim/dialog.h"
+#include "nvim/errors.h"
 #include "nvim/eval.h"
 #include "nvim/eval/typval.h"
 #include "nvim/eval/typval_defs.h"
@@ -29,10 +32,10 @@
 #include "nvim/fileio.h"
 #include "nvim/gettext_defs.h"
 #include "nvim/globals.h"
-#include "nvim/highlight.h"
 #include "nvim/highlight_defs.h"
 #include "nvim/macros_defs.h"
 #include "nvim/mark.h"
+#include "nvim/memline_defs.h"
 #include "nvim/memory.h"
 #include "nvim/message.h"
 #include "nvim/move.h"
@@ -44,13 +47,12 @@
 #include "nvim/quickfix.h"
 #include "nvim/runtime.h"
 #include "nvim/types_defs.h"
+#include "nvim/ui.h"
 #include "nvim/undo.h"
 #include "nvim/vim_defs.h"
 #include "nvim/window.h"
 
-#ifdef INCLUDE_GENERATED_DECLARATIONS
-# include "ex_cmds2.c.generated.h"
-#endif
+#include "ex_cmds2.c.generated.h"
 
 static const char e_compiler_not_supported_str[]
   = N_("E666: Compiler not supported: %s");
@@ -204,7 +206,8 @@ void dialog_changed(buf_T *buf, bool checkall)
     .forceit = false,
   };
 
-  dialog_msg(buff, _("Save changes to \"%s\"?"), buf->b_fname);
+  const char *fname = buf->b_fname ? buf->b_fname : _("Untitled");
+  snprintf(buff, sizeof buff, _("Save changes to \"%s\"?"), fname);
   if (checkall) {
     ret = vim_dialog_yesnoallcancel(VIM_QUESTION, NULL, buff, 1);
   } else {
@@ -224,12 +227,11 @@ void dialog_changed(buf_T *buf, bool checkall)
       }
     }
 
-    // restore to empty when write failed
+    // restore to empty when write failed or was cancelled
     if (empty_bufname) {
-      XFREE_CLEAR(buf->b_fname);
+      buf->b_fname = NULL;
       XFREE_CLEAR(buf->b_ffname);
       XFREE_CLEAR(buf->b_sfname);
-      unchanged(buf, true, false);
     }
   } else if (ret == VIM_NO) {
     unchanged(buf, true, false);
@@ -269,8 +271,8 @@ bool dialog_close_terminal(buf_T *buf)
 {
   char buff[DIALOG_MSG_SIZE];
 
-  dialog_msg(buff, _("Close \"%s\"?"),
-             (buf->b_fname != NULL) ? buf->b_fname : "?");
+  snprintf(buff, sizeof buff, _("Close \"%s\"?"),
+           (buf->b_fname != NULL) ? buf->b_fname : "?");
 
   int ret = vim_dialog_yesnocancel(VIM_QUESTION, NULL, buff, 1);
 
@@ -389,13 +391,17 @@ bool check_changed_any(bool hidden, bool unload)
       msg_col = 0;
       msg_didout = false;
     }
-    if ((buf->terminal && channel_job_running((uint64_t)buf->b_p_channel))
-        ? semsg(_("E947: Job still running in buffer \"%s\""), buf->b_fname)
-        : semsg(_("E162: No write since last change for buffer \"%s\""),
-                buf_spname(buf) != NULL ? buf_spname(buf) : buf->b_fname)) {
+    if (((buf->terminal && channel_job_running((uint64_t)buf->b_p_channel))
+         ? semsg(_("E947: Job still running in buffer \"%s\""), buf->b_fname)
+         : semsg(_("E162: No write since last change for buffer \"%s\""),
+                 buf_spname(buf) != NULL ? buf_spname(buf) : buf->b_fname))
+        // Only makes sense if error is shown, which cause_errthrow() may prevent.
+        && msg_didany) {
       int save = no_wait_return;
       no_wait_return = false;
-      wait_return(false);
+      if (!ui_has(kUIMessages)) {
+        wait_return(false);
+      }
       no_wait_return = save;
     }
   }
@@ -449,7 +455,7 @@ int buf_write_all(buf_T *buf, bool forceit)
                           1, buf->b_ml.ml_line_count, NULL,
                           false, forceit, true, false));
   if (curbuf != old_curbuf) {
-    msg_source(HL_ATTR(HLF_W));
+    msg_source(HLF_W);
     msg(_("Warning: Entered other buffer unexpectedly (check autocommands)"), 0);
   }
   return retval;
@@ -458,7 +464,10 @@ int buf_write_all(buf_T *buf, bool forceit)
 /// ":argdo", ":windo", ":bufdo", ":tabdo", ":cdo", ":ldo", ":cfdo" and ":lfdo"
 void ex_listdo(exarg_T *eap)
 {
-  if (curwin->w_p_wfb) {
+  // ":windo" and ":tabdo" only visit existing windows/tabpages, they don't
+  // change the current window's buffer, so they can't escape a 'winfixbuf'
+  // window (which would create a split).
+  if (curwin->w_p_wfb && eap->cmdidx != CMD_windo && eap->cmdidx != CMD_tabdo) {
     if ((eap->cmdidx == CMD_ldo || eap->cmdidx == CMD_lfdo) && !eap->forceit) {
       // Disallow :ldo if 'winfixbuf' is applied
       emsg(_(e_winfixbuf_cannot_go_to_buffer));
@@ -484,7 +493,7 @@ void ex_listdo(exarg_T *eap)
 
   char *save_ei = NULL;
 
-  // Temporarily override SHM_OVER and SHM_OVERALL to avoid that file
+  // Temporarily override kShmOver and kShmOverall to avoid that file
   // message overwrites output from the command.
   msg_listdo_overwrite++;
 
@@ -589,7 +598,7 @@ void ex_listdo(exarg_T *eap)
           break;
         }
         assert(wp);
-        execute = !wp->w_floating || wp->w_config.focusable;
+        execute = !wp->w_floating || win_is_focusable(wp);
         if (execute) {
           win_goto(wp);
           if (curwin != wp) {
@@ -689,7 +698,7 @@ void ex_listdo(exarg_T *eap)
   msg_listdo_overwrite--;
   if (save_ei != NULL) {
     buf_T *bnext;
-    aco_save_T aco;
+    CtxSwitch aco = { 0 };
 
     au_event_restore(save_ei);
 
@@ -704,9 +713,9 @@ void ex_listdo(exarg_T *eap)
           apply_autocmds(EVENT_SYNTAX, curbuf->b_p_syn, curbuf->b_fname, true,
                          curbuf);
         } else {
-          aucmd_prepbuf(&aco, buf);
+          ctx_switch(&aco, NULL, NULL, buf, 0);
           apply_autocmds(EVENT_SYNTAX, buf->b_p_syn, buf->b_fname, true, buf);
-          aucmd_restbuf(&aco);
+          ctx_restore(&aco);
         }
 
         // start over, in case autocommands messed things up.
@@ -733,7 +742,7 @@ void ex_compiler(exarg_T *eap)
 
   if (eap->forceit) {
     // ":compiler! {name}" sets global options
-    do_cmdline_cmd("command -nargs=* CompilerSet set <args>");
+    do_cmdline_cmd("command -nargs=* -keepscript CompilerSet set <args>");
   } else {
     // ":compiler! {name}" sets local options.
     // To remain backwards compatible "current_compiler" is always
@@ -887,6 +896,17 @@ void ex_drop(exarg_T *eap)
       if (curbuf->b_ml.ml_flags & ML_EMPTY) {
         ex_rewind(eap);
       }
+
+      // execute [+cmd]
+      if (eap->do_ecmd_cmd) {
+        bool did_set_swapcommand = set_swapcommand(eap->do_ecmd_cmd, 0);
+        do_cmdline(eap->do_ecmd_cmd, NULL, NULL, DOCMD_VERBOSE);
+        if (did_set_swapcommand) {
+          set_vim_var_string(VV_SWAPCOMMAND, NULL, -1);
+        }
+      }
+
+      // no need to execute [++opts] - they only apply for newly loaded buffers.
       return;
     }
   }

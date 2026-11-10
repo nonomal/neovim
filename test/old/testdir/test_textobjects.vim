@@ -203,6 +203,18 @@ func Test_string_html_objects()
     normal! 2k0vaty
     call assert_equal("<div><div\nattr=\"attr\"\n></div></div>", @", e)
 
+    " tag, that includes a > in some attribute
+    let t = "<div attr=\"attr >> foo >> bar \">Hello</div>"
+    $put =t
+    normal! fHyit
+    call assert_equal("Hello", @", e)
+
+    " tag, that includes a > in some attribute
+    let t = "<div attr='attr >> foo >> bar '>Hello 123</div>"
+    $put =t
+    normal! fHyit
+    call assert_equal("Hello 123", @", e)
+
     set quoteescape&
 
     " this was going beyond the end of the line
@@ -232,7 +244,7 @@ func Test_empty_html_tag()
   normal 0f<vitsaaa
   call assert_equal('aaa', getline(1))
 
-  " selecting a tag block in an non-empty blank line should fail
+  " selecting a tag block in a non-empty blank line should fail
   call setline(1, '    ')
   call assert_beeps('normal $vaty')
 
@@ -639,6 +651,16 @@ func Test_textobj_find_paren_forward()
   call assert_equal('foo (bar () (quux))', getline(1))
   normal 0di)
   call assert_equal('foo ()', getline(1))
+
+  call setline(1, ['x" (a "b" )\', '")'])
+  call cursor(1, 6)
+  normal va)y
+  call assert_equal('(a "b" )', @")
+
+  call setline(1, ['x" [a "b" ]\', '"]'])
+  call cursor(1, 6)
+  normal va]y
+  call assert_equal('[a "b" ]', @")
 
   bw!
 endfunc

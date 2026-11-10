@@ -1,6 +1,9 @@
 #pragma once
 
+#include <stddef.h>
 #include <stdint.h>
+
+#include "klib/kvec.h"
 
 // dummy to pass an ACL to a function
 typedef void *vim_acl_T;
@@ -11,6 +14,10 @@ typedef uint32_t schar_T;
 typedef int32_t sattr_T;
 // must be at least as big as the biggest of schar_T, sattr_T, colnr_T
 typedef int32_t sscratch_T;
+
+// Includes final NUL. MAX_MCO is no longer used, but at least 4*(MAX_MCO+1)+1=29
+// ensures we can fit all composed chars which did fit before.
+#define MAX_SCHAR_SIZE 32
 
 // Opaque handle used by API clients to refer to various objects in vim
 typedef int handle_T;
@@ -25,9 +32,11 @@ typedef double float_T;
 
 typedef struct MsgpackRpcRequestHandler MsgpackRpcRequestHandler;
 
+/// vimfn metatdata defined in `src/nvim/eval.lua`.
 typedef union {
-  float_T (*float_func)(float_T);
-  const MsgpackRpcRequestHandler *api_handler;
+  float_T (*func_float)(float_T);
+  const MsgpackRpcRequestHandler *func_api;  // Vimscript bridge to API fn (eval=true in eval.lua).
+  const char *func_lua;  ///< Lua-implemented vimfn.
   void *null;
 } EvalFuncData;
 
@@ -56,3 +65,32 @@ typedef struct regprog regprog_T;
 typedef struct syn_state synstate_T;
 typedef struct terminal Terminal;
 typedef struct window_S win_T;
+typedef struct mtnode_s MTNode;
+
+typedef struct {
+  uint32_t nitems;
+  uint32_t nbytes;
+  char data[];
+} AdditionalData;
+
+// Used by marktree.c `marktree_splice`. Need to keep track of marks which moved
+// in order to repair intersections.
+typedef struct {
+  MTNode *old, *new;
+  int old_i, new_i;
+} MTDamage;
+typedef struct {
+  MTDamage start;
+  MTDamage end;
+} MTDamagePair;
+#define MTDAMAGE_INIT { .old = NULL, .new = NULL, .old_i = 0, .new_i = 0 }
+#define MTDAMAGE_PAIR_INIT { .start = MTDAMAGE_INIT, .end = MTDAMAGE_INIT }
+
+/// Borrowed writable storage. Never allocated or freed by the callee.
+/// Unlike String.size, size is the buffer capacity, not the content length.
+typedef struct {
+  char *data;
+  size_t size;  ///< Total writable bytes, including any space for a terminating NUL.
+} CharBuf;
+
+typedef kvec_t(char) StringBuilder;

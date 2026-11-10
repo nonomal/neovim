@@ -1,9 +1,15 @@
+local t = require('test.testutil')
 local n = require('test.functional.testnvim')()
 
+local it, before_each, finally = t.it, t.before_each, t.finally
 local assert_alive = n.assert_alive
 local clear = n.clear
 local command = n.command
+local eq = t.eq
+local eval = n.eval
+local exec = n.exec
 local feed = n.feed
+local pcall_err = t.pcall_err
 
 before_each(clear)
 
@@ -15,7 +21,12 @@ it('no crash when ending Visual mode while editing buffer closes window', functi
   assert_alive()
 end)
 
-it('no crash when ending Visual mode close the window to switch to', function()
+it('no crash when ending Visual mode closes the window being closed', function()
+  command('source test/old/testdir/crash/poc_modechanged.vim')
+  assert_alive()
+end)
+
+it('no crash when ending Visual mode closes the window to switch to', function()
   command('new')
   command('autocmd ModeChanged v:n ++once only')
   feed('v')
@@ -30,5 +41,41 @@ end)
 
 it('no crash with very long option error message', function()
   pcall(command, 'source test/old/testdir/crash/poc_did_set_langmap')
+  assert_alive()
+end)
+
+it('no crash when closing window with tag in loclist', function()
+  exec([[
+    new
+    lexpr ['foo']
+    lopen
+    let g:qf_bufnr = bufnr()
+    lclose
+    call settagstack(1, #{items: [#{tagname: 'foo', from: [g:qf_bufnr, 1, 1, 0]}]})
+  ]])
+  eq(1, eval('bufexists(g:qf_bufnr)'))
+  command('1close')
+  eq(0, eval('bufexists(g:qf_bufnr)'))
+  assert_alive()
+end)
+
+it('no crash when writing "Untitled" file fails', function()
+  t.mkdir('Untitled')
+  finally(function()
+    vim.uv.fs_rmdir('Untitled')
+  end)
+  feed('ifoobar')
+  command('set bufhidden=unload')
+  eq('Vim(enew):E502: "Untitled" is a directory', pcall_err(command, 'confirm enew'))
+  assert_alive()
+end)
+
+-- oldtest: Test_crash_bufwrite()
+it('no crash when converting buffer with incomplete multibyte chars', function()
+  command('edit ++bin test/old/testdir/samples/buffer-test.txt')
+  finally(function()
+    os.remove('Xoutput')
+  end)
+  command('w! ++enc=ucs4 Xoutput')
   assert_alive()
 end)

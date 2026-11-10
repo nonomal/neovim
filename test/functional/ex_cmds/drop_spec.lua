@@ -1,6 +1,8 @@
 local n = require('test.functional.testnvim')()
+local t = require('test.testutil')
 local Screen = require('test.functional.ui.screen')
 
+local describe, it, before_each = t.describe, t.it, t.before_each
 local command = n.command
 local clear, feed, feed_command = n.clear, n.feed, n.feed_command
 local exec = n.exec
@@ -11,7 +13,6 @@ describe(':drop', function()
   before_each(function()
     clear()
     screen = Screen.new(35, 10)
-    screen:attach()
     screen:set_default_attr_ids({
       [0] = { bold = true, foreground = Screen.colors.Blue },
       [1] = { bold = true, reverse = true },
@@ -74,6 +75,27 @@ describe(':drop', function()
       {0:~                                  }|*6
       {1:Xdrop_modified.txt [+]             }|
       :drop Xdrop_modified.txt           |
+    ]])
+  end)
+
+  it('jumps to line number when passed +line', function()
+    exec([[
+      edit Xdrop_line.txt
+      call append(0, "I just miss doing art. Don't you?")
+      call append(1, "It is not so hard as we have supposed.")
+      call append(2, "We are propelled by disaster. We are moving swiftly.")
+    ]])
+    feed_command('drop +2 Xdrop_line.txt')
+    screen:expect([[
+      I just miss doing art. Don't you?  |
+      ^It is not so hard as we have suppos|
+      ed.                                |
+      We are propelled by disaster. We ar|
+      e moving swiftly.                  |
+                                         |
+      {0:~                                  }|*2
+      {1:Xdrop_line.txt [+]                 }|
+      :drop +2 Xdrop_line.txt            |
     ]])
   end)
 end)

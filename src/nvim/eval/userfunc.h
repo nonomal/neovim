@@ -32,9 +32,9 @@
 
 /// Structure used by trans_function_name()
 typedef struct {
-  dict_T *fd_dict;  ///< Dictionary used.
-  char *fd_newkey;  ///< New key in "dict" in allocated memory.
-  dictitem_T *fd_di;  ///< Dictionary item used.
+  dict_T *fd_dict;    ///< Dict used.
+  char *fd_newkey;    ///< New key in "dict" in allocated memory.
+  dictitem_T *fd_di;  ///< Dict item used.
 } funcdict_T;
 
 typedef struct funccal_entry funccal_entry_T;
@@ -69,7 +69,7 @@ typedef struct {
   bool *fe_doesrange;     ///< [out] if not NULL: function handled range
   bool fe_evaluate;       ///< actually evaluate expressions
   partial_T *fe_partial;  ///< for extra arguments
-  dict_T *fe_selfdict;    ///< Dictionary for "self"
+  dict_T *fe_selfdict;    ///< Dict for "self"
   typval_T *fe_basetv;    ///< base for base->method()
   bool fe_found_var;      ///< if the function is not found then give an
                           ///< error that a variable is not callable.
@@ -90,6 +90,4 @@ typedef struct {
 #define FUNCARG(fp, j)  ((char **)(fp->uf_args.ga_data))[j]
 #define FUNCLINE(fp, j) ((char **)(fp->uf_lines.ga_data))[j]
 
-#ifdef INCLUDE_GENERATED_DECLARATIONS
-# include "eval/userfunc.h.generated.h"
-#endif
+#include "eval/userfunc.h.generated.h"

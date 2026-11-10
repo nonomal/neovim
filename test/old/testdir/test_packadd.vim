@@ -27,6 +27,13 @@ func Test_packadd()
   " plugdir should be inserted before plugdir/after
   call assert_match('^nosuchdir,' . s:plugdir . ',', &rtp)
 
+  " This used to cause heep-buffer-overflow
+  " All existing entries in 'rtp' have the same length here
+  let &rtp = 'Xfoodir,Xbardir,Xbazdir'
+  packadd mytest
+  " plugdir should be inserted after the existing directories
+  call assert_match('^Xfoodir,Xbardir,Xbazdir,' .. s:plugdir .. ',', &rtp)
+
   set rtp&
   let rtp = &rtp
   filetype on
@@ -256,6 +263,19 @@ func Test_packloadall()
   " works when ! used
   packloadall!
   call assert_equal(4321, g:plugin_bar_number)
+endfunc
+
+func Test_start_autoload()
+  " plugin foo with an autoload directory
+  let autodir = &packpath .. '/pack/mine/start/foo/autoload'
+  call mkdir(autodir, 'p')
+  let fname = autodir .. '/foobar.vim'
+  call writefile(['func foobar#test()',
+	\ '  return 1666',
+	\ 'endfunc'], fname)
+
+  call assert_equal(1666, foobar#test())
+  call delete(fname)
 endfunc
 
 func Test_helptags()

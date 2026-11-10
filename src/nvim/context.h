@@ -1,45 +1,14 @@
 #pragma once
 
-#include <msgpack/sbuffer.h>
-#include <stddef.h>
+#include <stddef.h>  // IWYU pragma: keep
+#include <stdint.h>
 
-#include "klib/kvec.h"
-#include "nvim/api/private/defs.h"
+#include "nvim/context_defs.h"  // IWYU pragma: export
+#include "nvim/macros_defs.h"
 
-typedef struct {
-  msgpack_sbuffer regs;     ///< Registers.
-  msgpack_sbuffer jumps;    ///< Jumplist.
-  msgpack_sbuffer bufs;     ///< Buffer list.
-  msgpack_sbuffer gvars;    ///< Global variables.
-  Array funcs;              ///< Functions.
-} Context;
-typedef kvec_t(Context) ContextVec;
+/// Pool of temporary scratch windows (fka "autocmd windows"), for ctx_switch().
+EXTERN kvec_t(CtxWin) ctx_win_vec INIT( = KV_INITIAL_VALUE);
+#define ctx_win (ctx_win_vec.items)
+#define CTX_WIN_COUNT ((int)ctx_win_vec.size)
 
-#define MSGPACK_SBUFFER_INIT (msgpack_sbuffer) { \
-  .size = 0, \
-  .data = NULL, \
-  .alloc = 0, \
-}
-
-#define CONTEXT_INIT (Context) { \
-  .regs = MSGPACK_SBUFFER_INIT, \
-  .jumps = MSGPACK_SBUFFER_INIT, \
-  .bufs = MSGPACK_SBUFFER_INIT, \
-  .gvars = MSGPACK_SBUFFER_INIT, \
-  .funcs = ARRAY_DICT_INIT, \
-}
-
-typedef enum {
-  kCtxRegs = 1,       ///< Registers
-  kCtxJumps = 2,      ///< Jumplist
-  kCtxBufs = 4,       ///< Buffer list
-  kCtxGVars = 8,      ///< Global variables
-  kCtxSFuncs = 16,    ///< Script functions
-  kCtxFuncs = 32,     ///< Functions
-} ContextTypeFlags;
-
-extern int kCtxAll;
-
-#ifdef INCLUDE_GENERATED_DECLARATIONS
-# include "context.h.generated.h"
-#endif
+#include "context.h.generated.h"

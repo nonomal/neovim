@@ -1,5 +1,9 @@
 " Tests for user defined commands
 
+source check.vim
+source screendump.vim
+source vim9.vim
+
 " Test for <mods> in user defined commands
 function Test_cmdmods()
   let g:mods = ''
@@ -304,17 +308,33 @@ func Test_CmdErrors()
   call assert_fails('com! -complete=custom DoCmd :', 'E467:')
   call assert_fails('com! -complete=customlist DoCmd :', 'E467:')
   " call assert_fails('com! -complete=behave,CustomComplete DoCmd :', 'E468:')
-  call assert_fails('com! -complete=file DoCmd :', 'E1208:')
-  call assert_fails('com! -nargs=0 -complete=file DoCmd :', 'E1208:')
   call assert_fails('com! -nargs=x DoCmd :', 'E176:')
   call assert_fails('com! -count=1 -count=2 DoCmd :', 'E177:')
   call assert_fails('com! -count=x DoCmd :', 'E178:')
   call assert_fails('com! -range=x DoCmd :', 'E178:')
 
+  call assert_fails('com! -complete=file DoCmd :', 'E1208:')
+  call assert_fails('com! -nargs=0 -complete=file DoCmd :', 'E1208:')
+
+  let lines =<< trim END
+      vim9script
+      com! -complete=file DoCmd :
+  END
+  call CheckScriptFailure(lines, 'E1208:', 2)
+
+  let lines =<< trim END
+      vim9script
+      com! -nargs=0 -complete=file DoCmd :
+  END
+  call CheckScriptFailure(lines, 'E1208:', 2)
+
   com! -nargs=0 DoCmd :
   call assert_fails('DoCmd x', 'E488:')
 
   com! -nargs=1 DoCmd :
+  call assert_fails('DoCmd', 'E471:')
+
+  com! -nargs=_ DoCmd :
   call assert_fails('DoCmd', 'E471:')
 
   com! -nargs=+ DoCmd :
@@ -338,6 +358,14 @@ func CustomCompleteList(A, L, P)
   return [ "Monday", "Tuesday", "Wednesday", {}, v:_null_string]
 endfunc
 
+func CustomCompleteListWithSpaces(A, L, P)
+  return [ "Monday Here", "Tuesday There", "Wednesday OK", {}, v:_null_string]
+endfunc
+
+func CustomCompleteListFuzzy(A, L, P)
+  return [ "Monday Here", "Tuesday There", "Wednesday OK", {}, v:_null_string]->matchfuzzy(a:A)
+endfunc
+
 func Test_CmdCompletion()
   call feedkeys(":com -\<C-A>\<C-B>\"\<CR>", 'tx')
   call assert_equal('"com -addr bang bar buffer complete count keepscript nargs range register', @:)
@@ -346,7 +374,7 @@ func Test_CmdCompletion()
   call assert_equal('"com -nargs=0 -addr bang bar buffer complete count keepscript nargs range register', @:)
 
   call feedkeys(":com -nargs=\<C-A>\<C-B>\"\<CR>", 'tx')
-  call assert_equal('"com -nargs=* + 0 1 ?', @:)
+  call assert_equal('"com -nargs=* + 0 1 ? _', @:)
 
   call feedkeys(":com -addr=\<C-A>\<C-B>\"\<CR>", 'tx')
   call assert_equal('"com -addr=arguments buffers lines loaded_buffers other quickfix tabs windows', @:)
@@ -361,6 +389,14 @@ func Test_CmdCompletion()
   " command completion after the name in a user defined command
   call feedkeys(":com MyCmd chist\<Tab>\<C-B>\"\<CR>", 'tx')
   call assert_equal("\"com MyCmd chistory", @:)
+
+  " delete the Check commands to avoid them showing up
+  call feedkeys(":com Check\<C-A>\<C-B>\"\<CR>", 'tx')
+  let cmds = substitute(@:, '"com ', '', '')->split()
+  for cmd in cmds
+    exe 'delcommand ' .. cmd
+  endfor
+  delcommand MissingFeature
 
   command! DoCmd1 :
   command! DoCmd2 :
@@ -395,13 +431,38 @@ func Test_CmdCompletion()
   " call feedkeys(":DoCmd \<C-A>\<C-B>\"\<CR>", 'tx')
   " call assert_equal('"DoCmd mswin xterm', @:)
 
+  " com! -nargs=_ -complete=behave DoCmd :
+  " call feedkeys(":DoCmd \<C-A>\<C-B>\"\<CR>", 'tx')
+  " call assert_equal('"DoCmd mswin xterm', @:)
+
+  com! -nargs=1 -complete=retab DoCmd :
+  call feedkeys(":DoCmd \<C-A>\<C-B>\"\<CR>", 'tx')
+  call assert_equal('"DoCmd -indentonly', @:)
+
+  com! -nargs=_ -complete=retab DoCmd :
+  call feedkeys(":DoCmd \<C-A>\<C-B>\"\<CR>", 'tx')
+  call assert_equal('"DoCmd -indentonly', @:)
+
   " Test for file name completion
   com! -nargs=1 -complete=file DoCmd :
   call feedkeys(":DoCmd READM\<Tab>\<C-B>\"\<CR>", 'tx')
   call assert_equal('"DoCmd README.txt', @:)
 
+  com! -nargs=_ -complete=file DoCmd :
+  call feedkeys(":DoCmd READM\<Tab>\<C-B>\"\<CR>", 'tx')
+  call assert_equal('"DoCmd README.txt', @:)
+
   " Test for buffer name completion
   com! -nargs=1 -complete=buffer DoCmd :
+  let bnum = bufadd('BufForUserCmd')
+  call setbufvar(bnum, '&buflisted', 1)
+  call feedkeys(":DoCmd BufFor\<Tab>\<C-B>\"\<CR>", 'tx')
+  call assert_equal('"DoCmd BufForUserCmd', @:)
+  bwipe BufForUserCmd
+  call feedkeys(":DoCmd BufFor\<Tab>\<C-B>\"\<CR>", 'tx')
+  call assert_equal('"DoCmd BufFor', @:)
+
+  com! -nargs=_ -complete=buffer DoCmd :
   let bnum = bufadd('BufForUserCmd')
   call setbufvar(bnum, '&buflisted', 1)
   call feedkeys(":DoCmd BufFor\<Tab>\<C-B>\"\<CR>", 'tx')
@@ -417,6 +478,14 @@ func Test_CmdCompletion()
   com! -nargs=? -complete=customlist,CustomCompleteList DoCmd :
   call feedkeys(":DoCmd \<C-A>\<C-B>\"\<CR>", 'tx')
   call assert_equal('"DoCmd Monday Tuesday Wednesday', @:)
+
+  com! -nargs=_ -complete=customlist,CustomCompleteListWithSpaces DoCmd :
+  call feedkeys(":DoCmd \<C-A>\<C-B>\"\<CR>", 'tx')
+  call assert_equal('"DoCmd Monday Here Tuesday There Wednesday OK', @:)
+
+  com! -nargs=_ -complete=customlist,CustomCompleteListFuzzy DoCmd :
+  call feedkeys(":DoCmd mo he\<C-A>\<C-B>\"\<CR>", 'tx')
+  call assert_equal('"DoCmd Monday Here', @:)
 
   com! -nargs=+ -complete=custom,CustomCompleteList DoCmd :
   call assert_fails("call feedkeys(':DoCmd \<C-D>', 'tx')", 'E730:')
@@ -520,6 +589,27 @@ func Test_addr_all()
   delcommand DoSomething
 endfunc
 
+func Test_nargs_underscore_fargs()
+  " -nargs=_ must behave like -nargs=1 for <f-args>/<q-args>:
+  " the whole argument is one token, whitespace is part of it.
+  let g:res = []
+  com! -nargs=1 DoCmd1 call add(g:res, [<f-args>])
+  com! -nargs=_ DoCmdU call add(g:res, [<f-args>])
+  DoCmd1 a b c
+  DoCmdU a b c
+  call assert_equal([['a b c'], ['a b c']], g:res)
+
+  let g:res = []
+  com! -nargs=_ DoCmdQ call add(g:res, <q-args>)
+  DoCmdQ a b c
+  call assert_equal(['a b c'], g:res)
+
+  delcom DoCmd1
+  delcom DoCmdU
+  delcom DoCmdQ
+  unlet g:res
+endfunc
+
 func Test_command_list()
   command! DoCmd :
   call assert_equal("\n    Name              Args Address Complete    Definition"
@@ -579,6 +669,10 @@ func Test_command_list()
   call assert_equal("\n    Name              Args Address Complete    Definition"
         \        .. "\n    DoCmd             1            arglist     :",
         \           execute('command DoCmd'))
+  command! -nargs=_ -complete=arglist DoCmd :
+  call assert_equal("\n    Name              Args Address Complete    Definition"
+        \        .. "\n    DoCmd             _            arglist     :",
+        \           execute('command DoCmd'))
   command! -nargs=* -complete=augroup DoCmd :
   call assert_equal("\n    Name              Args Address Complete    Definition"
         \        .. "\n    DoCmd             *            augroup     :",
@@ -600,6 +694,10 @@ func Test_command_list()
   command! -nargs=1 DoCmd :
   call assert_equal("\n    Name              Args Address Complete    Definition"
         \        .. "\n    DoCmd             1                        :",
+        \           execute('command DoCmd'))
+  command! -nargs=_ DoCmd :
+  call assert_equal("\n    Name              Args Address Complete    Definition"
+        \        .. "\n    DoCmd             _                        :",
         \           execute('command DoCmd'))
   command! -nargs=* DoCmd :
   call assert_equal("\n    Name              Args Address Complete    Definition"
@@ -715,7 +813,7 @@ func Test_recursive_define()
   call DefCmd('Command')
 
   let name = 'Command'
-  while len(name) < 30
+  while len(name) <= 30
     exe 'delcommand ' .. name
     let name ..= 'x'
   endwhile
@@ -738,6 +836,7 @@ endfunc
 
 " Test for using buffer-local user command from cmdwin.
 func Test_buflocal_usercmd_cmdwin()
+  throw 'Skipped: Nvim supports cmdwin freedom #40312'
   new
   command -buffer TestCmd edit Test
   " This used to crash Vim
@@ -754,6 +853,64 @@ func Test_multibyte_in_usercmd()
   call assert_equal('Hello.', getline(1))
   bw!
   delcommand SubJapanesePeriodToDot
+endfunc
+
+" Test for listing user commands.
+func Test_command_list_0()
+  " Check space padding of attribute and name in command list
+  set vbs&
+  command! ShortCommand echo "ShortCommand"
+  command! VeryMuchLongerCommand echo "VeryMuchLongerCommand"
+
+  redi @"> | com | redi END
+  pu
+
+  let bl = matchbufline(bufnr('%'), "^    ShortCommand      0", 1, '$')
+  call assert_false(bl == [])
+  let bl = matchbufline(bufnr('%'), "^    VeryMuchLongerCommand 0", 1, '$')
+  call assert_false(bl == [])
+
+  bwipe!
+  delcommand ShortCommand
+  delcommand VeryMuchLongerCommand
+endfunc
+
+" Test for a block of ":command" or ":autocmd" in a block that is not
+" executed: the lines up to the "}" are skipped, not parsed as commands.
+func Test_command_block_skipped()
+  throw 'Skipped: Vim9 script is N/A'
+  let lines =<< trim END
+    vim9script
+    def Something(s: string)
+      echo s
+    enddef
+    if 0
+      command! -bar -nargs=? Xfoo {
+        Something(<q-args>)
+      }
+    endif
+    if 0
+      autocmd BufRead *.xyz {
+        Something(<q-args>)
+      }
+    endif
+    while 0
+      command! Xbar {
+        Something('x')
+      }
+    endwhile
+    g:skipped = 'all three'
+  END
+  call writefile(lines, 'Xcmdblock.vim', 'D')
+
+  let g:skipped = ''
+  source Xcmdblock.vim
+  call assert_equal('all three', g:skipped)
+  call assert_equal(0, exists(':Xfoo'))
+  call assert_equal(0, exists(':Xbar'))
+  call assert_notmatch('xyz', execute('autocmd BufRead'))
+
+  unlet g:skipped
 endfunc
 
 " vim: shiftwidth=2 sts=2 expandtab

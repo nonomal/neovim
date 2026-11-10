@@ -5,6 +5,7 @@ source check.vim
 CheckFeature spell
 
 source screendump.vim
+source view_util.vim
 
 func TearDown()
   set nospell
@@ -124,6 +125,7 @@ foobar/?
 
   set spelllang=
   call assert_fails("call spellbadword('maxch')", 'E756:')
+  call assert_fails("spelldump", 'E756:')
 
   call delete('Xwords.spl')
   call delete('Xwords')
@@ -300,6 +302,20 @@ func Test_compl_with_CTRL_X_CTRL_K_using_spell()
   set spell& spelllang& dictionary& ignorecase&
 endfunc
 
+func Test_compl_with_CTRL_X_s()
+  new
+  set spell spelllang=en_us showmode
+  inoremap <buffer><F2> <Cmd>let g:msg = Screenline(&lines)<CR>
+
+  call feedkeys("STheatre\<C-X>s\<F2>\<C-Y>\<Esc>", 'tx')
+  call assert_equal(['Theater'], getline(1, '$'))
+  call assert_match('(^S^N^P)', g:msg)
+
+  bwipe!
+  set spell& spelllang& showmode&
+  unlet g:msg
+endfunc
+
 func Test_spellrepall()
   new
   set spell
@@ -450,15 +466,16 @@ func Test_spellsuggest_option_number()
   call assert_equal('A baord', getline(1))
 
   let a = execute('norm $z=')
+  " Nvim: z= goes through vim.ui.select().
   call assert_equal(
   \    "\n"
   \ .. "Change \"baord\" to:\n"
-  \ .. " 1 \"board\"\n"
-  \ .. " 2 \"bard\"\n"
-  \ .. "Type number and <Enter> or click with the mouse (q or empty cancels): ", a)
+  \ .. "1: \"board\"\n"
+  \ .. "2: \"bard\"\n"
+  \ , a)
 
   set spell spellsuggest=0
-  call assert_equal("\nSorry, no suggestions", execute('norm $z='))
+  call assert_equal("\nNo suggestions", execute('norm $z='))
 
   " Unlike z=, function spellsuggest(...) should not be affected by the
   " max number of suggestions (2) set by the 'spellsuggest' option.
@@ -487,13 +504,14 @@ func Test_spellsuggest_option_expr()
   new
   call setline(1, 'baord')
   let a = execute('norm z=')
+  " Nvim: z= goes through vim.ui.select().
   call assert_equal(
   \    "\n"
   \ .. "Change \"baord\" to:\n"
-  \ .. " 1 \"BARD\"\n"
-  \ .. " 2 \"BOARD\"\n"
-  \ .. " 3 \"BROAD\"\n"
-  \ .. "Type number and <Enter> or click with the mouse (q or empty cancels): ", a)
+  \ .. "1: \"BARD\"\n"
+  \ .. "2: \"BOARD\"\n"
+  \ .. "3: \"BROAD\"\n"
+  \ , a)
 
   " With verbose, z= should show the score i.e. word length with
   " our SpellSuggest() function.
@@ -502,10 +520,10 @@ func Test_spellsuggest_option_expr()
   call assert_equal(
   \    "\n"
   \ .. "Change \"baord\" to:\n"
-  \ .. " 1 \"BARD\"                      (4 - 0)\n"
-  \ .. " 2 \"BOARD\"                     (5 - 0)\n"
-  \ .. " 3 \"BROAD\"                     (5 - 0)\n"
-  \ .. "Type number and <Enter> or click with the mouse (q or empty cancels): ", a)
+  \ .. "1: \"BARD\" (4 - 0)\n"
+  \ .. "2: \"BOARD\" (5 - 0)\n"
+  \ .. "3: \"BROAD\" (5 - 0)\n"
+  \ , a)
 
   set spell& spellsuggest& verbose&
   bwipe!
@@ -796,8 +814,8 @@ func Test_zz_sal_and_addition()
   throw 'skipped: Nvim does not support enc=latin1'
   set enc=latin1
   set spellfile=
-  call writefile(g:test_data_dic1, "Xtest.dic")
-  call writefile(g:test_data_aff_sal, "Xtest.aff")
+  call writefile(g:test_data_dic1, "Xtest.dic", 'D')
+  call writefile(g:test_data_aff_sal, "Xtest.aff", 'D')
   mkspell! Xtest Xtest
   set spl=Xtest.latin1.spl spell
   call assert_equal('kbltykk', soundfold('goobledygoook'))
@@ -805,7 +823,7 @@ func Test_zz_sal_and_addition()
   call assert_equal('*fls kswts tl', soundfold('oeverloos gezwets edale'))
 
   "also use an addition file
-  call writefile(["/regions=usgbnz", "elequint/2", "elekwint/3"], "Xtest.latin1.add")
+  call writefile(["/regions=usgbnz", "elequint/2", "elekwint/3"], "Xtest.latin1.add", 'D')
   mkspell! Xtest.latin1.add.spl Xtest.latin1.add
 
   bwipe!
@@ -842,10 +860,9 @@ endfunc
 
 func Test_region_error()
   messages clear
-  call writefile(["/regions=usgbnz", "elequint/0"], "Xtest.latin1.add")
+  call writefile(["/regions=usgbnz", "elequint/0"], "Xtest.latin1.add", 'D')
   mkspell! Xtest.latin1.add.spl Xtest.latin1.add
   call assert_match('Invalid region nr in Xtest.latin1.add line 2: 0', execute('messages'))
-  call delete('Xtest.latin1.add')
   call delete('Xtest.latin1.add.spl')
 endfunc
 
@@ -902,7 +919,10 @@ func Test_spellsuggest_too_deep()
   " This was incrementing "depth" over MAXWLEN.
   new
   norm s000G00ý000000000000
-  sil norm ..vzG................vvzG0     v z=
+  try
+    sil norm ..vzG................vvzG0     v z=
+  catch /E759:/
+  endtry
   bwipe!
 endfunc
 
@@ -1557,5 +1577,67 @@ let g:test_data_aff_sal = [
       \"SAL ZZ-                  _",
       \"SAL Z                    S",
       \ ]
+
+func Test_suggest_spell_restore()
+  norm! z=
+  call assert_equal(0, &spell)
+  set spelllang=
+  sil! norm! z=
+  call assert_equal(0, &spell)
+  set spelllang=en
+  call setline(1, ['1','2'])
+  norm! vjz=
+  call assert_equal(0, &spell)
+  set spelllang&
+  bwipe!
+endfunc
+
+" A crafted .spl with a self-referential BY_INDEX node in the PREFIXTREE drove
+" dump_prefixes() past its MAXWLEN-sized depth arrays (stack out-of-bounds
+" write).  The tree parses cleanly (shared refs aren't recursed); the walk
+" happens on :spelldump.  Reaching the assert means no OOB.  Same class as the
+" tree_count_words() fix (9.2.0653).
+func Test_spelldump_prefixtree_overflow()
+  CheckUnix
+  let save_rtp = &runtimepath
+  call mkdir('Xrtp/spell', 'pR')
+  " VIMspell + v50, SN_PREFCOND(prefixcnt=1), SN_END,
+  " LWORDTREE word "a" with affixID=1 (so dump_prefixes runs),
+  " empty KWORDTREE, PREFIXTREE child BY_INDEX -> nodeidx 0 (self-cycle), 'A'
+  let spl = eval('0z56494D7370656C6C32030000000003000100FF00000004'
+        \ .. '0161010220010000000000000002010100000041')
+  call writefile(spl, 'Xrtp/spell/xx.utf-8.spl', 'b')
+
+  new
+  set runtimepath+=./Xrtp
+  set spelllang=xx
+  set spell
+  spelldump
+  call assert_true(line('$') > 1)
+
+  set spell& spelllang&
+  let &runtimepath = save_rtp
+  bwipe!
+  bwipe!
+endfunc
+
+" This was using the cursor position from before a SpellFileMissing
+" autocommand made the line shorter.
+func Test_spell_file_missing_z_equal()
+  new
+  call setline(1, repeat('a', 40))
+  call cursor(1, 30)
+  set spelllang=xy
+  au SpellFileMissing * call setline(1, 'ab')
+
+  " The language cannot be loaded, so z= reports E756; the invalid cursor
+  " position was used before that error reached the script level.
+  silent! norm! z=
+  call assert_equal('ab', getline(1))
+
+  au! SpellFileMissing
+  set nospell spelllang=en
+  bwipe!
+endfunc
 
 " vim: shiftwidth=2 sts=2 expandtab

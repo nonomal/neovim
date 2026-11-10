@@ -289,4 +289,50 @@ func Test_FileChangedShell_newbuf()
   call delete('Xfile')
 endfunc
 
+func Test_file_changed_wipeout()
+  call writefile(['foo'], 'Xchanged_bw', 'D')
+  edit Xchanged_bw
+  augroup FileChangedWipeout
+    autocmd FileChangedShell * ++once let v:fcs_choice = 'reload'
+    autocmd BufReadPost * ++once %bw!
+  augroup END
+
+  " Need to wait until the timestamp would change.
+  if has('nanotime')
+    sleep 10m
+  else
+    sleep 2
+  endif
+  call writefile(['bar'], 'Xchanged_bw')
+  call assert_equal(1, bufexists('Xchanged_bw'))
+  checktime " used to be a heap UAF
+  call assert_equal(0, bufexists('Xchanged_bw'))
+
+  au! FileChangedWipeout
+  %bw!
+endfunc
+
+" Cursor in a window in another tab page is valid after reload
+func Test_file_changed_other_tabpage()
+  call writefile(range(1, 10), 'Xchanged_tab', 'D')
+  edit Xchanged_tab
+  set autoread
+  normal! G
+  let winid = win_getid()
+  tabnew
+
+  " Need to wait until the timestamp would change.
+  if has('nanotime')
+    sleep 10m
+  else
+    sleep 2
+  endif
+  call writefile(range(1, 5), 'Xchanged_tab')
+  checktime
+  call assert_equal(5, getcurpos(winid)[1])
+
+  set autoread&
+  %bw!
+endfunc
+
 " vim: shiftwidth=2 sts=2 expandtab

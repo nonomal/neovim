@@ -34,11 +34,11 @@ typedef struct {
   bool rgb;
   bool override;  ///< Force highest-requested UI capabilities.
   bool composed;
-  bool ui_ext[kUIExtCount];  ///< Externalized UI capabilities.
+  bool ui_ext[kUIExtCount];  ///< UI capabilities/extensions.
   int width;
   int height;
-  int pum_nlines;  /// actual nr. lines shown in PUM
-  bool pum_pos;  /// UI reports back pum position?
+  int pum_nlines;  ///< actual nr. lines shown in PUM
+  bool pum_pos;  ///< UI reports back pum position?
   double pum_row;
   double pum_col;
   double pum_height;
@@ -63,7 +63,6 @@ typedef struct {
   PackerBuffer packer;
 
   const char *cur_event;  ///< name of current event (might get multiple arglists)
-  Array call_buf;  ///< buffer for constructing a single arg list (max 16 elements!)
 
   // We start packing the two outermost msgpack arrays before knowing the total
   // number of elements. Thus track the location where array size will need
@@ -73,6 +72,7 @@ typedef struct {
   uint32_t nevents;  ///< number of distinct events (top-level args to "redraw"
   uint32_t ncalls;  ///< number of calls made to the current event (plus one for the name!)
   bool flushed_events;  ///< events where sent to client without "flush" event
+  bool incomplete_event;  ///< incomplete event might be pending
 
   size_t ncells_pending;  ///< total number of cells since last buffer flush
 

@@ -2,15 +2,16 @@ local t = require('test.testutil')
 local n = require('test.functional.testnvim')()
 local Screen = require('test.functional.ui.screen')
 
+local describe, it, before_each, after_each = t.describe, t.it, t.before_each, t.after_each
 local clear = n.clear
 local feed = n.feed
 local eq = t.eq
+local pcall_err = t.pcall_err
 local expect = n.expect
 local eval = n.eval
 local fn = n.fn
 local insert = n.insert
 local write_file = t.write_file
-local exc_exec = n.exc_exec
 local command = n.command
 
 describe('mappings with <Cmd>', function()
@@ -37,7 +38,6 @@ describe('mappings with <Cmd>', function()
       [9] = { background = Screen.colors.LightMagenta },
       [10] = { foreground = Screen.colors.Red },
     })
-    screen:attach()
 
     cmdmap('<F3>', 'let m = mode(1)')
     cmdmap('<F4>', 'normal! ww')
@@ -228,7 +228,7 @@ describe('mappings with <Cmd>', function()
     feed('<F7>')
     screen:expect([[
       so{5:me short lines}                                                 |
-      {5:of }^test text                                                     |
+      {5:of ^t}est text                                                     |
       {1:~                                                                }|*5
       {4:-- VISUAL --}                                                     |
     ]])
@@ -286,9 +286,9 @@ describe('mappings with <Cmd>', function()
       :normal ,x                                                       |
     ]])
 
-    eq('Vim:E492: Not an editor command: nosuchcommand', exc_exec('normal ,f'))
-    eq('very error', exc_exec('normal ,e'))
-    eq('Vim(echoerr):The message.', exc_exec('normal ,m'))
+    eq('Vim:E492: Not an editor command: nosuchcommand', pcall_err(command, 'normal ,f'))
+    eq('very error', pcall_err(command, 'normal ,e'))
+    eq('Vim(echoerr):The message.', pcall_err(command, 'normal ,m'))
     feed('w')
     screen:expect([[
       some ^short lines                                                 |
@@ -300,7 +300,7 @@ describe('mappings with <Cmd>', function()
     ]])
 
     command(':%d')
-    eq('Vim(echoerr):Err', exc_exec('normal ,w'))
+    eq('Vim(echoerr):Err', pcall_err(command, 'normal ,w'))
     screen:expect([[
       ^                                                                 |
       0                                                                |
@@ -326,7 +326,7 @@ describe('mappings with <Cmd>', function()
     -- can extend visual mode
     feed('v<F4>')
     screen:expect([[
-      {5:some short }^lines                                                 |
+      {5:some short ^l}ines                                                 |
       of test text                                                     |
       {1:~                                                                }|*5
       {4:-- VISUAL --}                                                     |
@@ -341,11 +341,11 @@ describe('mappings with <Cmd>', function()
     -- error doesn't interrupt visual mode
     feed('ggvw<F6>')
     screen:expect([[
-      {5:some }short lines                                                 |
+      {5:some s}hort lines                                                 |
       of test text                                                     |
       {1:~                                                                }|*2
       {7:                                                                 }|
-      {2:Error detected while processing :}                                |
+      {2:Error in :}                                                       |
       {2:E605: Exception not caught: very error}                           |
       {3:Press ENTER or type command to continue}^                          |
     ]])
@@ -353,7 +353,7 @@ describe('mappings with <Cmd>', function()
     eq('E605: Exception not caught: very error', eval('v:errmsg'))
     -- still in visual mode, <cr> was consumed by the error prompt
     screen:expect([[
-      {5:some }^short lines                                                 |
+      {5:some ^s}hort lines                                                 |
       of test text                                                     |
       {1:~                                                                }|*5
       {4:-- VISUAL --}                                                     |
@@ -362,7 +362,7 @@ describe('mappings with <Cmd>', function()
     feed('<F7>')
     screen:expect([[
       so{5:me short lines}                                                 |
-      {5:of }^test text                                                     |
+      {5:of ^t}est text                                                     |
       {1:~                                                                }|*5
       {4:-- VISUAL --}                                                     |
     ]])
@@ -372,7 +372,7 @@ describe('mappings with <Cmd>', function()
     feed('<F8>')
     screen:expect([[
       so{5:me short lines}                                                 |
-      {5:of }^test text                                                     |
+      {5:of ^t}est text                                                     |
       {1:~                                                                }|*5
       {4:-- (insert) VISUAL --}                                            |
     ]])
@@ -387,7 +387,7 @@ describe('mappings with <Cmd>', function()
     -- can extend select mode
     feed('gh<F4>')
     screen:expect([[
-      {5:some short }^lines                                                 |
+      {5:some short ^l}ines                                                 |
       of test text                                                     |
       {1:~                                                                }|*5
       {4:-- SELECT --}                                                     |
@@ -407,11 +407,11 @@ describe('mappings with <Cmd>', function()
     -- error doesn't interrupt temporary visual mode
     feed('<esc>ggvw<c-g><F6>')
     screen:expect([[
-      {5:some }short lines                                                 |
+      {5:some s}hort lines                                                 |
       of test text                                                     |
       {1:~                                                                }|*2
       {7:                                                                 }|
-      {2:Error detected while processing :}                                |
+      {2:Error in :}                                                       |
       {2:E605: Exception not caught: very error}                           |
       {3:Press ENTER or type command to continue}^                          |
     ]])
@@ -419,7 +419,7 @@ describe('mappings with <Cmd>', function()
     eq('E605: Exception not caught: very error', eval('v:errmsg'))
     -- still in visual mode, <cr> was consumed by the error prompt
     screen:expect([[
-      {5:some }^short lines                                                 |
+      {5:some ^s}hort lines                                                 |
       of test text                                                     |
       {1:~                                                                }|*5
       {4:-- VISUAL --}                                                     |
@@ -430,11 +430,11 @@ describe('mappings with <Cmd>', function()
     -- error doesn't interrupt select mode
     feed('<esc>ggvw<c-g><F1>')
     screen:expect([[
-      {5:some }short lines                                                 |
+      {5:some s}hort lines                                                 |
       of test text                                                     |
       {1:~                                                                }|*2
       {7:                                                                 }|
-      {2:Error detected while processing :}                                |
+      {2:Error in :}                                                       |
       {2:E605: Exception not caught: very error}                           |
       {3:Press ENTER or type command to continue}^                          |
     ]])
@@ -442,7 +442,7 @@ describe('mappings with <Cmd>', function()
     eq('E605: Exception not caught: very error', eval('v:errmsg'))
     -- still in select mode, <cr> was consumed by the error prompt
     screen:expect([[
-      {5:some }^short lines                                                 |
+      {5:some ^s}hort lines                                                 |
       of test text                                                     |
       {1:~                                                                }|*5
       {4:-- SELECT --}                                                     |
@@ -453,7 +453,7 @@ describe('mappings with <Cmd>', function()
     feed('<F7>')
     screen:expect([[
       so{5:me short lines}                                                 |
-      {5:of }^test text                                                     |
+      {5:of ^t}est text                                                     |
       {1:~                                                                }|*5
       {4:-- SELECT --}                                                     |
     ]])
@@ -463,7 +463,7 @@ describe('mappings with <Cmd>', function()
     feed('<F8>')
     screen:expect([[
       so{5:me short lines}                                                 |
-      {5:of }^test text                                                     |
+      {5:of ^t}est text                                                     |
       {1:~                                                                }|*5
       {4:-- (insert) SELECT --}                                            |
     ]])
@@ -494,7 +494,7 @@ describe('mappings with <Cmd>', function()
       of test text                                                     |
       {1:~                                                                }|*2
       {7:                                                                 }|
-      {2:Error detected while processing :}                                |
+      {2:Error in :}                                                       |
       {2:E605: Exception not caught: very error}                           |
       {3:Press ENTER or type command to continue}^                          |
     ]])
@@ -532,7 +532,7 @@ describe('mappings with <Cmd>', function()
       of test text                                                     |
       {1:~                                                                }|*2
       {7:                                                                 }|
-      {2:Error detected while processing :}                                |
+      {2:Error in :}                                                       |
       {2:E605: Exception not caught: very error}                           |
       {3:Press ENTER or type command to continue}^                          |
     ]])
@@ -554,7 +554,7 @@ describe('mappings with <Cmd>', function()
     feed('<F7>stuff ')
     screen:expect([[
       in{5:deed some short little lines}                                   |
-      {5:of stuff }^test text                                               |
+      {5:of stuff ^t}est text                                               |
       {1:~                                                                }|*5
       {4:-- INSERT VISUAL --}                                              |
     ]])
@@ -575,7 +575,7 @@ describe('mappings with <Cmd>', function()
     eq('i', eval('mode(1)'))
 
     -- also works as part of abbreviation
-    feed('<space>foo ')
+    feed(' foo ')
     screen:expect([[
       in bar ^deed some short little lines                              |
       of stuff test text                                               |
@@ -641,7 +641,7 @@ describe('mappings with <Cmd>', function()
       {1:~                                                                }|
       {7:                                                                 }|
       :echo 2                                                          |
-      {2:Error detected while processing :}                                |
+      {2:Error in :}                                                       |
       {2:E605: Exception not caught: very error}                           |
       :echo 2^                                                          |
     ]])
@@ -654,7 +654,7 @@ describe('mappings with <Cmd>', function()
       of test text                                                     |
       {7:                                                                 }|
       :echo 2                                                          |
-      {2:Error detected while processing :}                                |
+      {2:Error in :}                                                       |
       {2:E605: Exception not caught: very error}                           |
       4                                                                |
       {3:Press ENTER or type command to continue}^                          |

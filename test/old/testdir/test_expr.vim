@@ -22,7 +22,7 @@ func Test_equal()
   call assert_false(base.method == instance.other)
   call assert_false([base.method] == [instance.other])
 
-  call assert_fails('echo base.method > instance.method')
+  call assert_fails('echo base.method > instance.method', 'E694: Invalid operation for Funcrefs')
   " Nvim doesn't have null functions
   " call assert_equal(0, test_null_function() == function('min'))
   " call assert_equal(1, test_null_function() == test_null_function())
@@ -37,12 +37,26 @@ func Test_version()
   call assert_true(has('patch-6.9.999'))
   call assert_true(has('patch-7.1.999'))
   call assert_true(has('patch-7.4.123'))
+  call assert_true(has('patch-7.4.123 ')) " Trailing space can be allowed.
+  call assert_true(has('patch-9.1.0'))
+  call assert_true(has('patch-9.1.0000'))
+  call assert_true(has('patch-9.2.0'))
+  call assert_true(has('patch-9.2.0000'))
 
   call assert_false(has('patch-7'))
   call assert_false(has('patch-7.4'))
   call assert_false(has('patch-7.4.'))
-  call assert_false(has('patch-9.1.0'))
+  call assert_false(has('patch-9.3.0'))
   call assert_false(has('patch-9.9.1'))
+
+  call assert_false(has('patch-abc'))
+  call assert_false(has('patchabc'))
+
+  call assert_false(has('patch-8x001'))
+  call assert_false(has('patch-9X0X0'))
+  call assert_false(has('patch-9-0-0'))
+  call assert_false(has('patch-09.0.0'))
+  call assert_false(has('patch-9.00.0'))
 endfunc
 
 func Test_op_ternary()
@@ -195,6 +209,23 @@ func Test_special_char()
   call CheckLegacyAndVim9Failure(['echo "\<C-">'], ['E15:', 'E1004:', 'E1004:'])
 endfunc
 
+" When something else than ")" follows a nested expression, E110 shows where
+" the expression ended; when nothing follows, the ")" is really missing.
+func Test_missing_closing_paren()
+  call CheckLegacyAndVim9Failure(['echo (0!)'], "E110: Missing ')': !)")
+  call CheckLegacyAndVim9Failure(['echo (1 2)'], "E110: Missing ')': 2)")
+  call CheckLegacyAndVim9Failure(['echo (1 + 2 ]'], "E110: Missing ')': ]")
+  call CheckLegacyAndVim9Failure(['echo ("a" "b")'], "E110: Missing ')': \"b\")")
+  " in a :def function the expression may continue on the next line
+  call CheckLegacyAndVim9Failure(['VAR x = ((1)'], ["E110: Missing ')'", 'E1097:', "E110: Missing ')'"])
+  try
+    echo ((1)
+    call assert_report('should not get here')
+  catch
+    call assert_equal("Vim(echo):E110: Missing ')'", v:exception)
+  endtry
+endfunc
+
 func Test_method_with_prefix()
   let lines =<< trim END
       call assert_equal(TRUE, !range(5)->empty())
@@ -203,10 +234,10 @@ func Test_method_with_prefix()
   call CheckLegacyAndVim9Success(lines)
 
   call assert_equal([0, 1, 2], --3->range())
-  call CheckDefAndScriptFailure(['eval --3->range()'], 'E15')
+  call CheckDefAndScriptFailure(['eval --3->range()'], 'E15:')
 
   call assert_equal(1, !+-+0)
-  call CheckDefAndScriptFailure(['eval !+-+0'], 'E15')
+  call CheckDefAndScriptFailure(['eval !+-+0'], 'E15:')
 endfunc
 
 func Test_option_value()
@@ -799,10 +830,10 @@ func Test_expr_completion()
   call assert_equal('"echo 1 || g:tvar1 g:tvar2', @:)
 
   " completion for options
-  call feedkeys(":echo &compat\<C-A>\<C-B>\"\<CR>", 'xt')
-  call assert_equal('"echo &compatible', @:)
-  call feedkeys(":echo 1 && &compat\<C-A>\<C-B>\"\<CR>", 'xt')
-  call assert_equal('"echo 1 && &compatible', @:)
+  "call feedkeys(":echo &compat\<C-A>\<C-B>\"\<CR>", 'xt')
+  "call assert_equal('"echo &compatible', @:)
+  "call feedkeys(":echo 1 && &compat\<C-A>\<C-B>\"\<CR>", 'xt')
+  "call assert_equal('"echo 1 && &compatible', @:)
   call feedkeys(":echo &g:equala\<C-A>\<C-B>\"\<CR>", 'xt')
   call assert_equal('"echo &g:equalalways', @:)
 
@@ -826,7 +857,7 @@ endfunc
 " Test for errors in expression evaluation
 func Test_expr_eval_error()
   call CheckLegacyAndVim9Failure(["VAR i = 'abc' .. []"], ['E730:', 'E1105:', 'E730:'])
-  call CheckLegacyAndVim9Failure(["VAR l = [] + 10"], ['E745:', 'E1051:', 'E745'])
+  call CheckLegacyAndVim9Failure(["VAR l = [] + 10"], ['E745:', 'E1051:', 'E745:'])
   call CheckLegacyAndVim9Failure(["VAR v = 10 + []"], ['E745:', 'E1051:', 'E745:'])
   call CheckLegacyAndVim9Failure(["VAR v = 10 / []"], ['E745:', 'E1036:', 'E745:'])
   call CheckLegacyAndVim9Failure(["VAR v = -{}"], ['E728:', 'E1012:', 'E728:'])
@@ -883,7 +914,7 @@ func Test_string_interp()
     #" String conversion.
     call assert_equal('hello from ' .. v:version, $"hello from {v:version}")
     call assert_equal('hello from ' .. v:version, $'hello from {v:version}')
-    #" Paper over a small difference between VimScript behaviour.
+    #" Paper over a small difference between Vim script behaviour.
     call assert_equal(string(v:true), $"{v:true}")
     call assert_equal('(1+1=2)', $"(1+1={1 + 1})")
     #" Hex-escaped opening brace: char2nr('{') == 0x7b

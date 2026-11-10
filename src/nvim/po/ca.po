@@ -393,8 +393,8 @@ msgid " Omni completion (^O^N^P)"
 msgstr " Omni-compleció (^O^N^P)"
 
 #: ../edit.c:96
-msgid " Spelling suggestion (s^N^P)"
-msgstr "Suggeriment ortogràfic (s^N^P)"
+msgid " Spelling suggestion (^S^N^P)"
+msgstr "Suggeriment ortogràfic (^S^N^P)"
 
 # buscar un nom, en lloc del verb «completar».  eac
 #: ../edit.c:97
@@ -1241,8 +1241,8 @@ msgstr "E146: Les expressions regulars no poden estar delimitades per lletres"
 # «amb» o «per» + tecles.  eac
 #: ../ex_cmds.c:3964
 #, c-format
-msgid "replace with %s (y/n/a/q/l/^E/^Y)?"
-msgstr "substituir amb %s (y/n/a/q/l/^E/^Y)?"
+msgid "replace with %s? (y)es/(n)o/(a)ll/(q)uit/(l)ast/scroll up(^E)/down(^Y)"
+msgstr "substituir amb %s? (y)es/(n)o/(a)ll/(q)uit/(l)ast/scroll up(^E)/down(^Y)"
 
 #: ../ex_cmds.c:4379
 msgid "(Interrupted) "
@@ -1309,17 +1309,17 @@ msgstr "E478: Calma!"
 
 #: ../ex_cmds.c:4717
 #, c-format
-msgid "E661: Sorry, no '%s' help for %s"
+msgid "E661: No '%s' help for %s"
 msgstr "E661: No hi ha ajuda en '%s' per a %s"
 
 #: ../ex_cmds.c:4719
 #, c-format
-msgid "E149: Sorry, no help for %s"
+msgid "E149: No help for %s"
 msgstr "E149: No hi ha ajuda per %s"
 
 #: ../ex_cmds.c:4751
 #, c-format
-msgid "Sorry, help file \"%s\" not found"
+msgid "Help file \"%s\" not found"
 msgstr "El fitxer d'ajuda \"%s\" no s'ha trobat"
 
 #: ../ex_cmds.c:5323
@@ -2620,10 +2620,6 @@ msgstr "E471: Es requereix un argument"
 #: ../globals.h:998
 msgid "E10: \\ should be followed by /, ? or &"
 msgstr "E10: \\ hauria de continuar amb /, ? o &"
-
-#: ../globals.h:1000
-msgid "E11: Invalid in command-line window; <CR> executes, CTRL-C quits"
-msgstr "E11: No és vàlid a la línia d'ordres: <ENTRAR> executa, CTRL-C surt"
 
 #: ../globals.h:1002
 msgid "E12: Command not allowed from exrc/vimrc in current dir or tag search"
@@ -3976,10 +3972,8 @@ msgid "E325: ATTENTION"
 msgstr "E325: ATENCIÓ"
 
 #: ../memline.c:3222
-msgid ""
-"\n"
-"Found a swap file by the name \""
-msgstr "\nS'ha trobat un fitxer d'intercanvi amb nom \""
+msgid "Found a swap file by the name \""
+msgstr "S'ha trobat un fitxer d'intercanvi amb nom \""
 
 #: ../memline.c:3226
 msgid "While opening file \""
@@ -4015,8 +4009,8 @@ msgstr ""
 "(2) El Vim s'ha estrellat mentre s'editava aquest fitxer.\n"
 
 #: ../memline.c:3247
-msgid "    If this is the case, use \":recover\" or \"vim -r "
-msgstr "    En aquest cas, useu \":recover\" o bé \"vim -r "
+msgid "    If this is the case, use \":recover\" or \"nvim -r "
+msgstr "    En aquest cas, useu \":recover\" o bé \"nvim -r "
 
 #: ../memline.c:3249
 msgid ""
@@ -4669,12 +4663,8 @@ msgstr ""
 "No s'ha pogut executar la shell "
 
 #: ../os/shell.c:439
-msgid ""
-"\n"
-"shell returned "
-msgstr ""
-"\n"
-"la shell ha retornat "
+msgid "shell returned "
+msgstr "la shell ha retornat "
 
 #: ../os_unix.c:465 ../os_unix.c:471
 msgid ""
@@ -5543,13 +5533,13 @@ msgid "E763: Word characters differ between spell files"
 msgstr "E763: Els caràcters de paraula difereixen entre fitxers d'ortografia"
 
 #: ../spell.c:8684
-msgid "Sorry, no suggestions"
+msgid "No suggestions"
 msgstr "Cap suggeriment"
 
 #: ../spell.c:8687
 #, c-format
-msgid "Sorry, only %<PRId64> suggestions"
-msgstr "Llàstima, només %<PRId64> suggeriments"
+msgid "Only %<PRId64> suggestions"
+msgstr "Només %<PRId64> suggeriments"
 
 #. for when 'cmdheight' > 1
 #. avoid more prompt

@@ -1,4 +1,4 @@
-#ifdef __APPLE__
+#if defined(__APPLE__) && !defined(ZIG_BUILD)
 # define Boolean CFBoolean  // Avoid conflict with API's Boolean
 # define FileInfo CSFileInfo  // Avoid conflict with API's Fileinfo
 # include <CoreServices/CoreServices.h>
@@ -16,7 +16,7 @@
 #include "nvim/buffer.h"
 #include "nvim/charset.h"
 #include "nvim/cmdexpand_defs.h"
-#include "nvim/eval.h"
+#include "nvim/eval/vars.h"
 #include "nvim/ex_cmds_defs.h"
 #include "nvim/garray.h"
 #include "nvim/gettext_defs.h"
@@ -32,9 +32,7 @@
 #include "nvim/profile.h"
 #include "nvim/vim_defs.h"
 
-#ifdef INCLUDE_GENERATED_DECLARATIONS
-# include "os/lang.c.generated.h"
-#endif
+#include "os/lang.c.generated.h"
 
 static char *get_locale_val(int what)
 {
@@ -57,7 +55,7 @@ char *get_mess_lang(void)
 {
   char *p;
 
-#if defined(LC_MESSAGES)
+#ifdef LC_MESSAGES
   p = get_locale_val(LC_MESSAGES);
 #else
   // This is necessary for Win32, where LC_MESSAGES is not defined and $LANG
@@ -70,6 +68,7 @@ char *get_mess_lang(void)
 }
 
 /// Get the language used for messages from the environment.
+/// The function may be using NameBuff.
 ///
 /// This uses LC_MESSAGES when available, which it is for most systems we build for
 /// except for windows. Then fallback to get the value from the environment
@@ -79,17 +78,17 @@ static char *get_mess_env(void)
 #ifdef LC_MESSAGES
   return get_locale_val(LC_MESSAGES);
 #else
-  char *p = (char *)os_getenv("LC_ALL");
+  char *p = os_getenv_noalloc("LC_ALL");
   if (p != NULL) {
     return p;
   }
 
-  p = (char *)os_getenv("LC_MESSAGES");
+  p = os_getenv_noalloc("LC_MESSAGES");
   if (p != NULL) {
     return p;
   }
 
-  p = (char *)os_getenv("LANG");
+  p = os_getenv_noalloc("LANG");
   if (p != NULL && ascii_isdigit(*p)) {
     p = NULL;  // ignore something like "1043"
   }
@@ -160,19 +159,19 @@ void ex_language(exarg_T *eap)
   // confusion with a two letter language name "me" or "ct".
   char *p = skiptowhite(eap->arg);
   if ((*p == NUL || ascii_iswhite(*p)) && p - eap->arg >= 3) {
-    if (STRNICMP(eap->arg, "messages", p - eap->arg) == 0) {
+    if (STRNICMP(eap->arg, "messages", (size_t)(p - eap->arg)) == 0) {
       what = VIM_LC_MESSAGES;
       name = skipwhite(p);
       whatstr = "messages ";
-    } else if (STRNICMP(eap->arg, "ctype", p - eap->arg) == 0) {
+    } else if (STRNICMP(eap->arg, "ctype", (size_t)(p - eap->arg)) == 0) {
       what = LC_CTYPE;
       name = skipwhite(p);
       whatstr = "ctype ";
-    } else if (STRNICMP(eap->arg, "time", p - eap->arg) == 0) {
+    } else if (STRNICMP(eap->arg, "time", (size_t)(p - eap->arg)) == 0) {
       what = LC_TIME;
       name = skipwhite(p);
       whatstr = "time ";
-    } else if (STRNICMP(eap->arg, "collate", p - eap->arg) == 0) {
+    } else if (STRNICMP(eap->arg, "collate", (size_t)(p - eap->arg)) == 0) {
       what = LC_COLLATE;
       name = skipwhite(p);
       whatstr = "collate ";
@@ -236,6 +235,11 @@ void ex_language(exarg_T *eap)
       maketitle();
     }
   }
+
+  // TODO(bfredl): isident=@ should not depend on the locale
+  buf_init_isk_chartab(curbuf);
+  init_isf_chartab();
+  init_isi_chartab();
 }
 
 static char **locales = NULL;       // Array of all available locales
@@ -289,7 +293,7 @@ static void init_locales(void)
 #endif
 }
 
-#if defined(EXITFREE)
+#ifdef EXITFREE
 void free_locales(void)
 {
   if (locales == NULL) {
@@ -339,8 +343,15 @@ char *get_locales(expand_T *xp, int idx)
 
 void lang_init(void)
 {
-#ifdef __APPLE__
-  if (os_getenv("LANG") == NULL) {
+#if defined(__APPLE__)
+  if (!os_env_exists("LANG", true)) {
+# if defined(ZIG_BUILD)
+    // fuck it just use the objectively correct values:
+    os_setenv("LANG", "C.UTF-8", true);
+    setlocale(LC_ALL, "C.UTF-8");
+    // Make sure strtod() uses a decimal point, not a comma.
+    setlocale(LC_NUMERIC, "C");
+# else
     char buf[50] = { 0 };
 
     // $LANG is not set, either because it was unset or Nvim was started
@@ -359,6 +370,7 @@ void lang_init(void)
     } else {
       ELOG("$LANG is empty and the macOS primary language cannot be inferred.");
     }
+# endif
   }
 #endif
 }

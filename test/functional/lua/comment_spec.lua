@@ -1,6 +1,7 @@
 local t = require('test.testutil')
 local n = require('test.functional.testnvim')()
 
+local describe, it, before_each = t.describe, t.it, t.before_each
 local api = n.api
 local clear = n.clear
 local eq = t.eq
@@ -47,7 +48,8 @@ local setup_treesitter = function()
 end
 
 before_each(function()
-  clear({ args_rm = { '--cmd' }, args = { '--clean' } })
+  -- avoid options, but we still need TS parsers
+  clear({ args_rm = { '--cmd' }, args = { '--clean', '--cmd', n.runtime_set } })
 end)
 
 describe('commenting', function()
@@ -63,19 +65,19 @@ describe('commenting', function()
 
     it('works', function()
       toggle_lines(3, 5)
-      eq(get_lines(2, 5), { '  # aa', '  #', '  # aa' })
+      eq({ '  # aa', '  #', '  # aa' }, get_lines(2, 5))
 
       toggle_lines(3, 5)
-      eq(get_lines(2, 5), { '  aa', '', '  aa' })
+      eq({ '  aa', '', '  aa' }, get_lines(2, 5))
     end)
 
     it("works with different 'commentstring' options", function()
       local validate = function(lines_before, lines_after, lines_again)
         set_lines(lines_before)
         toggle_lines(1, #lines_before)
-        eq(get_lines(), lines_after)
+        eq(lines_after, get_lines())
         toggle_lines(1, #lines_before)
-        eq(get_lines(), lines_again or lines_before)
+        eq(lines_again or lines_before, get_lines())
       end
 
       -- Single whitespace inside comment parts (main case)
@@ -257,7 +259,7 @@ describe('commenting', function()
       local validate = function(line, ref_output)
         set_lines(lines)
         toggle_lines(line, line)
-        eq(get_lines(line - 1, line)[1], ref_output)
+        eq(ref_output, get_lines(line - 1, line)[1])
       end
 
       validate(1, '"set background=dark')
@@ -272,21 +274,21 @@ describe('commenting', function()
       set_lines(lines)
       toggle_lines(1, 3)
       local out_lines = get_lines()
-      eq(out_lines[1], '"set background=dark')
-      eq(out_lines[2], '"lua << EOF')
-      eq(out_lines[3], '"print(1)')
+      eq('"set background=dark', out_lines[1])
+      eq('"lua << EOF', out_lines[2])
+      eq('"print(1)', out_lines[3])
     end)
 
     it('correctly computes indent', function()
       toggle_lines(2, 4)
-      eq(get_lines(1, 4), { ' # aa', ' #  aa', ' #' })
+      eq({ ' # aa', ' #  aa', ' #' }, get_lines(1, 4))
     end)
 
     it('correctly detects comment/uncomment', function()
       local validate = function(from, to, ref_lines)
         set_lines({ '', 'aa', '# aa', '# aa', 'aa', '' })
         toggle_lines(from, to)
-        eq(get_lines(), ref_lines)
+        eq(ref_lines, get_lines())
       end
 
       -- It should uncomment only if all non-blank lines are comments
@@ -298,36 +300,43 @@ describe('commenting', function()
       -- Blank lines should be ignored when making a decision
       set_lines({ '# aa', '', '  ', '\t', '# aa' })
       toggle_lines(1, 5)
-      eq(get_lines(), { 'aa', '', '  ', '\t', 'aa' })
+      eq({ 'aa', '', '  ', '\t', 'aa' }, get_lines())
     end)
 
-    it('matches comment parts strictly when detecting comment/uncomment', function()
+    it('correctly matches comment parts during checking and uncommenting', function()
       local validate = function(from, to, ref_lines)
-        set_lines({ '#aa', '# aa', '#  aa' })
+        set_lines({ '/*aa*/', '/* aa */', '/*  aa  */' })
         toggle_lines(from, to)
-        eq(get_lines(), ref_lines)
+        eq(ref_lines, get_lines())
       end
 
-      set_commentstring('#%s')
-      validate(1, 3, { 'aa', ' aa', '  aa' })
-      validate(2, 3, { '#aa', ' aa', '  aa' })
-      validate(3, 3, { '#aa', '# aa', '  aa' })
+      -- Should first try to match 'commentstring' parts exactly with their
+      -- whitespace, with fallback on trimmed parts
+      set_commentstring('/*%s*/')
+      validate(1, 3, { 'aa', ' aa ', '  aa  ' })
+      validate(2, 3, { '/*aa*/', ' aa ', '  aa  ' })
+      validate(3, 3, { '/*aa*/', '/* aa */', '  aa  ' })
 
-      set_commentstring('# %s')
-      validate(1, 3, { '# #aa', '# # aa', '# #  aa' })
-      validate(2, 3, { '#aa', 'aa', ' aa' })
-      validate(3, 3, { '#aa', '# aa', ' aa' })
+      set_commentstring('/* %s */')
+      validate(1, 3, { 'aa', 'aa', ' aa ' })
+      validate(2, 3, { '/*aa*/', 'aa', ' aa ' })
+      validate(3, 3, { '/*aa*/', '/* aa */', ' aa ' })
 
-      set_commentstring('#  %s')
-      validate(1, 3, { '#  #aa', '#  # aa', '#  #  aa' })
-      validate(2, 3, { '#aa', '#  # aa', '#  #  aa' })
-      validate(3, 3, { '#aa', '# aa', 'aa' })
+      set_commentstring('/*  %s  */')
+      validate(1, 3, { 'aa', ' aa ', 'aa' })
+      validate(2, 3, { '/*aa*/', ' aa ', 'aa' })
+      validate(3, 3, { '/*aa*/', '/* aa */', 'aa' })
+
+      set_commentstring(' /*%s*/ ')
+      validate(1, 3, { 'aa', ' aa ', '  aa  ' })
+      validate(2, 3, { '/*aa*/', ' aa ', '  aa  ' })
+      validate(3, 3, { '/*aa*/', '/* aa */', '  aa  ' })
     end)
 
     it('uncomments on inconsistent indent levels', function()
       set_lines({ '# aa', ' # aa', '  # aa' })
       toggle_lines(1, 3)
-      eq(get_lines(), { 'aa', ' aa', '  aa' })
+      eq({ 'aa', ' aa', '  aa' }, get_lines())
     end)
 
     it('respects tabs', function()
@@ -335,10 +344,10 @@ describe('commenting', function()
       set_lines({ '\t\taa', '\t\taa' })
 
       toggle_lines(1, 2)
-      eq(get_lines(), { '\t\t# aa', '\t\t# aa' })
+      eq({ '\t\t# aa', '\t\t# aa' }, get_lines())
 
       toggle_lines(1, 2)
-      eq(get_lines(), { '\t\taa', '\t\taa' })
+      eq({ '\t\taa', '\t\taa' }, get_lines())
     end)
 
     it('works with trailing whitespace', function()
@@ -346,23 +355,23 @@ describe('commenting', function()
       set_commentstring('# %s')
       set_lines({ ' aa', ' aa  ', '  ' })
       toggle_lines(1, 3)
-      eq(get_lines(), { ' # aa', ' # aa  ', ' #' })
+      eq({ ' # aa', ' # aa  ', ' #' }, get_lines())
       toggle_lines(1, 3)
-      eq(get_lines(), { ' aa', ' aa  ', '' })
+      eq({ ' aa', ' aa  ', '' }, get_lines())
 
       -- With right-hand side
       set_commentstring('%s #')
       set_lines({ ' aa', ' aa  ', '  ' })
       toggle_lines(1, 3)
-      eq(get_lines(), { ' aa #', ' aa   #', ' #' })
+      eq({ ' aa #', ' aa   #', ' #' }, get_lines())
       toggle_lines(1, 3)
-      eq(get_lines(), { ' aa', ' aa  ', '' })
+      eq({ ' aa', ' aa  ', '' }, get_lines())
 
       -- Trailing whitespace after right side should be preserved for non-blanks
       set_commentstring('%s #')
       set_lines({ ' aa #  ', ' aa #\t', ' #  ', ' #\t' })
       toggle_lines(1, 4)
-      eq(get_lines(), { ' aa  ', ' aa\t', '', '' })
+      eq({ ' aa  ', ' aa\t', '', '' }, get_lines())
     end)
   end)
 
@@ -370,15 +379,15 @@ describe('commenting', function()
     it('works in Normal mode', function()
       set_cursor(2, 2)
       feed('gc', 'ap')
-      eq(get_lines(), { '# aa', '#  aa', '#   aa', '#', '  aa', ' aa', 'aa' })
+      eq({ '# aa', '#  aa', '#   aa', '#', '  aa', ' aa', 'aa' }, get_lines())
       -- Cursor moves to start line
-      eq(get_cursor(), { 1, 0 })
+      eq({ 1, 0 }, get_cursor())
 
       -- Supports `v:count`
       set_lines(example_lines)
       set_cursor(2, 0)
       feed('2gc', 'ap')
-      eq(get_lines(), { '# aa', '#  aa', '#   aa', '#', '#   aa', '#  aa', '# aa' })
+      eq({ '# aa', '#  aa', '#   aa', '#', '#   aa', '#  aa', '# aa' }, get_lines())
     end)
 
     it('allows dot-repeat in Normal mode', function()
@@ -388,7 +397,7 @@ describe('commenting', function()
       set_cursor(2, 2)
       feed('gc', 'ap')
       feed('.')
-      eq(get_lines(), doubly_commented)
+      eq(doubly_commented, get_lines())
 
       -- Not immediate dot-repeat
       set_lines(example_lines)
@@ -396,16 +405,16 @@ describe('commenting', function()
       feed('gc', 'ap')
       set_cursor(7, 0)
       feed('.')
-      eq(get_lines(), doubly_commented)
+      eq(doubly_commented, get_lines())
     end)
 
     it('works in Visual mode', function()
       set_cursor(2, 2)
       feed('v', 'ap', 'gc')
-      eq(get_lines(), { '# aa', '#  aa', '#   aa', '#', '  aa', ' aa', 'aa' })
+      eq({ '# aa', '#  aa', '#   aa', '#', '  aa', ' aa', 'aa' }, get_lines())
 
       -- Cursor moves to start line
-      eq(get_cursor(), { 1, 0 })
+      eq({ 1, 0 }, get_cursor())
     end)
 
     it('allows dot-repeat after initial Visual mode', function()
@@ -414,32 +423,32 @@ describe('commenting', function()
       set_lines(example_lines)
       set_cursor(2, 2)
       feed('vip', 'gc')
-      eq(get_lines(), { '# aa', '#  aa', '#   aa', '', '  aa', ' aa', 'aa' })
-      eq(get_cursor(), { 1, 0 })
+      eq({ '# aa', '#  aa', '#   aa', '', '  aa', ' aa', 'aa' }, get_lines())
+      eq({ 1, 0 }, get_cursor())
 
-      -- Dot-repeat after first application in Visual mode should apply to the same
-      -- relative region
+      -- Dot-repeat after first application in Visual mode applies to the paragraph at cursor (not
+      -- a fixed-size region).
       feed('.')
-      eq(get_lines(), example_lines)
+      eq(example_lines, get_lines())
 
       set_cursor(3, 0)
       feed('.')
-      eq(get_lines(), { 'aa', ' aa', '  # aa', '  #', '  # aa', ' aa', 'aa' })
+      eq({ '# aa', '#  aa', '#   aa', '', '  aa', ' aa', 'aa' }, get_lines())
     end)
 
     it("respects 'commentstring'", function()
       set_commentstring('/*%s*/')
       set_cursor(2, 2)
       feed('gc', 'ap')
-      eq(get_lines(), { '/*aa*/', '/* aa*/', '/*  aa*/', '/**/', '  aa', ' aa', 'aa' })
+      eq({ '/*aa*/', '/* aa*/', '/*  aa*/', '/**/', '  aa', ' aa', 'aa' }, get_lines())
     end)
 
     it("works with empty 'commentstring'", function()
       set_commentstring('')
       set_cursor(2, 2)
       feed('gc', 'ap')
-      eq(get_lines(), example_lines)
-      eq(exec_capture('1messages'), [[Option 'commentstring' is empty.]])
+      eq(example_lines, get_lines())
+      eq([[Option 'commentstring' is empty.]], exec_capture('1messages'))
     end)
 
     it('respects tree-sitter injections', function()
@@ -460,7 +469,7 @@ describe('commenting', function()
         set_lines(lines)
         set_cursor(line, 0)
         feed('gc_')
-        eq(get_lines(line - 1, line)[1], ref_output)
+        eq(ref_output, get_lines(line - 1, line)[1])
       end
 
       validate(1, '"set background=dark')
@@ -476,11 +485,11 @@ describe('commenting', function()
 
       set_cursor(1, 0)
       feed('gc_')
-      eq(get_lines()[1], '"set background=dark')
+      eq('"set background=dark', get_lines()[1])
 
       set_cursor(3, 0)
       feed('.')
-      eq(get_lines()[3], '-- print(1)')
+      eq('-- print(1)', get_lines()[3])
 
       -- Multiline comments should be computed based on cursor position
       -- which in case of Visual selection means its left part
@@ -488,9 +497,9 @@ describe('commenting', function()
       set_cursor(1, 0)
       feed('v2j', 'gc')
       local out_lines = get_lines()
-      eq(out_lines[1], '"set background=dark')
-      eq(out_lines[2], '"lua << EOF')
-      eq(out_lines[3], '"print(1)')
+      eq('"set background=dark', out_lines[1])
+      eq('"lua << EOF', out_lines[2])
+      eq('"print(1)', out_lines[3])
     end)
 
     it("recomputes local 'commentstring' based on cursor position", function()
@@ -505,12 +514,12 @@ describe('commenting', function()
 
       set_cursor(1, 1)
       feed('gc_')
-      eq(get_lines()[1], '  "print(1)')
+      eq('  "print(1)', get_lines()[1])
 
       set_lines(lines)
       set_cursor(3, 2)
       feed('.')
-      eq(get_lines()[3], '  -- print(1)')
+      eq('  -- print(1)', get_lines()[3])
     end)
 
     it('preserves marks', function()
@@ -518,8 +527,8 @@ describe('commenting', function()
       -- Set '`<' and '`>' marks
       feed('VV')
       feed('gc', 'ip')
-      eq(api.nvim_buf_get_mark(0, '<'), { 2, 0 })
-      eq(api.nvim_buf_get_mark(0, '>'), { 2, 2147483647 })
+      eq({ 2, 0 }, api.nvim_buf_get_mark(0, '<'))
+      eq({ 2, 2147483647 }, api.nvim_buf_get_mark(0, '>'))
     end)
   end)
 
@@ -528,19 +537,19 @@ describe('commenting', function()
       set_lines(example_lines)
       set_cursor(1, 1)
       feed('gcc')
-      eq(get_lines(0, 2), { '# aa', ' aa' })
+      eq({ '# aa', ' aa' }, get_lines(0, 2))
 
       -- Does not comment empty line
       set_lines(example_lines)
       set_cursor(4, 0)
       feed('gcc')
-      eq(get_lines(2, 5), { '  aa', '', '  aa' })
+      eq({ '  aa', '', '  aa' }, get_lines(2, 5))
 
       -- Supports `v:count`
       set_lines(example_lines)
       set_cursor(2, 0)
       feed('2gcc')
-      eq(get_lines(0, 3), { 'aa', ' # aa', ' #  aa' })
+      eq({ 'aa', ' # aa', ' #  aa' }, get_lines(0, 3))
     end)
 
     it('allows dot-repeat', function()
@@ -548,7 +557,7 @@ describe('commenting', function()
       set_cursor(1, 1)
       feed('gcc')
       feed('.')
-      eq(get_lines(), example_lines)
+      eq(example_lines, get_lines())
 
       -- Not immediate dot-repeat
       set_lines(example_lines)
@@ -556,7 +565,7 @@ describe('commenting', function()
       feed('gcc')
       set_cursor(7, 0)
       feed('.')
-      eq(get_lines(6, 7), { '# aa' })
+      eq({ '# aa' }, get_lines(6, 7))
     end)
 
     it('respects tree-sitter injections', function()
@@ -572,12 +581,179 @@ describe('commenting', function()
 
       set_cursor(1, 0)
       feed('gcc')
-      eq(get_lines(), { '"set background=dark', 'lua << EOF', 'print(1)', 'EOF' })
+      eq({ '"set background=dark', 'lua << EOF', 'print(1)', 'EOF' }, get_lines())
 
       -- Should work with dot-repeat
       set_cursor(3, 0)
       feed('.')
-      eq(get_lines(), { '"set background=dark', 'lua << EOF', '-- print(1)', 'EOF' })
+      eq({ '"set background=dark', 'lua << EOF', '-- print(1)', 'EOF' }, get_lines())
+    end)
+
+    it('respects tree-sitter commentstring metadata', function()
+      exec_lua [=[
+        vim.treesitter.query.set('vim', 'highlights', [[
+          ((list) @_list (#set! @_list bo.commentstring "!! %s"))
+        ]])
+      ]=]
+      setup_treesitter()
+
+      local lines = {
+        'set background=dark',
+        'let mylist = [',
+        [[  \"a",]],
+        [[  \"b",]],
+        [[  \"c",]],
+        '  \\]',
+      }
+      set_lines(lines)
+
+      set_cursor(1, 0)
+      feed('gcc')
+      eq(
+        { '"set background=dark', 'let mylist = [', [[  \"a",]], [[  \"b",]], [[  \"c",]], '  \\]' },
+        get_lines()
+      )
+
+      -- Should work with dot-repeat
+      set_cursor(4, 0)
+      feed('.')
+      eq({
+        '"set background=dark',
+        'let mylist = [',
+        [[  \"a",]],
+        [[  !! \"b",]],
+        [[  \"c",]],
+        '  \\]',
+      }, get_lines())
+    end)
+
+    it('only applies the innermost tree-sitter commentstring metadata', function()
+      exec_lua [=[
+        vim.treesitter.query.set('vim', 'highlights', [[
+          ((list) @_list (#gsub! @_list "(.*)" "%1") (#set! bo.commentstring "!! %s"))
+          ((script_file) @_src (#set! @_src bo.commentstring "## %s"))
+        ]])
+      ]=]
+      setup_treesitter()
+
+      local lines = {
+        'set background=dark',
+        'let mylist = [',
+        [[  \"a",]],
+        [[  \"b",]],
+        [[  \"c",]],
+        '  \\]',
+      }
+      set_lines(lines)
+
+      set_cursor(1, 0)
+      feed('gcc')
+      eq({
+        '## set background=dark',
+        'let mylist = [',
+        [[  \"a",]],
+        [[  \"b",]],
+        [[  \"c",]],
+        '  \\]',
+      }, get_lines())
+
+      -- Should work with dot-repeat
+      set_cursor(4, 0)
+      feed('.')
+      eq({
+        '## set background=dark',
+        'let mylist = [',
+        [[  \"a",]],
+        [[  !! \"b",]],
+        [[  \"c",]],
+        '  \\]',
+      }, get_lines())
+    end)
+
+    it('respects injected tree-sitter commentstring metadata', function()
+      exec_lua [=[
+        vim.treesitter.query.set('lua', 'highlights', [[
+          ((string) @string (#set! @string bo.commentstring "; %s"))
+        ]])
+      ]=]
+      setup_treesitter()
+
+      local lines = {
+        'set background=dark',
+        'lua << EOF',
+        'print[[',
+        'Inside string',
+        ']]',
+        'EOF',
+      }
+      set_lines(lines)
+
+      set_cursor(1, 0)
+      feed('gcc')
+      eq({
+        '"set background=dark',
+        'lua << EOF',
+        'print[[',
+        'Inside string',
+        ']]',
+        'EOF',
+      }, get_lines())
+
+      -- Should work with dot-repeat
+      set_cursor(4, 0)
+      feed('.')
+      eq({
+        '"set background=dark',
+        'lua << EOF',
+        'print[[',
+        '; Inside string',
+        ']]',
+        'EOF',
+      }, get_lines())
+
+      set_cursor(3, 0)
+      feed('.')
+      eq({
+        '"set background=dark',
+        'lua << EOF',
+        '-- print[[',
+        '; Inside string',
+        ']]',
+        'EOF',
+      }, get_lines())
+    end)
+
+    it('works across combined injections #30799', function()
+      exec_lua [=[
+        vim.treesitter.query.set('lua', 'injections', [[
+          ((function_call
+            name: (_) @_vimcmd_identifier
+            arguments: (arguments
+              (string
+                content: _ @injection.content)))
+            (#eq? @_vimcmd_identifier "vim.cmd")
+            (#set! injection.language "vim")
+            (#set! injection.combined))
+        ]])
+      ]=]
+
+      api.nvim_set_option_value('filetype', 'lua', { buf = 0 })
+      exec_lua('vim.treesitter.start()')
+
+      local lines = {
+        'vim.cmd([[" some text]])',
+        'local a = 123',
+        'vim.cmd([[" some more text]])',
+      }
+      set_lines(lines)
+
+      set_cursor(2, 0)
+      feed('gcc')
+      eq({
+        'vim.cmd([[" some text]])',
+        '-- local a = 123',
+        'vim.cmd([[" some more text]])',
+      }, get_lines())
     end)
   end)
 
@@ -586,7 +762,7 @@ describe('commenting', function()
       set_lines({ 'aa', '# aa', '# aa', 'aa' })
       set_cursor(2, 0)
       feed('d', 'gc')
-      eq(get_lines(), { 'aa', 'aa' })
+      eq({ 'aa', 'aa' }, get_lines())
     end)
 
     it('allows dot-repeat', function()
@@ -595,20 +771,20 @@ describe('commenting', function()
       feed('d', 'gc')
       set_cursor(3, 0)
       feed('.')
-      eq(get_lines(), { 'aa', 'aa' })
+      eq({ 'aa', 'aa' }, get_lines())
     end)
 
     it('does nothing when not inside textobject', function()
       -- Builtin operators
       feed('d', 'gc')
-      eq(get_lines(), example_lines)
+      eq(example_lines, get_lines())
 
       -- Comment operator
       local validate_no_action = function(line, col)
         set_lines(example_lines)
         set_cursor(line, col)
         feed('gc', 'gc')
-        eq(get_lines(), example_lines)
+        eq(example_lines, get_lines())
       end
 
       validate_no_action(1, 1)
@@ -633,12 +809,12 @@ describe('commenting', function()
 
       set_cursor(1, 0)
       feed('dgc')
-      eq(get_lines(), { 'lua << EOF', '-- print(1)', '-- print(2)', 'EOF' })
+      eq({ 'lua << EOF', '-- print(1)', '-- print(2)', 'EOF' }, get_lines())
 
       -- Should work with dot-repeat
       set_cursor(2, 0)
       feed('.')
-      eq(get_lines(), { 'lua << EOF', 'EOF' })
+      eq({ 'lua << EOF', 'EOF' }, get_lines())
     end)
   end)
 end)

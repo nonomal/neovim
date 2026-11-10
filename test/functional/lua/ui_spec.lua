@@ -1,6 +1,7 @@
 local t = require('test.testutil')
 local n = require('test.functional.testnvim')()
 
+local describe, it, before_each = t.describe, t.it, t.before_each
 local eq = t.eq
 local ok = t.ok
 local exec_lua = n.exec_lua
@@ -13,42 +14,7 @@ local poke_eventloop = n.poke_eventloop
 
 describe('vim.ui', function()
   before_each(function()
-    clear()
-  end)
-
-  describe('select()', function()
-    it('can select an item', function()
-      local result = exec_lua [[
-        local items = {
-          { name = 'Item 1' },
-          { name = 'Item 2' },
-        }
-        local opts = {
-          format_item = function(entry)
-            return entry.name
-          end
-        }
-        local selected
-        local cb = function(item)
-          selected = item
-        end
-        -- inputlist would require input and block the test;
-        local choices
-        vim.fn.inputlist = function(x)
-          choices = x
-          return 1
-        end
-        vim.ui.select(items, opts, cb)
-        vim.wait(100, function() return selected ~= nil end)
-        return {selected, choices}
-      ]]
-      eq({ name = 'Item 1' }, result[1])
-      eq({
-        'Select one of:',
-        '1: Item 1',
-        '2: Item 2',
-      }, result[2])
-    end)
+    clear({ args_rm = { '-u' }, args = { '--clean' } })
   end)
 
   describe('input()', function()
@@ -109,7 +75,7 @@ describe('vim.ui', function()
       eq(true, exec_lua('return (nil == result)'))
     end)
 
-    it('can return opts.cacelreturn when aborted with ESC with cancelreturn opt #18144', function()
+    it('can return opts.cancelreturn when aborted with ESC with cancelreturn opt #18144', function()
       feed(':lua result = "on_confirm not called"<cr>')
       feed(':lua vim.ui.input({ cancelreturn = "CANCEL" }, function(input) result = input end)<cr>')
       feed('Inputted Text<esc>')
@@ -143,8 +109,13 @@ describe('vim.ui', function()
         exec_lua [[vim.system = function() return { wait=function() return { code=3 } end } end]]
       end
       if not is_os('bsd') then
-        local rv =
-          exec_lua [[local _, cmd = vim.ui.open('non-existent-file'); return cmd:wait(100).code]]
+        local rv = exec_lua([[
+          local cmd, err = vim.ui.open('non-existent-file')
+          if err and err:find('no handler found') then
+            return -1
+          end
+          return cmd:wait(100).code
+        ]])
         ok(type(rv) == 'number' and rv ~= 0, 'nonzero exit code', rv)
       end
 
@@ -153,9 +124,114 @@ describe('vim.ui', function()
         vim.fn.executable = function() return 0 end
       ]]
       eq(
-        'vim.ui.open: no handler found (tried: wslview, explorer.exe, xdg-open)',
+        'vim.ui.open: no handler found (tried: wslview, explorer.exe, xdg-open, lemonade)',
         exec_lua [[local _, err = vim.ui.open('foo') ; return err]]
       )
+    end)
+
+    it('escapes cmd.exe metacharacters #41337', function()
+      eq(
+        {
+          { 'cmd.exe', '/c', 'start', '', 'https://example.com/?q=^&^|^<^>^^^%^!' },
+          { 'cmd.exe', '/c', 'start', '', 'C:/a^&b.pdf' },
+          -- Not escaped: libuv quotes it.
+          { 'cmd.exe', '/c', 'start', '', 'C:/a b&c.pdf' },
+        },
+        exec_lua(function()
+          vim.fn.has = function(feat)
+            return feat == 'win32' and 1 or 0
+          end
+          local captured --- @type string[]
+          vim.system = function(cmd)
+            captured = cmd
+            return {
+              wait = function()
+                return { code = 0 }
+              end,
+            }
+          end
+          local cmds = {} --- @type string[][]
+          for _, path in ipairs({ 'https://example.com/?q=&|<>^%!', 'C:/a&b.pdf', 'C:/a b&c.pdf' }) do
+            vim.ui.open(path)
+            cmds[#cmds + 1] = captured
+          end
+          return cmds
+        end)
+      )
+    end)
+
+    it('opt.cmd #29490', function()
+      t.matches(
+        'ENOENT: no such file or directory',
+        t.pcall_err(exec_lua, function()
+          vim.ui.open('foo', { cmd = { 'non-existent-tool' } })
+        end)
+      )
+
+      eq(
+        {
+          code = 0,
+          signal = 0,
+          stderr = '',
+          stdout = 'arg1=arg1;arg2=https://example.com;',
+        },
+        exec_lua(function(cmd_)
+          local cmd, err = vim.ui.open('https://example.com', { cmd = cmd_ })
+          assert(cmd and not err)
+          return cmd:wait()
+        end, { n.testprg('printargs-test'), 'arg1' })
+      )
+
+      -- Expands a path containing ":".
+      eq(
+        ('arg1=%s/a:b;'):format(vim.fs.normalize('~')),
+        exec_lua(function(opener)
+          return vim.ui.open('~/a:b', { cmd = { opener } }):wait().stdout
+        end, n.testprg('printargs-test'))
+      )
+    end)
+
+    it('can reuse opt.cmd without accumulating paths', function()
+      eq(
+        'arg1=arg1;arg2=https://example.com/second;',
+        exec_lua(function(opener)
+          local opts = { cmd = { opener, 'arg1' } }
+          vim.ui.open('https://example.com/first', opts):wait()
+          return vim.ui.open('https://example.com/second', opts):wait().stdout
+        end, n.testprg('printargs-test'))
+      )
+    end)
+
+    it('gx on a help tag opens URL', function()
+      n.command('helptags $VIMRUNTIME/doc')
+      n.command('help nvim.txt')
+
+      local link_ns = n.api.nvim_create_namespace('nvim.help.urls')
+      local tag = n.api.nvim_buf_get_extmarks(0, link_ns, 0, -1, {
+        limit = 1,
+        details = true,
+      })[1]
+
+      local url = tag[4].url
+      assert(url)
+
+      --- points to the neovim.io site
+      eq(true, vim.startswith(url, 'https://neovim.io/doc'))
+
+      -- tag is URI encoded
+      local param = url:match('%?tag=(.*)')
+      local tagname =
+        n.api.nvim_buf_get_text(0, tag[2], tag[3], tag[4].end_row, tag[4].end_col, {})[1]
+      eq(vim.uri.encode(tagname), param)
+
+      -- non-nvim tags are ignored
+      local buf = n.api.nvim_create_buf(false, false)
+      n.api.nvim_buf_set_lines(buf, 0, 0, false, {
+        '|nonexisting|',
+      })
+      n.api.nvim_set_option_value('filetype', 'help', { buf = buf, scope = 'local' })
+      local tags = n.api.nvim_buf_get_extmarks(buf, link_ns, 0, -1, {})
+      eq(0, #tags)
     end)
   end)
 end)

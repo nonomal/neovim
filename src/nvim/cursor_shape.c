@@ -18,9 +18,7 @@
 #include "nvim/strings.h"
 #include "nvim/ui.h"
 
-#ifdef INCLUDE_GENERATED_DECLARATIONS
-# include "cursor_shape.c.generated.h"
-#endif
+#include "cursor_shape.c.generated.h"
 
 static const char e_digit_expected[] = N_("E548: Digit expected");
 
@@ -45,6 +43,7 @@ cursorentry_T shape_table[SHAPE_IDX_COUNT] = {
   { "more", 0, 0, 0,   0,   0,   0, 0, 0, "m", SHAPE_MOUSE },
   { "more_lastline", 0, 0, 0,   0,   0,   0, 0, 0, "ml", SHAPE_MOUSE },
   { "showmatch", 0, 0, 0, 100, 100, 100, 0, 0, "sm", SHAPE_CURSOR },
+  { "terminal", 0, 0, 0, 0, 0, 0, 0, 0, "t", SHAPE_CURSOR },
 };
 
 /// Converts cursor_shapes into an Array of Dictionaries
@@ -57,7 +56,7 @@ Array mode_style_array(Arena *arena)
 
   for (int i = 0; i < SHAPE_IDX_COUNT; i++) {
     cursorentry_T *cur = &shape_table[i];
-    Dictionary dic = arena_dict(arena, 3 + ((cur->used_for & SHAPE_CURSOR) ? 9 : 0));
+    Dict dic = arena_dict(arena, 3 + ((cur->used_for & SHAPE_CURSOR) ? 9 : 0));
     PUT_C(dic, "name", CSTR_AS_OBJ(cur->full_name));
     PUT_C(dic, "short_name", CSTR_AS_OBJ(cur->name));
     if (cur->used_for & SHAPE_MOUSE) {
@@ -86,7 +85,7 @@ Array mode_style_array(Arena *arena)
       PUT_C(dic, "attr_id_lm", INTEGER_OBJ(cur->id_lm ? syn_id2attr(cur->id_lm) : 0));
     }
 
-    ADD_C(all, DICTIONARY_OBJ(dic));
+    ADD_C(all, DICT_OBJ(dic));
   }
 
   return all;
@@ -146,7 +145,7 @@ const char *parse_shape_opt(int what)
             all_idx = SHAPE_IDX_COUNT - 1;
           } else {
             for (idx = 0; idx < SHAPE_IDX_COUNT; idx++) {
-              if (STRNICMP(modep, shape_table[idx].name, len) == 0) {
+              if (STRNICMP(modep, shape_table[idx].name, (size_t)len) == 0) {
                 break;
               }
             }
@@ -272,18 +271,6 @@ const char *parse_shape_opt(int what)
   return NULL;
 }
 
-/// Returns true if the cursor is non-blinking "block" shape during
-/// visual selection.
-///
-/// @param exclusive If 'selection' option is "exclusive".
-bool cursor_is_block_during_visual(bool exclusive)
-  FUNC_ATTR_PURE
-{
-  int mode_idx = exclusive ? SHAPE_IDX_VE : SHAPE_IDX_V;
-  return (SHAPE_BLOCK == shape_table[mode_idx].shape
-          && 0 == shape_table[mode_idx].blinkon);
-}
-
 /// Map cursor mode from string to integer
 ///
 /// @param mode Fullname of the mode whose id we are looking for
@@ -321,6 +308,8 @@ int cursor_get_mode_idx(void)
 {
   if (State == MODE_SHOWMATCH) {
     return SHAPE_IDX_SM;
+  } else if (State == MODE_TERMINAL) {
+    return SHAPE_IDX_TERM;
   } else if (State & VREPLACE_FLAG) {
     return SHAPE_IDX_R;
   } else if (State & REPLACE_FLAG) {
@@ -337,7 +326,7 @@ int cursor_get_mode_idx(void)
     }
   } else if (finish_op) {
     return SHAPE_IDX_O;
-  } else if (VIsual_active) {
+  } else if (Visual.active) {
     if (*p_sel == 'e') {
       return SHAPE_IDX_VE;
     } else {

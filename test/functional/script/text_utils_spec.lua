@@ -1,6 +1,7 @@
 local t = require('test.testutil')
 local n = require('test.functional.testnvim')()
 
+local describe, it, before_each = t.describe, t.it, t.before_each
 local exec_lua = n.exec_lua
 local eq = t.eq
 
@@ -11,8 +12,8 @@ local function md_to_vimdoc(text, start_indent, indent, text_width)
     start_indent = start_indent or 0
     indent = indent or 0
     text_width = text_width or 70
-    local text_utils = require('scripts/text_utils')
-    return text_utils.md_to_vimdoc(table.concat(text, '\n'), start_indent, indent, text_width)
+    local util = require('src/gen/util')
+    return util.md_to_vimdoc(table.concat(text, '\n'), start_indent, indent, text_width)
   ]],
     text,
     start_indent,
@@ -57,6 +58,34 @@ describe('md_to_vimdoc', function()
     '          para2',
     '',
   }, 0, 10, 78)
+
+  test('renders bold notes and block quotes as prose', {
+    '> **Note:** Handle functions also apply.',
+  }, {
+    'Note: Handle functions also apply.',
+    '',
+  })
+
+  test('keeps URL links separate from help tag definitions', {
+    'See [poll(2)](https://example.com/poll).',
+    '',
+    '[poll-section]()',
+  }, {
+    'See poll(2) (https://example.com/poll).',
+    '',
+    '                                                        *poll-section*',
+    '',
+  })
+
+  test('renders a separator without showing reference definitions', {
+    '---',
+    '',
+    '[libuv]: https://libuv.org/',
+  }, {
+    string.rep('-', 70),
+    '',
+    '',
+  })
 
   test('inline 1', { '(`string`)' }, { '(`string`)', '' })
 end)

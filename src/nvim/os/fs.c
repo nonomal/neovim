@@ -13,6 +13,7 @@
 #include <uv.h>
 
 #ifdef MSWIN
+# include <io.h>
 # include <shlobj.h>
 #endif
 
@@ -20,7 +21,7 @@
 #include "nvim/os/fs.h"
 #include "nvim/os/os_defs.h"
 
-#if defined(HAVE_ACL)
+#ifdef HAVE_ACL
 # ifdef HAVE_SYS_ACL_H
 #  include <sys/acl.h>
 # endif
@@ -35,6 +36,7 @@
 
 #include "nvim/api/private/helpers.h"
 #include "nvim/ascii_defs.h"
+#include "nvim/errors.h"
 #include "nvim/gettext_defs.h"
 #include "nvim/globals.h"
 #include "nvim/log.h"
@@ -56,12 +58,11 @@
 # include "nvim/mbyte.h"
 # include "nvim/option.h"
 # include "nvim/os/os_win_console.h"
+# include "nvim/os/time.h"
 # include "nvim/strings.h"
 #endif
 
-#ifdef INCLUDE_GENERATED_DECLARATIONS
-# include "os/fs.c.generated.h"
-#endif
+#include "os/fs.c.generated.h"
 
 #ifdef HAVE_XATTR
 static const char e_xattr_erange[]
@@ -113,6 +114,7 @@ int os_dirname(char *buf, size_t len)
     xstrlcpy(buf, uv_strerror(error_number), len);
     return FAIL;
   }
+  TO_SLASH(buf);
   return OK;
 }
 
@@ -224,7 +226,9 @@ int os_nodetype(const char *name)
 int os_exepath(char *buffer, size_t *size)
   FUNC_ATTR_NONNULL_ALL
 {
-  return uv_exepath(buffer, size);
+  int r = uv_exepath(buffer, size);
+  TO_SLASH(buffer);
+  return r;
 }
 
 /// Checks if the file `name` is executable.
@@ -244,14 +248,12 @@ bool os_can_exe(const char *name, char **abspath, bool use_path)
 {
   if (!use_path || gettail_dir(name) != name) {
 #ifdef MSWIN
-    if (is_executable_ext(name, abspath)) {
+    return is_executable_ext(name, abspath);
 #else
     // Must have path separator, cannot execute files in the current directory.
-    if ((use_path || gettail_dir(name) != name)
-        && is_executable(name, abspath)) {
+    return ((use_path || gettail_dir(name) != name)
+            && is_executable(name, abspath));
 #endif
-      return true;
-    }
     return false;
   }
 
@@ -301,15 +303,15 @@ static bool is_executable_ext(const char *name, char **abspath)
   char *nameext = strrchr(name, '.');
   size_t nameext_len = nameext ? strlen(nameext) : 0;
   xstrlcpy(os_buf, name, sizeof(os_buf));
-  char *buf_end = xstrchrnul(os_buf, '\0');
-  const char *pathext = os_getenv("PATHEXT");
+  char *buf_end = xstrchrnul(os_buf, NUL);
+  const char *pathext = os_getenv_noalloc("PATHEXT");
   if (!pathext) {
     pathext = ".com;.exe;.bat;.cmd";
   }
   const char *ext = pathext;
   while (*ext) {
     // If $PATHEXT itself contains dot:
-    if (ext[0] == '.' && (ext[1] == '\0' || ext[1] == ENV_SEPCHAR)) {
+    if (ext[0] == '.' && (ext[1] == NUL || ext[1] == ENV_SEPCHAR)) {
       if (is_executable(name, abspath)) {
         return true;
       }
@@ -338,6 +340,8 @@ static bool is_executable_ext(const char *name, char **abspath)
   }
   return false;
 }
+#else
+# define is_executable_ext is_executable
 #endif
 
 /// Checks if a file is in `$PATH` and is executable.
@@ -349,22 +353,29 @@ static bool is_executable_ext(const char *name, char **abspath)
 static bool is_executable_in_path(const char *name, char **abspath)
   FUNC_ATTR_NONNULL_ARG(1)
 {
-  const char *path_env = os_getenv("PATH");
+  char *path_env = os_getenv("PATH");
   if (path_env == NULL) {
     return false;
   }
 
 #ifdef MSWIN
-  // Prepend ".;" to $PATH.
-  size_t pathlen = strlen(path_env);
-  char *path = memcpy(xmallocz(pathlen + 2), "." ENV_SEPSTR, 2);
-  memcpy(path + 2, path_env, pathlen);
+  char *path = NULL;
+  if (!os_env_exists("NoDefaultCurrentDirectoryInExePath", false)
+      && strstr(path_tail(p_sh), "cmd.exe") != NULL) {
+    // Prepend ".;" to $PATH.
+    size_t pathlen = strlen(path_env);
+    path = xmallocz(pathlen + 2);
+    memcpy(path, "." ENV_SEPSTR, 2);
+    memcpy(path + 2, path_env, pathlen);
+  } else {
+    path = xstrdup(path_env);
+  }
 #else
   char *path = xstrdup(path_env);
 #endif
 
-  size_t buf_len = strlen(name) + strlen(path) + 2;
-  char *buf = xmalloc(buf_len);
+  const size_t bufsize = strlen(name) + strlen(path) + 2;
+  char *buf = xmalloc(bufsize);
 
   // Walk through all entries in $PATH to check if "name" exists there and
   // is an executable file.
@@ -375,13 +386,9 @@ static bool is_executable_in_path(const char *name, char **abspath)
 
     // Combine the $PATH segment with `name`.
     xmemcpyz(buf, p, (size_t)(e - p));
-    (void)append_path(buf, name, buf_len);
+    (void)append_path(buf, name, bufsize);
 
-#ifdef MSWIN
     if (is_executable_ext(buf, abspath)) {
-#else
-    if (is_executable(buf, abspath)) {
-#endif
       rv = true;
       goto end;
     }
@@ -397,6 +404,7 @@ static bool is_executable_in_path(const char *name, char **abspath)
 end:
   xfree(buf);
   xfree(path);
+  xfree(path_env);
   return rv;
 }
 
@@ -435,7 +443,7 @@ FILE *os_fopen(const char *path, const char *flags)
   assert(flags != NULL && strlen(flags) > 0 && strlen(flags) <= 2);
   int iflags = 0;
   // Per table in fopen(3) manpage.
-  if (flags[1] == '\0' || flags[1] == 'b') {
+  if (flags[1] == NUL || flags[1] == 'b') {
     switch (flags[0]) {
     case 'r':
       iflags = O_RDONLY;
@@ -480,9 +488,9 @@ FILE *os_fopen(const char *path, const char *flags)
   return fdopen(fd, flags);
 }
 
-/// Sets file descriptor `fd` to close-on-exec.
-//
-// @return -1 if failed to set, 0 otherwise.
+/// Sets file descriptor `fd` to close-on-exec (Unix) or non-inheritable (Windows).
+///
+/// @return -1 if failed to set, 0 otherwise.
 int os_set_cloexec(const int fd)
 {
 #ifdef HAVE_FD_CLOEXEC
@@ -502,11 +510,16 @@ int os_set_cloexec(const int fd)
     return -1;
   }
   return 0;
-#endif
-
-  // No FD_CLOEXEC flag. On Windows, the file should have been opened with
-  // O_NOINHERIT anyway.
+#elif defined(MSWIN)
+  HANDLE h = (HANDLE)_get_osfhandle(fd);
+  if (h == INVALID_HANDLE_VALUE
+      || !SetHandleInformation(h, HANDLE_FLAG_INHERIT, 0)) {
+    return -1;
+  }
+  return 0;
+#else
   return -1;
+#endif
 }
 
 /// Close a file
@@ -542,6 +555,20 @@ os_dup_dup:
   return ret;
 }
 
+/// Duplicates file descriptor `fd` and marks the copy close-on-exec (Unix) / non-inheritable
+/// (Windows), so the duped fd is not leaked to spawned child processes.
+///
+/// @return New file descriptor, or libuv error code (< 0) if the dup failed.
+int os_dup_cloexec(const int fd)
+  FUNC_ATTR_WARN_UNUSED_RESULT
+{
+  int newfd = os_dup(fd);
+  if (newfd >= 0) {
+    os_set_cloexec(newfd);
+  }
+  return newfd;
+}
+
 /// Open the file descriptor for stdin.
 int os_open_stdin_fd(void)
 {
@@ -552,7 +579,7 @@ int os_open_stdin_fd(void)
     stdin_dup_fd = os_dup(STDIN_FILENO);
 #ifdef MSWIN
     // Replace the original stdin with the console input handle.
-    os_replace_stdin_to_conin();
+    os_redirect_stdin_to_conin();
 #endif
   }
   return stdin_dup_fd;
@@ -560,7 +587,7 @@ int os_open_stdin_fd(void)
 
 /// Read from a file
 ///
-/// Handles EINTR and ENOMEM, but not other errors.
+/// Handles EINTR, but not other errors.
 ///
 /// @param[in]  fd  File descriptor to read from.
 /// @param[out]  ret_eof  Is set to true if EOF was encountered, otherwise set
@@ -778,6 +805,16 @@ int os_setperm(const char *const name, int perm)
   return (r == kLibuvSuccess ? OK : FAIL);
 }
 
+/// Set the permission of the file referred to by the open file descriptor.
+///
+/// @return `OK` for success, `FAIL` for failure.
+int os_fsetperm(int fd, int perm)
+{
+  int r;
+  RUN_UV_FS_FUNC(r, uv_fs_fchmod, fd, perm, NULL);
+  return (r == kLibuvSuccess ? OK : FAIL);
+}
+
 #ifdef HAVE_XATTR
 /// Copy extended attributes from_file to to_file
 void os_copy_xattr(const char *from_file, const char *to_file)
@@ -986,6 +1023,13 @@ int os_rename(const char *path, const char *new_path)
 {
   int r;
   RUN_UV_FS_FUNC(r, uv_fs_rename, path, new_path, NULL);
+#ifdef MSWIN
+  // Retry a few times, in case another process (AV, indexer, another Nvim) has the file open.
+  for (uint64_t ms = 1; (r == UV_EPERM || r == UV_EBUSY) && ms <= 64; ms *= 4) {
+    os_sleep(ms);
+    RUN_UV_FS_FUNC(r, uv_fs_rename, path, new_path, NULL);
+  }
+#endif
   return (r == kLibuvSuccess ? OK : FAIL);
 }
 
@@ -1103,6 +1147,7 @@ int os_mkdtemp(const char *templ, char *path)
   int result = uv_fs_mkdtemp(NULL, &request, templ, NULL);
   if (result == kLibuvSuccess) {
     xstrlcpy(path, request.path, TEMP_FILE_PATH_MAXLEN);
+    TO_SLASH(path);
   }
   uv_fs_req_cleanup(&request);
   return result;
@@ -1173,6 +1218,68 @@ bool os_fileinfo(const char *path, FileInfo *file_info)
 {
   CLEAR_POINTER(file_info);
   return os_stat(path, &(file_info->stat)) == kLibuvSuccess;
+}
+
+/// Parses `path` into a `FileInfo` structure.
+///
+/// TODO(ntdiary): Could be extended for path.c cleanup and path normalization
+/// logic. Eventually merge this with `os_fileinfo`
+///
+/// TODO(justinmk): return value is meaningless currently.
+bool os_fileinfo2(const char *path, FileInfo *info)
+  FUNC_ATTR_NONNULL_ALL
+{
+  CLEAR_POINTER(info);
+  if (path_with_url(path)) {
+    return true;
+  }
+  // Preserves the leading two "/"; 3+ "///…" collapse to a single "/" (IEEE 1003.1).
+  // Same rule applies to kPathUNC/kPathGeneric on Windows, but not to kPathDevice or
+  // kPathDeviceUNC, where the leading "//" is significant.
+  const char *p = path_skip_sep(path, false);
+  size_t leading_slashes = (size_t)(p - path);
+#ifdef MSWIN
+  if (leading_slashes == 0 && ASCII_ISALPHA(p[0]) && p[1] == ':') {
+    info->type = kPathDrive;
+    p = path_skip_sep(p + 2, false);
+    info->rest_off = (size_t)(p - path);
+    return true;
+  }
+  if (leading_slashes >= 2 && (p[0] == '?' || p[0] == '.')) {
+    if (!vim_ispathsep_nocolon(p[1])) {
+      return true;
+    }
+    info->type = kPathDevice;
+    info->prefix_off = leading_slashes - 2;
+    p = path_skip_sep(p + 2, false);
+    if (vim_strnicmp_asc(p, "unc", 3) == 0 && vim_ispathsep_nocolon(p[3])) {
+      info->type = kPathDeviceUNC;
+      p = path_skip_sep(p + 4, false);
+      info->root_off = (size_t)(p - path);
+      goto server;
+    }
+    info->root_off = (size_t)(p - path);
+    if (ASCII_ISALPHA(p[0]) && p[1] == ':') {
+      p += 2;
+    }
+    p = path_skip_sep(path_next_component(p), false);
+    info->rest_off = (size_t)(p - path);
+    return true;
+  }
+  if (leading_slashes == 2) {
+    info->type = kPathUNC;
+  server:
+    p = path_skip_sep(path_next_component(p), false);
+    p = path_skip_sep(path_next_component(p), false);
+    info->rest_off = (size_t)(p - path);
+    return true;
+  }
+#endif
+  info->type = kPathGeneric;
+  info->rest_off = leading_slashes;
+  info->root_off = leading_slashes > 2 ? leading_slashes - 1 : 0;
+  info->prefix_off = info->root_off;
+  return true;
 }
 
 /// Get the file information for a given path without following links
@@ -1305,37 +1412,26 @@ bool os_fileid_equal(const FileID *file_id_1, const FileID *file_id_2)
          && file_id_1->device_id == file_id_2->device_id;
 }
 
-/// Check if a `FileID` is equal to a `FileInfo`
-///
-/// @param file_id Pointer to a `FileID`
-/// @param file_info Pointer to a `FileInfo`
-/// @return `true` if the `FileID` and the `FileInfo` represent te same file.
-bool os_fileid_equal_fileinfo(const FileID *file_id, const FileInfo *file_info)
-  FUNC_ATTR_NONNULL_ALL
-{
-  return file_id->inode == file_info->stat.st_ino
-         && file_id->device_id == file_info->stat.st_dev;
-}
-
 /// Return the canonicalized absolute pathname.
 ///
 /// @param[in] name Filename to be canonicalized.
-/// @param[out] buf Buffer to store the canonicalized values. A minimum length
-//                  of MAXPATHL+1 is required. If it is NULL, memory is
-//                  allocated. In that case, the caller should deallocate this
-//                  buffer.
+/// @param[out] buf Buffer to store the canonicalized values.
+///                 If it is NULL, memory is allocated. In that case, the caller
+///                 should deallocate this buffer.
+/// @param[in] len  The length of the buffer.
 ///
 /// @return pointer to the buf on success, or NULL.
-char *os_realpath(const char *name, char *buf)
+char *os_realpath(const char *name, char *buf, size_t len)
   FUNC_ATTR_NONNULL_ARG(1)
 {
   uv_fs_t request;
   int result = uv_fs_realpath(NULL, &request, name, NULL);
   if (result == kLibuvSuccess) {
     if (buf == NULL) {
-      buf = xmallocz(MAXPATHL);
+      buf = xmalloc(len);
     }
-    xstrlcpy(buf, request.ptr, MAXPATHL + 1);
+    xstrlcpy(buf, request.ptr, len);
+    TO_SLASH(buf);
   }
   uv_fs_req_cleanup(&request);
   return result == kLibuvSuccess ? buf : NULL;
@@ -1421,6 +1517,7 @@ shortcut_end:
   }
 
   CoUninitialize();
+  TO_SLASH(rfname);
   return rfname;
 }
 

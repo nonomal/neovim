@@ -1867,8 +1867,8 @@ msgid "E146: Regular expressions can't be delimited by letters"
 msgstr "E146: Düzenli ifadeler harflerle sınırlandırılamaz"
 
 #, c-format
-msgid "replace with %s (y/n/a/q/l/^E/^Y)?"
-msgstr "%s ile değiştir (y/n/a/q/l/^E/^Y)?"
+msgid "replace with %s? (y)es/(n)o/(a)ll/(q)uit/(l)ast/scroll up(^E)/down(^Y)"
+msgstr "%s ile değiştir? (y)es/(n)o/(a)ll/(q)uit/(l)ast/scroll up(^E)/down(^Y)"
 
 msgid "(Interrupted) "
 msgstr "(Yarıda kesildi) "
@@ -2476,9 +2476,6 @@ msgstr "E471: Argüman gerekiyor"
 msgid "E10: \\ should be followed by /, ? or &"
 msgstr "E10: \\ sonrasında /, ? veya & gelmeli"
 
-msgid "E11: Invalid in command-line window; <CR> executes, CTRL-C quits"
-msgstr "E11: Komut satırı penceresinde geçersiz; <CR> çalıştırır, CTRL-C çıkar"
-
 msgid "E12: Command not allowed in secure mode in current dir or tag search"
 msgstr ""
 "E12: Geçerli dizin veya etiket aramasında güvenli kipteyken komuta izin "
@@ -2974,16 +2971,16 @@ msgid "E478: Don't panic!"
 msgstr "E478: Panik yok!"
 
 #, c-format
-msgid "E661: Sorry, no '%s' help for %s"
-msgstr "E661: Üzgünüm, '%s' yardımı %s için mevcut değil"
+msgid "E661: No '%s' help for %s"
+msgstr "E661: '%s' yardımı %s için mevcut değil"
 
 #, c-format
-msgid "E149: Sorry, no help for %s"
-msgstr "E149: Üzgünüm, %s için yardım mevcut değil"
+msgid "E149: No help for %s"
+msgstr "E149: %s için yardım mevcut değil"
 
 #, c-format
-msgid "Sorry, help file \"%s\" not found"
-msgstr "Üzgünüm, \"%s\" yardım dosyası bulunamadı"
+msgid "Help file \"%s\" not found"
+msgstr "\"%s\" yardım dosyası bulunamadı"
 
 #, c-format
 msgid "E151: No match: %s"
@@ -3109,8 +3106,8 @@ msgstr " Kullanıcı tanımlı tamamlamalar (^U^N^P)"
 msgid " Omni completion (^O^N^P)"
 msgstr " Omni tamamlaması (^O^N^P)"
 
-msgid " Spelling suggestion (s^N^P)"
-msgstr " Yazım önerisi (s^N^P)"
+msgid " Spelling suggestion (^S^N^P)"
+msgstr " Yazım önerisi (^S^N^P)"
 
 msgid " Keyword Local completion (^N^P)"
 msgstr " Dahili anahtar sözcük tamamlaması (^N^P)"
@@ -3917,12 +3914,8 @@ msgstr "E773: \"%s\" için sembol bağı döngüsü"
 msgid "E325: ATTENTION"
 msgstr "E325: DİKKAT"
 
-msgid ""
-"\n"
-"Found a swap file by the name \""
-msgstr ""
-"\n"
-"Şu adla bir takas dosyası bulundu: \""
+msgid "Found a swap file by the name \""
+msgstr "Şu adla bir takas dosyası bulundu: \""
 
 msgid "While opening file \""
 msgstr "şu dosya açılırken: \""
@@ -3947,8 +3940,8 @@ msgstr ""
 msgid "(2) An edit session for this file crashed.\n"
 msgstr "(2) Bu dosya düzenleme oturumu çöktü.\n"
 
-msgid "    If this is the case, use \":recover\" or \"vim -r "
-msgstr "    Durum buysa \":recover\" veya \"vim -r "
+msgid "    If this is the case, use \":recover\" or \"nvim -r "
+msgstr "    Durum buysa \":recover\" veya \"nvim -r "
 
 msgid ""
 "\"\n"
@@ -4418,12 +4411,8 @@ msgstr "Şu anki %sdil: \"%s\""
 msgid "E197: Cannot set language to \"%s\""
 msgstr "E197: \"%s\" diline ayarlanamıyor"
 
-msgid ""
-"\n"
-"shell returned "
-msgstr ""
-"\n"
-"Program çıktı: "
+msgid "shell returned "
+msgstr "Program çıktı: "
 
 msgid ""
 "\n"
@@ -5365,12 +5354,12 @@ msgstr "'%.*s' sözcüğü %s dosyasına eklendi"
 msgid "E763: Word characters differ between spell files"
 msgstr "E763: Sözcük karakterleri yazım dosyaları arasında ayrım gösteriyor"
 
-msgid "Sorry, no suggestions"
-msgstr "Üzgünüm, şu an için bir önerim yok"
+msgid "No suggestions"
+msgstr "Şu an için bir önerim yok"
 
 #, c-format
-msgid "Sorry, only %<PRId64> suggestions"
-msgstr "Üzgünüm, yalnızca %<PRId64> öneri"
+msgid "Only %<PRId64> suggestions"
+msgstr "Yalnızca %<PRId64> öneri"
 
 #, c-format
 msgid "Change \"%.*s\" to:"

@@ -2,6 +2,7 @@ local t = require('test.testutil')
 local n = require('test.functional.testnvim')()
 local Screen = require('test.functional.ui.screen')
 
+local describe, it, before_each = t.describe, t.it, t.before_each
 local clear = n.clear
 local command = n.command
 local api = n.api
@@ -14,7 +15,6 @@ describe('matchparen', function()
   before_each(function()
     clear { args = { '-u', 'NORC' } }
     screen = Screen.new(20, 5)
-    screen:attach()
     screen:set_default_attr_ids({
       [0] = { bold = true, foreground = 255 },
       [1] = { bold = true },
@@ -40,5 +40,23 @@ describe('matchparen', function()
       }                   |
       {1:-- INSERT --}        |
     ]])
+  end)
+
+  it('skips treesitter strings in another window', function()
+    api.nvim_buf_set_lines(0, 0, -1, false, { 'print(")")' })
+    n.exec_lua(function()
+      vim.treesitter.start(0, 'lua')
+    end)
+    api.nvim_win_set_cursor(0, { 1, 5 })
+    local win = api.nvim_get_current_win()
+    command('new')
+    eq(
+      { { 1, 6, 1 }, { 1, 10, 1 } },
+      n.exec_lua(function(target_win)
+        require('nvim.matchparen').highlight_matching_pair(target_win)
+        local match = vim.fn.getmatches(target_win)[1]
+        return { match.pos1, match.pos2 }
+      end, win)
+    )
   end)
 end)

@@ -1,14 +1,16 @@
 -- Test for sourcing a file with CTRL-V's at the end of the line
 
 local n = require('test.functional.testnvim')()
+local t = require('test.testutil')
 
+local describe, it, before_each, teardown = t.describe, t.it, t.before_each, t.teardown
 local clear, feed, insert = n.clear, n.feed, n.insert
 local feed_command, expect = n.feed_command, n.expect
 
-describe('CTRL-V at the end of the line', function()
-  setup(clear)
+describe('028', function()
+  before_each(clear)
 
-  it('is working', function()
+  it('CTRL-V at the end of the line is working', function()
     insert([[
       firstline
       map __1 afirst
@@ -33,6 +35,21 @@ describe('CTRL-V at the end of the line', function()
     expect([[
       sd
       map __2 asdsecondsdsd0map __5 asd0fifth]])
+  end)
+
+  it('CTRL-X/CTRL-A is working', function()
+    insert([[
+      12352
+
+      12354]])
+    feed_command('/12352')
+    feed('<C-A>')
+    feed_command('/12354')
+    feed('<C-X>')
+    expect([[
+      12353
+
+      12353]])
   end)
 
   teardown(function()

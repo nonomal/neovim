@@ -216,7 +216,7 @@ typedef enum {
   /// kExprNodeCurlyBracesIdentifier.
   kExprNodeUnknownFigure,
   kExprNodeLambda,  ///< Lambda.
-  kExprNodeDictLiteral,  ///< Dictionary literal.
+  kExprNodeDictLiteral,  ///< Dict literal.
   kExprNodeCurlyBracesIdentifier,  ///< Part of the curly braces name.
   kExprNodeComma,  ///< Comma “operator”.
   kExprNodeColon,  ///< Colon “operator”.
@@ -381,6 +381,4 @@ extern const char *const ccs_tab[];
 /// Array mapping ExprAssignmentType values to their stringified versions
 extern const char *const expr_asgn_type_tab[];
 
-#ifdef INCLUDE_GENERATED_DECLARATIONS
-# include "viml/parser/expressions.h.generated.h"
-#endif
+#include "viml/parser/expressions.h.generated.h"

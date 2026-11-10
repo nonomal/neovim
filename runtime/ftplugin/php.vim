@@ -3,6 +3,7 @@
 " Maintainer:		Doug Kearns <dougkearns@gmail.com>
 " Previous Maintainer:	Dan Sharp
 " Last Change:		2024 Jan 14
+" Last Change:		2024 May 23 by Riley Bruins <ribru17@gmail.com> ('commentstring')
 
 if exists("b:did_ftplugin")
   finish
@@ -23,7 +24,7 @@ else
 endif
 let s:match_words = ""
 
-runtime! ftplugin/html.vim ftplugin/html_*.vim ftplugin/html/*.vim
+runtime! ftplugin/html[.]{vim,lua} ftplugin/html_*.{vim,lua} ftplugin/html/*.{vim,lua}
 let b:did_ftplugin = 1
 
 " Override our defaults if these were set by an included ftplugin.
@@ -44,7 +45,7 @@ if exists("b:match_skip")
 endif
 
 setlocal comments=s1:/*,mb:*,ex:*/,://,:#
-setlocal commentstring=/*%s*/
+setlocal commentstring=/*\ %s\ */
 setlocal formatoptions+=l formatoptions-=t
 
 if get(g:, "php_autocomment", 1)

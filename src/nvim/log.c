@@ -18,7 +18,7 @@
 
 #include "auto/config.h"
 #include "nvim/ascii_defs.h"
-#include "nvim/eval.h"
+#include "nvim/eval/vars.h"
 #include "nvim/globals.h"
 #include "nvim/log.h"
 #include "nvim/memory.h"
@@ -29,6 +29,7 @@
 #include "nvim/os/stdpaths_defs.h"
 #include "nvim/os/time.h"
 #include "nvim/path.h"
+#include "nvim/ui_client.h"
 
 /// Cached location of the expanded log file path decided by log_path_init().
 static char log_file_path[MAXPATHL + 1] = { 0 };
@@ -36,9 +37,7 @@ static char log_file_path[MAXPATHL + 1] = { 0 };
 static bool did_log_init = false;
 static uv_mutex_t mutex;
 
-#ifdef INCLUDE_GENERATED_DECLARATIONS
-# include "log.c.generated.h"
-#endif
+#include "log.c.generated.h"
 
 #ifdef HAVE_EXECINFO_BACKTRACE
 # include <execinfo.h>
@@ -46,7 +45,7 @@ static uv_mutex_t mutex;
 
 static bool log_try_create(char *fname)
 {
-  if (fname == NULL || fname[0] == '\0') {
+  if (fname == NULL || fname[0] == NUL) {
     return false;
   }
   FILE *log_file = fopen(fname, "a");
@@ -59,36 +58,46 @@ static bool log_try_create(char *fname)
 
 /// Initializes the log file path and sets $NVIM_LOG_FILE if empty.
 ///
-/// Tries $NVIM_LOG_FILE, or falls back to $XDG_STATE_HOME/nvim/log. Failed
-/// initialization indicates either a bug in expand_env() or both $NVIM_LOG_FILE
-/// and $HOME environment variables are undefined.
+/// Tries $NVIM_LOG_FILE, or falls back to $XDG_STATE_HOME/nvim/logs/nvim.log.
+/// Failed initialization indicates either a bug in expand_env() or both
+/// $NVIM_LOG_FILE and $HOME environment variables are undefined.
 static void log_path_init(void)
 {
   size_t size = sizeof(log_file_path);
   expand_env("$" ENV_LOGFILE, log_file_path, (int)size - 1);
-  if (strequal("$" ENV_LOGFILE, log_file_path)
-      || log_file_path[0] == '\0'
+  bool user_set = !strequal("$" ENV_LOGFILE, log_file_path);
+
+  if (!user_set
+      || log_file_path[0] == NUL
       || os_isdir(log_file_path)
       || !log_try_create(log_file_path)) {
-    // Make $XDG_STATE_HOME if it does not exist.
-    char *loghome = get_xdg_home(kXDGStateHome);
+    if (user_set) {  // User-provided $NVIM_LOG_FILE.
+      // Used by _core/log.lua:check_log_file to validate logfile on startup.
+      os_setenv(ENV_LOGFILE_WANT, log_file_path, true);
+    }
+    // Make $XDG_STATE_HOME/logs if it does not exist.
+    char *loghome = concat_fnames_realloc(get_xdg_home(kXDGStateHome), "logs", true);
     char *failed_dir = NULL;
-    bool log_dir_failure = false;
+    int log_dir_failure = 0;
     if (!os_isdir(loghome)) {
-      log_dir_failure = (os_mkdir_recurse(loghome, 0700, &failed_dir, NULL) != 0);
+      log_dir_failure = os_mkdir_recurse(loghome, 0700, &failed_dir, NULL);
     }
     XFREE_CLEAR(loghome);
     // Invalid $NVIM_LOG_FILE or failed to expand; fall back to default.
-    char *defaultpath = stdpaths_user_state_subpath("log", 0, true);
+    char *defaultpath = stdpaths_user_state_subpath("logs/nvim.log", 0, true);
     size_t len = xstrlcpy(log_file_path, defaultpath, size);
     xfree(defaultpath);
-    // Fall back to .nvimlog
+    // Fall back to $CWD/nvim.log
     if (len >= size || !log_try_create(log_file_path)) {
-      len = xstrlcpy(log_file_path, ".nvimlog", size);
+      if (!user_set) {  // Default fallback path.
+        // Used by _core/log.lua:check_log_file to validate logfile on startup.
+        os_setenv(ENV_LOGFILE_WANT, log_file_path, true);
+      }
+      len = xstrlcpy(log_file_path, "nvim.log", size);
     }
     // Fall back to stderr
     if (len >= size || !log_try_create(log_file_path)) {
-      log_file_path[0] = '\0';
+      log_file_path[0] = NUL;
       return;
     }
     os_setenv(ENV_LOGFILE, log_file_path, true);
@@ -140,13 +149,9 @@ bool logmsg(int log_level, const char *context, const char *func_name, int line_
     return false;
   }
 
-#ifndef NVIM_LOG_DEBUG
-  // This should rarely happen (callsites are compiled out), but to be sure.
-  // TODO(bfredl): allow log levels to be configured at runtime
-  if (log_level < LOGLVL_WRN) {
+  if (log_level < g_min_log_level) {
     return false;
   }
-#endif
 
 #ifdef EXITFREE
   // Logging after we've already started freeing all our memory will only cause
@@ -256,7 +261,9 @@ void log_callstack_to_file(FILE *log_file, const char *const func_name, const in
   //    addr2line -e /path/to/exe -f -p 0x123 0x456 ...
 
   do_log_to_file(log_file, LOGLVL_DBG, NULL, func_name, line_num, true, "trace:");
+  // NOLINTNEXTLINE(bugprone-command-processor): this function is never called by default
   FILE *fp = popen(cmdbuf, "r");
+  assert(fp);
   char linebuf[IOSIZE];
   while (fgets(linebuf, sizeof(linebuf) - 1, fp) != NULL) {
     fprintf(log_file, "  %s", linebuf);
@@ -322,20 +329,29 @@ static bool v_do_log_to_file(FILE *log_file, int log_level, const char *context,
     millis = (int)curtime.tv_usec / 1000;
   }
 
+  bool ui = !!ui_client_channel_id;  // Running as a UI client (--remote-ui).
+
+  // Regenerate the name when:
+  // - UI client (to ensure "ui" is in the name)
+  // - not set yet
+  // - no v:servername yet
+  bool regen = ui || name[0] == NUL || name[0] == '?';
+
   // Get a name for this Nvim instance.
   // TODO(justinmk): expose this as v:name ?
-  if (name[0] == '\0') {
-    // Parent servername.
-    const char *parent = path_tail(os_getenv(ENV_NVIM));
+  if (regen) {
+    char parent_buf[MAXPATHL];
+    // Parent servername ($NVIM).
+    const char *parent = path_tail(os_getenv_buf(ENV_NVIM, parent_buf, sizeof(parent_buf)));
     // Servername. Empty until starting=false.
     const char *serv = path_tail(get_vim_var_str(VV_SEND_SERVER));
     if (parent[0] != NUL) {
-      snprintf(name, sizeof(name), "%s/c", parent);  // "/c" indicates child.
+      snprintf(name, sizeof(name), ui ? "ui/c/%s" : "c/%s", parent);  // "c/" = child of $NVIM.
     } else if (serv[0] != NUL) {
-      snprintf(name, sizeof(name), "%s", serv);
+      snprintf(name, sizeof(name), ui ? "ui/%s" : "%s", serv);
     } else {
       int64_t pid = os_get_pid();
-      snprintf(name, sizeof(name), "?.%-5" PRId64, pid);
+      snprintf(name, sizeof(name), "%s.%-5" PRId64, ui ? "ui" : "?", pid);
     }
   }
 
@@ -348,10 +364,6 @@ static bool v_do_log_to_file(FILE *log_file, int log_level, const char *context,
                      log_levels[log_level], date_time, millis, name,
                      (context == NULL ? "" : context),
                      func_name, line_num);
-  if (name[0] == '?') {
-    // No v:servername yet. Clear `name` so that the next log can try again.
-    name[0] = '\0';
-  }
 
   if (rv < 0) {
     return false;

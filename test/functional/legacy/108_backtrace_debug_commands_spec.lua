@@ -1,7 +1,9 @@
 -- Tests for backtrace debug commands.
 
 local n = require('test.functional.testnvim')()
+local t = require('test.testutil')
 
+local describe, it, before_each = t.describe, t.it, t.before_each
 local command = n.command
 local feed, clear = n.feed, n.clear
 local feed_command, expect = n.feed_command, n.expect
@@ -119,14 +121,14 @@ describe('108', function()
       - undefined vars:
 
       undefined var3 on former level:
-      Error detected while processing function Foo[2]..Bar[2]..Bazz:
+      Error in function Foo[2]..Bar[2]..Bazz:
       line    3:
       E121: Undefined variable: var3
       here var3 is defined with "another var":
       another var
 
       undefined var2 on former level
-      Error detected while processing function Foo[2]..Bar:
+      Error in function Foo[2]..Bar:
       line    3:
       E121: Undefined variable: var2
       here var2 is defined with 10:

@@ -1,12 +1,10 @@
 #include <inttypes.h>
-#include <stdio.h>
 #include <string.h>
 
 #include "nvim/api/private/defs.h"
 #include "nvim/api/private/helpers.h"
 #include "nvim/api/private/validate.h"
 #include "nvim/ascii_defs.h"
-#include "nvim/globals.h"
 
 /// Creates "Invalid …" message and sets it on `err`.
 void api_err_invalid(Error *err, const char *name, const char *val_s, int64_t val_n, bool quote_val)
@@ -14,10 +12,10 @@ void api_err_invalid(Error *err, const char *name, const char *val_s, int64_t va
   ErrorType errtype = kErrorTypeValidation;
   // Treat `name` without whitespace as a parameter (surround in quotes).
   // Treat `name` with whitespace as a description (no quotes).
-  char *has_space = strchr(name, ' ');
+  const char *has_space = strchr(name, ' ');
 
   // No value.
-  if (val_s && val_s[0] == '\0') {
+  if (val_s && val_s[0] == NUL) {
     api_set_error(err, errtype, has_space ? "Invalid %s" : "Invalid '%s'", name);
     return;
   }
@@ -43,7 +41,7 @@ void api_err_exp(Error *err, const char *name, const char *expected, const char 
   ErrorType errtype = kErrorTypeValidation;
   // Treat `name` without whitespace as a parameter (surround in quotes).
   // Treat `name` with whitespace as a description (no quotes).
-  char *has_space = strchr(name, ' ');
+  const char *has_space = strchr(name, ' ');
 
   if (!actual) {
     api_set_error(err, errtype,
@@ -57,13 +55,39 @@ void api_err_exp(Error *err, const char *name, const char *expected, const char 
                 name, expected, actual);
 }
 
+/// Creates "Required: …" message and sets it on `err`.
+void api_err_required(Error *err, const char *name)
+{
+  ErrorType errtype = kErrorTypeValidation;
+  // Treat `name` without whitespace as a parameter (surround in quotes).
+  // Treat `name` with whitespace as a description (no quotes).
+  const char *has_space = strchr(name, ' ');
+
+  api_set_error(err, errtype, has_space ? "Required: %s" : "Required: '%s'", name);
+}
+
+/// Creates "Conflict: … not allowed with …" message and sets it on `err`.
+void api_err_conflict(Error *err, const char *name, const char *name2)
+{
+  ErrorType errtype = kErrorTypeValidation;
+  // Treat `name` without whitespace as a parameter (surround in quotes).
+  // Treat `name` with whitespace as a description (no quotes).
+  const char *has_space2 = strchr(name2, ' ');
+
+  api_set_error(err, errtype, has_space2
+                ? "Conflict: '%s' not allowed with %s"
+                : "Conflict: '%s' not allowed with '%s'",
+                name, name2);
+}
+
 bool check_string_array(Array arr, char *name, bool disallow_nl, Error *err)
 {
-  snprintf(IObuff, sizeof(IObuff), "'%s' item", name);
   for (size_t i = 0; i < arr.size; i++) {
-    VALIDATE_T(IObuff, kObjectTypeString, arr.items[i].type, {
+    if (arr.items[i].type != kObjectTypeString) {
+      api_set_error(err, kErrorTypeValidation, "Invalid '%s' item: expected String, got %s", name,
+                    api_typename(arr.items[i].type));
       return false;
-    });
+    }
     // Disallow newlines in the middle of the line.
     if (disallow_nl) {
       const String l = arr.items[i].data.string;

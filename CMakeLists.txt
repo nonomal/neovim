@@ -4,14 +4,10 @@
 #   - pitfalls: https://izzys.casa/2019/02/everything-you-never-wanted-to-know-about-cmake/
 #   - troubleshooting:
 #     - variable_watch https://cmake.org/cmake/help/latest/command/variable_watch.html
+#     - verbose output: cmake --build build --verbose
 
 # Version should match the tested CMAKE_URL in .github/workflows/build.yml.
-cmake_minimum_required(VERSION 3.13)
-
-# Can be removed once minimum version is at least 3.15
-if(POLICY CMP0092)
-  cmake_policy(SET CMP0092 NEW)
-endif()
+cmake_minimum_required(VERSION 3.16)
 
 project(nvim C)
 
@@ -39,21 +35,27 @@ include(InstallHelpers)
 include(PreventInTreeBuilds)
 include(Util)
 
+if(NOT PROJECT_SOURCE_DIR STREQUAL PROJECT_BINARY_DIR)
+  # Auto-create a .gitignore in the specified "build" directory.
+  file(GENERATE OUTPUT .gitignore CONTENT "*")
+endif()
+
+#-------------------------------------------------------------------------------
+# User settings
+#-------------------------------------------------------------------------------
+
+if(NOT DEPS_IGNORE_SHA)
+  set(DEPS_IGNORE_SHA FALSE)
+endif()
+
 #-------------------------------------------------------------------------------
 # Variables
 #-------------------------------------------------------------------------------
 set(FUNCS_DATA ${PROJECT_BINARY_DIR}/funcs_data.mpack)
 set(TOUCHES_DIR ${PROJECT_BINARY_DIR}/touches)
+set(VTERM_TEST_FILE ${PROJECT_BINARY_DIR}/test/vterm_test_output)
 
 file(GLOB DOCFILES CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/runtime/doc/*.txt)
-
-set_directory_properties(PROPERTIES
-  EP_PREFIX "${DEPS_BUILD_DIR}")
-
-find_program(CCACHE_PRG ccache)
-if(CCACHE_PRG)
-  set(CMAKE_C_COMPILER_LAUNCHER ${CMAKE_COMMAND} -E env CCACHE_SLOPPINESS=pch_defines,time_macros ${CCACHE_PRG})
-endif()
 
 if(NOT CI_BUILD)
   set(CMAKE_INSTALL_MESSAGE NEVER)
@@ -117,10 +119,8 @@ if(APPLE)
 endif()
 
 if(WIN32 OR APPLE)
-  # Ignore case when comparing filenames on Windows and Mac.
+  # Handle case-insensitive filenames for Windows and Mac.
   set(CASE_INSENSITIVE_FILENAME TRUE)
-  # Enable fixing case-insensitive filenames for Windows and Mac.
-  set(USE_FNAME_CASE TRUE)
 endif()
 
 if (MINGW)
@@ -132,38 +132,35 @@ else()
   option(ENABLE_LTO "enable link time optimization" ON)
 endif()
 option(ENABLE_LIBINTL "enable libintl" ON)
+option(ENABLE_UNIBILIUM "enable unibilium" ON)
+option(ENABLE_WASMTIME "enable wasmtime" OFF)
 
 message(STATUS "CMAKE_INSTALL_PREFIX=${CMAKE_INSTALL_PREFIX}")
 
 set_default_buildtype(Debug)
 get_property(isMultiConfig GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
 if(NOT isMultiConfig)
-  # Unlike build dependencies in cmake.deps, we assume we want dev dependencies
-  # such as Uncrustify to always be built with Release.
+  # Unlike build dependencies in cmake.deps, we want dev dependencies such as
+  # Uncrustify to always be built with Release.
   list(APPEND DEPS_CMAKE_ARGS -D CMAKE_BUILD_TYPE=Release)
 endif()
 
 # If not in a git repo (e.g., a tarball) these tokens define the complete
 # version string, else they are combined with the result of `git describe`.
 set(NVIM_VERSION_MAJOR 0)
-set(NVIM_VERSION_MINOR 10)
+set(NVIM_VERSION_MINOR 13)
 set(NVIM_VERSION_PATCH 0)
 set(NVIM_VERSION_PRERELEASE "-dev") # for package maintainers
 
 # API level
-set(NVIM_API_LEVEL 12)        # Bump this after any API change.
+set(NVIM_API_LEVEL 15)        # Bump this after any API/stdlib change.
 set(NVIM_API_LEVEL_COMPAT 0)  # Adjust this after a _breaking_ API change.
 set(NVIM_API_PRERELEASE true)
 
-# Build-type: RelWithDebInfo
-# /Og means something different in MSVC
-if(CMAKE_C_COMPILER_ID MATCHES "GNU" OR CMAKE_C_COMPILER_ID MATCHES "Clang")
-   set(CMAKE_C_FLAGS_RELWITHDEBINFO "${CMAKE_C_FLAGS_RELWITHDEBINFO} -Og -g")
-endif()
 # We _want_ assertions in RelWithDebInfo build-type.
 if(CMAKE_C_FLAGS_RELWITHDEBINFO MATCHES DNDEBUG)
-  string(REPLACE "-DNDEBUG" "" CMAKE_C_FLAGS_RELWITHDEBINFO "${CMAKE_C_FLAGS_RELWITHDEBINFO}")
-  string(REPLACE "/DNDEBUG" "" CMAKE_C_FLAGS_RELWITHDEBINFO "${CMAKE_C_FLAGS_RELWITHDEBINFO}")
+  string(REPLACE "-DNDEBUG" "-DRELDEBUG" CMAKE_C_FLAGS_RELWITHDEBINFO "${CMAKE_C_FLAGS_RELWITHDEBINFO}")
+  string(REPLACE "/DNDEBUG" "/DRELDEBUG" CMAKE_C_FLAGS_RELWITHDEBINFO "${CMAKE_C_FLAGS_RELWITHDEBINFO}")
   string(REPLACE "  " " " CMAKE_C_FLAGS_RELWITHDEBINFO "${CMAKE_C_FLAGS_RELWITHDEBINFO}") # Remove duplicate whitespace
 endif()
 
@@ -193,6 +190,7 @@ if(NOT PREFER_LUA)
   find_program(LUA_PRG NAMES luajit)
 endif()
 find_program(LUA_PRG NAMES lua5.1 lua5.2 lua)
+mark_as_advanced(LUA_PRG)
 if(NOT LUA_PRG)
   message(FATAL_ERROR "Failed to find a Lua 5.1-compatible interpreter")
 endif()
@@ -206,28 +204,10 @@ message(STATUS "Using Lua interpreter: ${LUA_PRG}")
 if(NOT LUA_GEN_PRG)
   set(LUA_GEN_PRG "${LUA_PRG}" CACHE FILEPATH "Path to the lua used for code generation.")
 endif()
+mark_as_advanced(LUA_GEN_PRG)
 message(STATUS "Using Lua interpreter for code generation: ${LUA_GEN_PRG}")
 
 option(COMPILE_LUA "Pre-compile Lua sources into bytecode (for sources that are included in the binary)" ON)
-if(COMPILE_LUA AND NOT WIN32)
-  if(PREFER_LUA)
-    foreach(CURRENT_LUAC_PRG luac5.1 luac)
-      find_program(_CHECK_LUAC_PRG ${CURRENT_LUAC_PRG})
-      if(_CHECK_LUAC_PRG)
-        set(LUAC_PRG "${_CHECK_LUAC_PRG} -s -o - %s" CACHE STRING "Format for compiling to Lua bytecode")
-        break()
-      endif()
-    endforeach()
-  elseif(LUA_PRG MATCHES "luajit")
-    check_lua_module(${LUA_PRG} "jit.bcsave" LUAJIT_HAS_JIT_BCSAVE)
-    if(LUAJIT_HAS_JIT_BCSAVE)
-      set(LUAC_PRG "${LUA_PRG} -b -s %s -" CACHE STRING "Format for compiling to Lua bytecode")
-    endif()
-  endif()
-endif()
-if(LUAC_PRG)
-  message(STATUS "Using Lua compiler: ${LUAC_PRG}")
-endif()
 
 # Lint
 option(CI_LINT "Abort if lint programs not found" OFF)
@@ -235,18 +215,13 @@ if(CI_LINT)
   set(LINT_REQUIRED "REQUIRED")
 endif()
 find_program(SHELLCHECK_PRG shellcheck ${LINT_REQUIRED})
+mark_as_advanced(SHELLCHECK_PRG)
 find_program(STYLUA_PRG stylua ${LINT_REQUIRED})
+mark_as_advanced(STYLUA_PRG)
+find_program(TS_QUERY_LS_PRG ts_query_ls ${LINT_REQUIRED})
+mark_as_advanced(TS_QUERY_LS_PRG)
 
 set(STYLUA_DIRS runtime scripts src test contrib)
-
-add_glob_target(
-  TARGET lintlua-luacheck
-  COMMAND $<TARGET_FILE:nvim_bin>
-  FLAGS -ll ${PROJECT_SOURCE_DIR}/test/lua_runner.lua ${CMAKE_BINARY_DIR}/usr luacheck -q
-  GLOB_DIRS runtime scripts src test
-  GLOB_PAT *.lua
-  TOUCH_STRATEGY PER_DIR)
-add_dependencies(lintlua-luacheck lua-dev-deps)
 
 add_glob_target(
   TARGET lintlua-stylua
@@ -255,24 +230,51 @@ add_glob_target(
   GLOB_DIRS ${STYLUA_DIRS}
   GLOB_PAT *.lua
   TOUCH_STRATEGY PER_DIR)
+# Special handling of some files (which are ignored in .styluaignore).
+# Workaround because stylua doesn't(?) support file-specific settings.
+add_custom_target(lintlua-stylua2
+  COMMAND ${STYLUA_PRG} --config-path "${PROJECT_SOURCE_DIR}/.stylua2.toml"
+    --color=always --check
+    "${PROJECT_SOURCE_DIR}/test/functional/ui/decorations_spec.lua"
+    "${PROJECT_SOURCE_DIR}/test/functional/ui/float_spec.lua"
+    "${PROJECT_SOURCE_DIR}/test/functional/ui/multigrid_spec.lua"
+)
+add_dependencies(lintlua-stylua lintlua-stylua2)
 
 add_custom_target(lintlua)
-add_dependencies(lintlua lintlua-luacheck lintlua-stylua)
+add_dependencies(lintlua lintlua-stylua)
 
 add_glob_target(
   TARGET lintsh
   COMMAND ${SHELLCHECK_PRG}
   FLAGS -x -a
-  GLOB_DIRS scripts
+  GLOB_DIRS scripts runtime/scripts
   GLOB_PAT *.sh
   TOUCH_STRATEGY PER_DIR)
 
+add_custom_target(lintquery-compilation
+  COMMAND ${TS_QUERY_LS_PRG}
+  check ${PROJECT_SOURCE_DIR}/runtime/queries --config
+  '{"parser_install_directories": ["${DEPS_PREFIX}/lib/nvim/parser"]}')
+
+add_custom_target(lintquery-format
+  COMMAND ${TS_QUERY_LS_PRG}
+  format ${PROJECT_SOURCE_DIR}/runtime/queries --check)
+
+add_custom_target(lintquery)
+add_dependencies(lintquery lintquery-compilation lintquery-format)
+
 add_custom_target(lintcommit
-  COMMAND $<TARGET_FILE:nvim_bin> -u NONE -l ${PROJECT_SOURCE_DIR}/scripts/lintcommit.lua main)
+  COMMAND $<TARGET_FILE:nvim_bin> --clean -l ${PROJECT_SOURCE_DIR}/scripts/lintcommit.lua main)
 add_dependencies(lintcommit nvim_bin)
 
+add_custom_target(linterrcodes
+  COMMAND $<TARGET_FILE:nvim_bin> --clean -l ${PROJECT_SOURCE_DIR}/scripts/linterrcodes.lua
+  WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
+add_dependencies(linterrcodes nvim_bin)
+
 add_custom_target(lint)
-add_dependencies(lint lintc lintlua lintsh lintcommit lintdoc)
+add_dependencies(lint lintc lintlua lintsh lintquery)
 
 # Format
 add_glob_target(
@@ -282,9 +284,22 @@ add_glob_target(
   GLOB_DIRS ${STYLUA_DIRS}
   GLOB_PAT *.lua
   TOUCH_STRATEGY PER_DIR)
+# Special handling of some files (which are ignored in .styluaignore).
+# Workaround because stylua doesn't(?) support file-specific settings.
+add_custom_target(formatlua2
+  COMMAND ${STYLUA_PRG} --config-path "${PROJECT_SOURCE_DIR}/.stylua2.toml"
+    "${PROJECT_SOURCE_DIR}/test/functional/ui/decorations_spec.lua"
+    "${PROJECT_SOURCE_DIR}/test/functional/ui/float_spec.lua"
+    "${PROJECT_SOURCE_DIR}/test/functional/ui/multigrid_spec.lua"
+)
+add_dependencies(formatlua formatlua2)
+
+add_custom_target(formatquery
+  COMMAND ${TS_QUERY_LS_PRG}
+  format ${PROJECT_SOURCE_DIR}/runtime/queries)
 
 add_custom_target(format)
-add_dependencies(format formatc formatlua)
+add_dependencies(format formatc formatlua formatquery)
 
 install_helper(
   FILES ${CMAKE_SOURCE_DIR}/src/man/nvim.1
@@ -294,6 +309,8 @@ add_custom_target(nvim ALL)
 add_dependencies(nvim nvim_bin nvim_runtime_deps nvim_runtime)
 
 add_subdirectory(src/nvim)
+add_subdirectory(src/tee)
+add_subdirectory(src/xxd)
 add_subdirectory(cmake.config)
 add_subdirectory(runtime)
 add_subdirectory(test)
@@ -305,26 +322,57 @@ if(${CMAKE_SOURCE_DIR} STREQUAL ${CMAKE_CURRENT_SOURCE_DIR})
   add_subdirectory(cmake.packaging)
 endif()
 
+get_externalproject_options(uncrustify ${DEPS_IGNORE_SHA})
 ExternalProject_Add(uncrustify
-  URL https://github.com/uncrustify/uncrustify/archive/uncrustify-0.78.1.tar.gz
-  URL_HASH SHA256=ecaf4c0adca14c36dfffa30bc28e69865115ecd602c90eb16a8cddccb41caad2
   DOWNLOAD_DIR ${DEPS_DOWNLOAD_DIR}/uncrustify
   CMAKE_ARGS ${DEPS_CMAKE_ARGS}
+    -D CMAKE_RUNTIME_OUTPUT_DIRECTORY=${DEPS_BIN_DIR}
+    -D CMAKE_SKIP_RPATH=true
   EXCLUDE_FROM_ALL TRUE
-  DOWNLOAD_NO_PROGRESS TRUE)
+  ${EXTERNALPROJECT_OPTIONS})
 
-option(USE_BUNDLED_BUSTED "Use bundled busted" ON)
-if(USE_BUNDLED_BUSTED)
-  ExternalProject_Add(lua-dev-deps
-    URL https://github.com/neovim/deps/raw/5a1f71cceb24990a0b15fd9a472a5f549f019248/opt/lua-dev-deps.tar.gz
-    URL_HASH SHA256=27db2495f5eddc7fc191701ec9b291486853530c6125609d3197d03481e8d5a2
-    DOWNLOAD_DIR ${DEPS_DOWNLOAD_DIR}/lua-dev-deps
-    SOURCE_DIR ${DEPS_SHARE_DIR}
-    CONFIGURE_COMMAND ""
-    BUILD_COMMAND ""
-    INSTALL_COMMAND ""
-    EXCLUDE_FROM_ALL TRUE
-    DOWNLOAD_NO_PROGRESS TRUE)
+if (CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "arm|aarch|ARM")
+  set(EMMYLUA_ARCH arm64)
 else()
-  add_custom_target(lua-dev-deps)
+  set(EMMYLUA_ARCH x64)
 endif()
+
+string(TOLOWER ${CMAKE_HOST_SYSTEM_NAME} EMMYLUA_SYSTEM)
+set(EMMYLUA_ARCHIVE_EXT tar.gz)
+set(EMMYLUA_EXE_EXT "")
+if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux")
+  if(EMMYLUA_ARCH STREQUAL "arm64")
+    set(EMMYLUA_ARCH aarch64)
+  endif()
+  string(APPEND EMMYLUA_ARCH "-glibc.2.17")
+elseif(CMAKE_HOST_WIN32)
+  set(EMMYLUA_SYSTEM win32)
+  set(EMMYLUA_ARCHIVE_EXT zip)
+  set(EMMYLUA_EXE_EXT .exe)
+endif()
+
+set(EMMYLUA_VERSION 0.25.1)
+set(EMMYLUA_ARCHIVE "emmylua_check-${EMMYLUA_SYSTEM}-${EMMYLUA_ARCH}.${EMMYLUA_ARCHIVE_EXT}")
+set(EMMYLUA_URL https://github.com/EmmyLuaLs/emmylua-analyzer-rust/releases/download/${EMMYLUA_VERSION}/${EMMYLUA_ARCHIVE})
+
+ExternalProject_Add(download_emmylua
+  URL ${EMMYLUA_URL}
+  DOWNLOAD_DIR ${DEPS_DOWNLOAD_DIR}/emmylua
+  SOURCE_DIR ${DEPS_BIN_DIR}/emmylua
+  CONFIGURE_COMMAND ""
+  BUILD_COMMAND ""
+  INSTALL_COMMAND ""
+  EXCLUDE_FROM_ALL TRUE
+  DOWNLOAD_NO_PROGRESS TRUE
+  CMAKE_CACHE_ARGS ${DEPS_CMAKE_CACHE_ARGS})
+
+add_custom_target(emmylua-check
+  COMMAND ${DEPS_BIN_DIR}/emmylua/emmylua_check${EMMYLUA_EXE_EXT}
+    ${PROJECT_SOURCE_DIR}/runtime
+    --config ${PROJECT_SOURCE_DIR}/.emmyrc.json
+    --warnings-as-errors
+  WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+  USES_TERMINAL
+  VERBATIM)
+
+add_dependencies(emmylua-check download_emmylua)

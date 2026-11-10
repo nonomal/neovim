@@ -1,8 +1,11 @@
 *usr_29.txt*	Nvim
 
-		     VIM USER MANUAL - by Bram Moolenaar
 
-			    Moving through programs
+		     VIM USER MANUAL	by Bram Moolenaar
+
+
+==============================================================================
+Moving through programs
 
 
 The creator of Vim is a computer programmer.  It's no surprise that Vim
@@ -34,7 +37,7 @@ following command: >
 
 "ctags" is a separate program.  Most Unix systems already have it installed.
 If you do not have it yet, you can find Universal ctags at:
-	https://ctags.io ~
+	https://ctags.io
 
 Universal ctags is preferred, Exuberant ctags is no longer being developed.
 
@@ -87,7 +90,7 @@ The ":tags" command shows the list of tags that you traversed through:
 	  1  1 write_line	   8  write_block.c ~
 	  2  1 write_char	   7  write_line.c ~
 	> ~
->
+<
 Now to go back.  The CTRL-T command goes to the preceding tag.  In the example
 above you get back to the "write_line" function, in the call to "write_char".
    This command takes a count argument that indicates how many tags to jump
@@ -171,19 +174,18 @@ one to jump to: >
 
 	:tselect tagname
 
-Vim will present you with a list of choices:
-
-	  # pri kind tag	       file ~
-	  1 F	f    mch_init	       os_amiga.c ~
-		       mch_init() ~
-	  2 F	f    mch_init	       os_mac.c ~
-		       mch_init() ~
-	  3 F	f    mch_init	       os_msdos.c ~
-		       mch_init(void) ~
-	  4 F	f    mch_init	       os_riscos.c ~
-		       mch_init() ~
-	Enter nr of choice (<CR> to abort):  ~
-
+Vim will present you with a list of choices: >
+	  # pri kind tag	       file
+	  1 F	f    mch_init	       os_amiga.c
+		       mch_init()
+	  2 F	f    mch_init	       os_mac.c
+		       mch_init()
+	  3 F	f    mch_init	       os_msdos.c
+		       mch_init(void)
+	  4 F	f    mch_init	       os_riscos.c
+		       mch_init()
+	Enter nr of choice (<CR> to abort):
+<
 You can now enter the number (in the first column) of the match that you would
 like to jump to.  The information in the other columns give you a good idea of
 where the match is defined.
@@ -607,4 +609,6 @@ for the identifier.  Example (cursor on "idx"):
 
 Next chapter: |usr_30.txt|  Editing programs
 
-Copyright: see |manual-copyright|  vim:tw=78:ts=8:noet:ft=help:norl:
+Copyright: see |manual-copyright|
+
+vim:tw=78:ts=8:noet:ft=help:norl:

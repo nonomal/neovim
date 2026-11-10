@@ -4,6 +4,8 @@
 #include <stddef.h>
 
 #include "nvim/eval/typval_defs.h"
+#include "nvim/pos_defs.h"
+#include "nvim/vim_defs.h"
 
 typedef enum {
   XP_PREFIX_NONE,  ///< prefix not used
@@ -33,8 +35,21 @@ typedef struct {
   int xp_selected;              ///< selected index in completion
   char *xp_orig;                ///< originally expanded string
   char **xp_files;              ///< list of files
+  char **xp_files_abbr;         ///< optional parallel array of display
+                                ///< strings (override xp_files for the
+                                ///< pum text); NULL if unused
+  char **xp_files_kind;         ///< optional parallel array of "kind"
+                                ///< strings; NULL if unused
+  char **xp_files_menu;         ///< optional parallel array of "menu"
+                                ///< strings (shown after the match);
+                                ///< NULL if unused
+  char **xp_files_info;         ///< optional parallel array of "info"
+                                ///< strings (shown in info popup);
+                                ///< NULL if unused
   char *xp_line;                ///< text being completed
   char xp_buf[EXPAND_BUF_LEN];  ///< buffer for returned match
+  Direction xp_search_dir;      ///< Direction of search
+  pos_T xp_pre_incsearch_pos;   ///< Cursor position before incsearch
 } expand_T;
 
 /// values for xp_backslash
@@ -98,6 +113,7 @@ enum {
   EXPAND_MAPCLEAR,
   EXPAND_ARGLIST,
   EXPAND_DIFF_BUFFERS,
+  // EXPAND_DISASSEMBLE,
   EXPAND_BREAKPOINT,
   EXPAND_SCRIPTNAMES,
   EXPAND_RUNTIME,
@@ -105,8 +121,19 @@ enum {
   EXPAND_SETTING_SUBTRACT,
   EXPAND_ARGOPT,
   EXPAND_KEYMAP,
+  EXPAND_DIRS_IN_CDPATH,
+  EXPAND_SHELLCMDLINE,
+  EXPAND_FINDFUNC,
+  EXPAND_FILETYPECMD,
+  EXPAND_PATTERN_IN_BUF,
+  EXPAND_RETAB,
   EXPAND_CHECKHEALTH,
   EXPAND_LUA,
+  EXPAND_LSP,
+  EXPAND_LOG,
+  EXPAND_PACKDEL,
+  EXPAND_PACKUPDATE,
+  EXPAND_MARKS,
 };
 
 /// Type used by ExpandGeneric()

@@ -8,9 +8,7 @@
 #include "nvim/event/time.h"
 #include "nvim/types_defs.h"
 
-#ifdef INCLUDE_GENERATED_DECLARATIONS
-# include "event/time.c.generated.h"
-#endif
+#include "event/time.c.generated.h"
 
 void time_watcher_init(Loop *loop, TimeWatcher *watcher, void *data)
   FUNC_ATTR_NONNULL_ARG(1) FUNC_ATTR_NONNULL_ARG(2)
@@ -26,6 +24,8 @@ void time_watcher_start(TimeWatcher *watcher, time_cb cb, uint64_t timeout, uint
   FUNC_ATTR_NONNULL_ALL
 {
   watcher->cb = cb;
+  // Count `timeout` starting now. If the loop was blocked, the cached time would be stale.
+  uv_update_time(watcher->uv.loop);
   uv_timer_start(&watcher->uv, time_watcher_cb, timeout, repeat);
 }
 

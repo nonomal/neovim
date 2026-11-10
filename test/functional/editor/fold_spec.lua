@@ -1,6 +1,8 @@
 local t = require('test.testutil')
 local n = require('test.functional.testnvim')()
 
+local describe, it, before_each, after_each, setup =
+  t.describe, t.it, t.before_each, t.after_each, t.setup
 local clear = n.clear
 local insert = n.insert
 local exec = n.exec
@@ -496,10 +498,12 @@ a]],
 
   it("fdm=indent doesn't open folds when inserting lower foldlevel line", function()
     insert([[
-      insert an unindented line under this line
-      keep the lines under this line folded
-        keep this line folded 1
-        keep this line folded 2
+        insert an unindented line under this line
+        keep the lines under this line folded
+          keep this line folded 1
+          keep this line folded 2
+
+      .
     ]])
     command('set foldmethod=indent shiftwidth=2 noautoindent')
     eq(1, fn.foldlevel(1))

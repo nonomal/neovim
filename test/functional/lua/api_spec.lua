@@ -2,7 +2,7 @@
 local t = require('test.testutil')
 local n = require('test.functional.testnvim')()
 
-local exc_exec = n.exc_exec
+local describe, it, before_each = t.describe, t.it, t.before_each
 local remove_trace = t.remove_trace
 local fn = n.fn
 local clear = n.clear
@@ -33,6 +33,7 @@ describe('luaeval(vim.api.…)', function()
       end)
     end)
   end)
+
   describe('with errors', function()
     it('transforms API error from nvim_buf_set_lines into lua error', function()
       fn.setline(1, { 'abc', 'def', 'a\nb', 'ttt' })
@@ -44,7 +45,7 @@ describe('luaeval(vim.api.…)', function()
 
     it('transforms API error from nvim_win_set_cursor into lua error', function()
       eq(
-        { false, 'Argument "pos" must be a [row, col] array' },
+        { false, "Invalid 'pos': expected [row, col] array" },
         fn.luaeval('{pcall(vim.api.nvim_win_set_cursor, 0, {1, 2, 3})}')
       )
       -- Used to produce a memory leak due to a bug in nvim_win_set_cursor
@@ -58,14 +59,14 @@ describe('luaeval(vim.api.…)', function()
       'transforms API error from nvim_win_set_cursor + same array as in first test into lua error',
       function()
         eq(
-          { false, 'Argument "pos" must be a [row, col] array' },
+          { false, "Invalid 'pos': expected [row, col] array" },
           fn.luaeval('{pcall(vim.api.nvim_win_set_cursor, 0, {"b\\na"})}')
         )
       end
     )
   end)
 
-  it('correctly evaluates API code which calls luaeval', function()
+  it('evaluates API code which calls luaeval', function()
     local str = (
       ([===[vim.api.nvim_eval([==[
       luaeval('vim.api.nvim_eval([=[
@@ -78,7 +79,7 @@ describe('luaeval(vim.api.…)', function()
     eq(1, fn.luaeval(str))
   end)
 
-  it('correctly converts from API objects', function()
+  it('converts from API objects', function()
     eq(1, fn.luaeval('vim.api.nvim_eval("1")'))
     eq('1', fn.luaeval([[vim.api.nvim_eval('"1"')]]))
     eq('Blobby', fn.luaeval('vim.api.nvim_eval("0z426c6f626279")'))
@@ -110,7 +111,7 @@ describe('luaeval(vim.api.…)', function()
     eq({ { 42 }, {} }, fn.luaeval([=[vim.api.nvim_eval('[[42], []]')]=]))
   end)
 
-  it('correctly converts to API objects', function()
+  it('converts to API objects', function()
     eq(1, fn.luaeval('vim.api.nvim__id(1)'))
     eq('1', fn.luaeval('vim.api.nvim__id("1")'))
     eq({ 1 }, fn.luaeval('vim.api.nvim__id({1})'))
@@ -123,9 +124,12 @@ describe('luaeval(vim.api.…)', function()
     -- API strings from Blobs can work as NUL-terminated C strings
     eq(
       'Vim(call):E5555: API call: Vim:E15: Invalid expression: ""',
-      exc_exec('call nvim_eval(v:_null_blob)')
+      pcall_err(n.command, 'call nvim_eval(v:_null_blob)')
     )
-    eq('Vim(call):E5555: API call: Vim:E15: Invalid expression: ""', exc_exec('call nvim_eval(0z)'))
+    eq(
+      'Vim(call):E5555: API call: Vim:E15: Invalid expression: ""',
+      pcall_err(n.command, 'call nvim_eval(0z)')
+    )
     eq(1, eval('nvim_eval(0z31)'))
 
     eq(0, eval([[type(luaeval('vim.api.nvim__id(1)'))]]))
@@ -142,17 +146,31 @@ describe('luaeval(vim.api.…)', function()
       fn.luaeval('vim.api.nvim__id({foo=1, bar={42, {{baz=true}, 5}}})')
     )
 
+    -- Drops a metatable (e.g. `__index`, `__tostring`): converts only the table's own fields.
+    eq(
+      { { foo = 1 }, true },
+      exec_lua(function()
+        local tbl = setmetatable({ foo = 1 }, {
+          __index = { bar = 2 },
+          __tostring = function()
+            return 'x'
+          end,
+        })
+        return { tbl, getmetatable(vim.api.nvim__id(tbl)) == nil }
+      end)
+    )
+
     eq(true, fn.luaeval('vim.api.nvim__id(vim.api.nvim__id)(true)'))
     eq(
       42,
-      exec_lua [[
-      local f = vim.api.nvim__id({42, vim.api.nvim__id})
-      return f[2](f[1])
-    ]]
+      exec_lua(function()
+        local f = vim.api.nvim__id({ 42, vim.api.nvim__id })
+        return f[2](f[1])
+      end)
     )
   end)
 
-  it('correctly converts container objects with type_idx to API objects', function()
+  it('converts container objects with type_idx to API objects', function()
     eq(
       5,
       eval('type(luaeval("vim.api.nvim__id({[vim.type_idx]=vim.types.float, [vim.val_idx]=0})"))')
@@ -189,7 +207,7 @@ describe('luaeval(vim.api.…)', function()
     )
   end)
 
-  it('correctly converts arrays with type_idx to API objects', function()
+  it('converts arrays with type_idx to API objects', function()
     eq(3, eval([[type(luaeval('vim.api.nvim__id_array({[vim.type_idx]=vim.types.array})'))]]))
 
     eq({}, fn.luaeval('vim.api.nvim__id_array({[vim.type_idx]=vim.types.array})'))
@@ -223,43 +241,40 @@ describe('luaeval(vim.api.…)', function()
     eq(3, eval([[type(luaeval('vim.api.nvim__id_array({})'))]]))
   end)
 
-  it('correctly converts dictionaries with type_idx to API objects', function()
-    eq(
-      4,
-      eval([[type(luaeval('vim.api.nvim__id_dictionary({[vim.type_idx]=vim.types.dictionary})'))]])
-    )
+  it('converts dictionaries with type_idx to API objects', function()
+    eq(4, eval([[type(luaeval('vim.api.nvim__id_dict({[vim.type_idx]=vim.types.dictionary})'))]]))
 
-    eq({}, fn.luaeval('vim.api.nvim__id_dictionary({[vim.type_idx]=vim.types.dictionary})'))
+    eq({}, fn.luaeval('vim.api.nvim__id_dict({[vim.type_idx]=vim.types.dictionary})'))
 
     eq(
       { v = { 42 } },
       fn.luaeval(
-        'vim.api.nvim__id_dictionary({v={[vim.type_idx]=vim.types.array, [vim.val_idx]=10, [5]=1, foo=2, [1]=42}})'
+        'vim.api.nvim__id_dict({v={[vim.type_idx]=vim.types.array, [vim.val_idx]=10, [5]=1, foo=2, [1]=42}})'
       )
     )
     eq(
       { foo = 2 },
       fn.luaeval(
-        'vim.api.nvim__id_dictionary({[vim.type_idx]=vim.types.dictionary, [vim.val_idx]=10, [5]=1, foo=2, [1]=42})'
+        'vim.api.nvim__id_dict({[vim.type_idx]=vim.types.dictionary, [vim.val_idx]=10, [5]=1, foo=2, [1]=42})'
       )
     )
     eq(
       { v = 10 },
       fn.luaeval(
-        'vim.api.nvim__id_dictionary({v={[vim.type_idx]=vim.types.float, [vim.val_idx]=10, [5]=1, foo=2, [1]=42}})'
+        'vim.api.nvim__id_dict({v={[vim.type_idx]=vim.types.float, [vim.val_idx]=10, [5]=1, foo=2, [1]=42}})'
       )
     )
     eq(
       { v = {} },
       fn.luaeval(
-        'vim.api.nvim__id_dictionary({v={[vim.type_idx]=vim.types.array, [vim.val_idx]=10, [5]=1, foo=2}})'
+        'vim.api.nvim__id_dict({v={[vim.type_idx]=vim.types.array, [vim.val_idx]=10, [5]=1, foo=2}})'
       )
     )
 
-    -- If API requests dictionary, then empty table will be the one. This is not
+    -- If API requests dict, then empty table will be the one. This is not
     -- the case normally because empty table is an empty array.
-    eq({}, fn.luaeval('vim.api.nvim__id_dictionary({})'))
-    eq(4, eval([[type(luaeval('vim.api.nvim__id_dictionary({})'))]]))
+    eq({}, fn.luaeval('vim.api.nvim__id_dict({})'))
+    eq(4, eval([[type(luaeval('vim.api.nvim__id_dict({})'))]]))
   end)
 
   it('converts booleans in positional args', function()
@@ -303,80 +318,95 @@ describe('luaeval(vim.api.…)', function()
     )
   end)
 
-  it('errors out correctly when working with API', function()
+  it('validation', function()
     -- Conversion errors
     eq(
-      [[Vim(call):E5108: Error executing lua [string "luaeval()"]:1: Invalid 'obj': Cannot convert given Lua table]],
-      remove_trace(exc_exec([[call luaeval("vim.api.nvim__id({1, foo=42})")]]))
+      [[Vim(call):E5108: Lua: [string "luaeval()"]:0: Invalid 'obj': Cannot convert given Lua table]],
+      remove_trace(pcall_err(n.command, [[call luaeval("vim.api.nvim__id({1, foo=42})")]]))
     )
     -- Errors in number of arguments
     eq(
-      'Vim(call):E5108: Error executing lua [string "luaeval()"]:1: Expected 1 argument',
-      remove_trace(exc_exec([[call luaeval("vim.api.nvim__id()")]]))
+      'Vim(call):E5108: Lua: [string "luaeval()"]:0: Expected 1 argument',
+      remove_trace(pcall_err(n.command, [[call luaeval("vim.api.nvim__id()")]]))
     )
     eq(
-      'Vim(call):E5108: Error executing lua [string "luaeval()"]:1: Expected 1 argument',
-      remove_trace(exc_exec([[call luaeval("vim.api.nvim__id(1, 2)")]]))
+      'Vim(call):E5108: Lua: [string "luaeval()"]:0: Expected 1 argument',
+      remove_trace(pcall_err(n.command, [[call luaeval("vim.api.nvim__id(1, 2)")]]))
     )
     eq(
-      'Vim(call):E5108: Error executing lua [string "luaeval()"]:1: Expected 2 arguments',
-      remove_trace(exc_exec([[call luaeval("vim.api.nvim_set_var(1, 2, 3)")]]))
+      'Vim(call):E5108: Lua: [string "luaeval()"]:0: Expected 2 arguments',
+      remove_trace(pcall_err(n.command, [[call luaeval("vim.api.nvim_set_var(1, 2, 3)")]]))
     )
     -- Error in argument types
     eq(
-      [[Vim(call):E5108: Error executing lua [string "luaeval()"]:1: Invalid 'name': Expected Lua string]],
-      remove_trace(exc_exec([[call luaeval("vim.api.nvim_set_var(1, 2)")]]))
+      [[Vim(call):E5108: Lua: [string "luaeval()"]:0: Invalid 'name': Expected Lua string]],
+      remove_trace(pcall_err(n.command, [[call luaeval("vim.api.nvim_set_var(1, 2)")]]))
     )
 
     eq(
-      [[Vim(call):E5108: Error executing lua [string "luaeval()"]:1: Invalid 'start': Expected Lua number]],
-      remove_trace(exc_exec([[call luaeval("vim.api.nvim_buf_get_lines(0, 'test', 1, false)")]]))
-    )
-    eq(
-      [[Vim(call):E5108: Error executing lua [string "luaeval()"]:1: Invalid 'start': Number is not integral]],
-      remove_trace(exc_exec([[call luaeval("vim.api.nvim_buf_get_lines(0, 1.5, 1, false)")]]))
-    )
-    eq(
-      [[Vim(call):E5108: Error executing lua [string "luaeval()"]:1: Invalid 'window': Expected Lua number]],
-      remove_trace(exc_exec([[call luaeval("vim.api.nvim_win_is_valid(nil)")]]))
-    )
-
-    eq(
-      [[Vim(call):E5108: Error executing lua [string "luaeval()"]:1: Invalid 'flt': Expected Lua number]],
-      remove_trace(exc_exec([[call luaeval("vim.api.nvim__id_float('test')")]]))
-    )
-    eq(
-      [[Vim(call):E5108: Error executing lua [string "luaeval()"]:1: Invalid 'flt': Expected Float-like Lua table]],
+      [[Vim(call):E5108: Lua: [string "luaeval()"]:0: Invalid 'start': Expected Lua number]],
       remove_trace(
-        exc_exec([[call luaeval("vim.api.nvim__id_float({[vim.type_idx]=vim.types.dictionary})")]])
+        pcall_err(n.command, [[call luaeval("vim.api.nvim_buf_get_lines(0, 'test', 1, false)")]])
+      )
+    )
+    eq(
+      [[Vim(call):E5108: Lua: [string "luaeval()"]:0: Invalid 'start': Number is not integral]],
+      remove_trace(
+        pcall_err(n.command, [[call luaeval("vim.api.nvim_buf_get_lines(0, 1.5, 1, false)")]])
+      )
+    )
+    eq(
+      [[Vim(call):E5108: Lua: [string "luaeval()"]:0: Invalid 'win': Expected Lua number]],
+      remove_trace(pcall_err(n.command, [[call luaeval("vim.api.nvim_win_is_valid(nil)")]]))
+    )
+
+    eq(
+      [[Vim(call):E5108: Lua: [string "luaeval()"]:0: Invalid 'flt': Expected Lua number]],
+      remove_trace(pcall_err(n.command, [[call luaeval("vim.api.nvim__id_float('test')")]]))
+    )
+    eq(
+      [[Vim(call):E5108: Lua: [string "luaeval()"]:0: Invalid 'flt': Expected Float-like Lua table]],
+      remove_trace(
+        pcall_err(
+          n.command,
+          [[call luaeval("vim.api.nvim__id_float({[vim.type_idx]=vim.types.dictionary})")]]
+        )
       )
     )
 
     eq(
-      [[Vim(call):E5108: Error executing lua [string "luaeval()"]:1: Invalid 'arr': Expected Lua table]],
-      remove_trace(exc_exec([[call luaeval("vim.api.nvim__id_array(1)")]]))
+      [[Vim(call):E5108: Lua: [string "luaeval()"]:0: Invalid 'arr': Expected Lua table]],
+      remove_trace(pcall_err(n.command, [[call luaeval("vim.api.nvim__id_array(1)")]]))
     )
     eq(
-      [[Vim(call):E5108: Error executing lua [string "luaeval()"]:1: Invalid 'arr': Expected Array-like Lua table]],
+      [[Vim(call):E5108: Lua: [string "luaeval()"]:0: Invalid 'arr': Expected Array-like Lua table]],
       remove_trace(
-        exc_exec([[call luaeval("vim.api.nvim__id_array({[vim.type_idx]=vim.types.dictionary})")]])
+        pcall_err(
+          n.command,
+          [[call luaeval("vim.api.nvim__id_array({[vim.type_idx]=vim.types.dictionary})")]]
+        )
       )
     )
 
     eq(
-      [[Vim(call):E5108: Error executing lua [string "luaeval()"]:1: Invalid 'dct': Expected Lua table]],
-      remove_trace(exc_exec([[call luaeval("vim.api.nvim__id_dictionary(1)")]]))
+      [[Vim(call):E5108: Lua: [string "luaeval()"]:0: Invalid 'dct': Expected Lua table]],
+      remove_trace(pcall_err(n.command, [[call luaeval("vim.api.nvim__id_dict(1)")]]))
     )
     eq(
-      [[Vim(call):E5108: Error executing lua [string "luaeval()"]:1: Invalid 'dct': Expected Dict-like Lua table]],
+      [[Vim(call):E5108: Lua: [string "luaeval()"]:0: Invalid 'dct': Expected Dict-like Lua table]],
       remove_trace(
-        exc_exec([[call luaeval("vim.api.nvim__id_dictionary({[vim.type_idx]=vim.types.array})")]])
+        pcall_err(
+          n.command,
+          [[call luaeval("vim.api.nvim__id_dict({[vim.type_idx]=vim.types.array})")]]
+        )
       )
     )
 
     eq(
-      [[Vim(call):E5108: Error executing lua [string "luaeval()"]:1: Expected Lua table]],
-      remove_trace(exc_exec([[call luaeval("vim.api.nvim_set_keymap('', '', '', '')")]]))
+      [[Vim(call):E5108: Lua: [string "luaeval()"]:0: Expected Lua table]],
+      remove_trace(
+        pcall_err(n.command, [[call luaeval("vim.api.nvim_set_keymap('', '', '', '')")]])
+      )
     )
 
     -- TODO: check for errors with Tabpage argument

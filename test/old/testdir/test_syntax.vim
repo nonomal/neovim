@@ -73,6 +73,13 @@ func Test_syn_iskeyword()
   redir END
   call assert_equal("\nsyntax iskeyword @,48-57,_,192-255", @c)
 
+  call assert_fails("syntax iskeyword invalid_value", "E474:")
+  redir @c
+  syn iskeyword
+  redir END
+  " did not change
+  call assert_equal("\nsyntax iskeyword @,48-57,_,192-255", @c)
+
   setlocal isk-=_
   call assert_equal('DLTD_BY', GetSyntaxItem('DLTD'))
   /\<D\k\+\>/:norm! ygn
@@ -103,10 +110,15 @@ func Test_syntax_after_reload()
   call delete('Xsomefile')
 endfunc
 
+func Test_syntax_filetype_syntax()
+  set filetype=syntax
+  syntax on
+  syntax off
+  set filetype= syntax=
+endfunc
+
 func Test_syntime()
-  if !has('profile')
-    return
-  endif
+  CheckFeature profile
 
   syntax on
   syntime on
@@ -426,6 +438,25 @@ func Test_syn_sync()
   call assert_match('SyncHere', execute('syntax sync'))
   syn sync clear
   call assert_notmatch('SyncHere', execute('syntax sync'))
+
+  syn sync minlines=10
+  syntax cluster xmlStuff contains=xmlGroup1,xmlGroup2
+  syntax region xmlComment start=/<!--/ end=/-->/ keepend contains=@Spell
+  syntax sync match xmlSync1 grouphere xmlComment /<!--/
+  syntax sync match xmlSync2 groupthere NONE /-->/
+  syntax cluster xmlAll contains=ALL
+  let out = execute('syntax sync')
+  call assert_match('xmlSync1', out)
+  call assert_match('xmlSync2', out)
+  call assert_match('grouphere xmlComment', out)
+  call assert_match('groupthere NONE', out)
+  call assert_notmatch('xmlStuff', out)
+  call assert_notmatch('xmlAll', out)
+  call assert_notmatch('cluster', out)
+  call assert_notmatch('keepend', out)
+  " should output 4 lines: 1 header + 3 syn sync lines
+  call assert_equal(4, len(split(out, '\n')))
+
   syn clear
 endfunc
 
@@ -549,8 +580,7 @@ endfunc
 func Test_bg_detection()
   CheckNotGui
 
-  " auto-detection of &bg, make sure sure it isn't set anywhere before
-  " this test
+  " auto-detection of &bg, make sure it isn't set anywhere before this test
   hi Normal ctermbg=0
   call assert_equal('dark', &bg)
   hi Normal ctermbg=4
@@ -633,6 +663,7 @@ endfunc
 
 " Check highlighting for a small piece of C code with a screen dump.
 func Test_syntax_c()
+  CheckScreendump
   CheckRunVimInTerminal
   call writefile([
 	\ '/* comment line at the top */',
@@ -645,15 +676,16 @@ func Test_syntax_c()
 	\ '   printf("Just an example piece of C code\n");',
 	\ '   return 0x0ff;',
 	\ '}',
+	\ "\t\t ",
 	\ '   static void',
 	\ 'myFunction(const double count, struct nothing, long there) {',
-	\ '  // 123: nothing to read here',
-	\ '  for (int i = 0; i < count; ++i) {',
-	\ '    break;',
-	\ '  }',
-	\ "  Note: asdf",
+	\ "\t// 123: nothing to endif here",
+	\ "\tfor (int i = 0; i < count; ++i) {",
+	\ "\t   break;",
+	\ "\t}",
+	\ "\tNote: asdf",
 	\ '}',
-	\ ], 'Xtest.c')
+	\ ], 'Xtest.c', 'D')
 
   " This makes the default for 'background' use "dark", check that the
   " response to t_RB corrects it to "light".
@@ -665,7 +697,6 @@ func Test_syntax_c()
   call StopVimInTerminal(buf)
 
   let $COLORFGBG = ''
-  call delete('Xtest.c')
 endfun
 
 " Test \z(...) along with \z1
@@ -686,6 +717,44 @@ func Test_syn_zsub()
   bw!
 endfunc
 
+func s:SynDumpBuffer(ft, lines)
+  new
+  syntax on
+  execute 'setfiletype ' .. a:ft
+  call setline(1, a:lines)
+  let result = []
+  for lnum in range(1, line('$'))
+    for col in range(1, max([1, len(getline(lnum))]))
+      call add(result, synIDattr(synID(lnum, col, 1), 'name'))
+    endfor
+  endfor
+  bwipe!
+  return result
+endfunc
+
+" The in_id_list() cache is a speed optimization only: highlighting must be
+" identical with the cache on (default) and off.  Compare full-buffer synID()
+" output both ways across filetypes that use "contains"/cluster lists.
+func Test_syntax_idlist_cache_unchanged()
+  throw 'Skipped: Nvim does not support test_override()'
+  let samples = {
+        \ 'c': ['#define M 0x1F', "char c = '\\n';",
+        \       'int f(int a) { return a + 0xAB; }'],
+        \ 'vim': ['func <SID>Foo() abort', '  let x = [1, 2] + {"k": 0z1f}',
+        \         'endfunc'],
+        \ 'python': ['class C:', '    def m(self): return {1: "s", 2: r"\d"}'],
+        \ 'sh': ['case $x in', '  a) echo "${y:-0xAB}";;', 'esac'],
+        \ }
+  for ft in sort(keys(samples))
+    call test_override('syn_idlist_cache', 0)
+    let l:on = s:SynDumpBuffer(ft, samples[ft])
+    call test_override('syn_idlist_cache', 1)
+    let l:off = s:SynDumpBuffer(ft, samples[ft])
+    call test_override('ALL', 0)
+    call assert_equal(l:off, l:on, 'filetype ' .. ft)
+  endfor
+endfunc
+
 " Using \z() in a region with NFA failing should not crash.
 func Test_syn_wrong_z_one()
   new
@@ -699,10 +768,10 @@ func Test_syn_wrong_z_one()
 endfunc
 
 func Test_syntax_after_bufdo()
-  call writefile(['/* aaa comment */'], 'Xaaa.c')
-  call writefile(['/* bbb comment */'], 'Xbbb.c')
-  call writefile(['/* ccc comment */'], 'Xccc.c')
-  call writefile(['/* ddd comment */'], 'Xddd.c')
+  call writefile(['/* aaa comment */'], 'Xaaa.c', 'D')
+  call writefile(['/* bbb comment */'], 'Xbbb.c', 'D')
+  call writefile(['/* ccc comment */'], 'Xccc.c', 'D')
+  call writefile(['/* ddd comment */'], 'Xddd.c', 'D')
 
   let bnr = bufnr('%')
   new Xaaa.c
@@ -730,10 +799,6 @@ func Test_syntax_after_bufdo()
   bwipe! Xccc.c
   bwipe! Xddd.c
   syntax off
-  call delete('Xaaa.c')
-  call delete('Xbbb.c')
-  call delete('Xccc.c')
-  call delete('Xddd.c')
 endfunc
 
 func Test_syntax_foldlevel()
@@ -949,7 +1014,7 @@ func Test_syn_contained_transparent()
 endfunc
 
 func Test_syn_include_contains_TOP()
-  let l:case = "TOP in included syntax means its group list name"
+  let l:case = "TOP in included syntax refers to top level of that included syntax"
   new
   syntax include @INCLUDED syntax/c.vim
   syntax region FencedCodeBlockC start=/```c/ end=/```/ contains=@INCLUDED
@@ -960,6 +1025,18 @@ func Test_syn_include_contains_TOP()
   " cCppOutElse has contains=TOP
   let l:expected = ["cType"]
   eval AssertHighlightGroups(5, 1, l:expected, 1, l:case)
+  syntax clear
+  bw!
+endfunc
+
+func Test_syn_include_contains_TOP_excluding()
+  new
+  syntax include @INCLUDED syntax/c.vim
+  syntax region FencedCodeBlockC start=/```c/ end=/```/ contains=@INCLUDED
+
+  call setline(1,  ['```c', '#if 0', 'int', '#else', 'int', '#if', '#endif', '```' ])
+  let l:expected = ["cCppOutElse", "cConditional"]
+  eval AssertHighlightGroups(6, 1, l:expected, 1)
   syntax clear
   bw!
 endfunc
@@ -977,5 +1054,30 @@ func Test_WinEnter_synstack_synID()
   bw!
 endfunc
 
+" This was going beyond the end of the "foo" line
+func Test_syn_sync_grouphere_shorter_next_line()
+  let lines =<< trim END
+    if [[ "$var1" == 1 ]]; then
+      foo
+    else
+      bar
+    fi
+  END
+  let lines = ['a']->repeat(50) + lines + ['a']->repeat(48)
+
+  20new
+  call setline(1, lines)
+  syn region shIf transparent
+        \ start="\<if\_s" skip=+-fi\>+ end="\<;\_s*then\>" end="\<fi\>"
+  syn sync minlines=20 maxlines=40
+  syn sync match shIfSync grouphere shIf "\<if\>"
+  redraw!
+
+  normal! G
+  " Should not go beyond end of line
+  redraw!
+
+  bw!
+endfunc
 
 " vim: shiftwidth=2 sts=2 expandtab

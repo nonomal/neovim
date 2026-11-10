@@ -4,6 +4,7 @@
 local t = require('test.testutil')
 local n = require('test.functional.testnvim')()
 
+local describe, it, before_each = t.describe, t.it, t.before_each
 local api, eq = n.api, t.eq
 local insert, feed = n.insert, n.feed
 local clear, expect = n.clear, n.expect
@@ -112,7 +113,8 @@ describe('Visual block mode', function()
       		line1
       		line2
       		line3
-      ]])
+      .
+    ]])
 
     -- Test for Visual block insert when virtualedit=all and utf-8 encoding.
     feed_command('set ve=all')
@@ -123,7 +125,8 @@ describe('Visual block mode', function()
              x 	line1
              x 	line2
              x 	line3
-      ]])
+      .
+    ]])
 
     -- Test for Visual block append when virtualedit=all.
     feed('012l<C-v>jjAx<ESC>')
@@ -132,7 +135,8 @@ describe('Visual block mode', function()
              x     x   line1
              x     x   line2
              x     x   line3
-      ]])
+      .
+    ]])
   end)
 
   it('should make a selected part uppercase', function()

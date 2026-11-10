@@ -2,6 +2,7 @@
 
 #include "nvim/ascii_defs.h"
 #include "nvim/eval/typval_defs.h"  // IWYU pragma: keep
+#include "nvim/keycodes_defs.h"  // IWYU pragma: keep
 
 // Keycode definitions for special keys.
 //
@@ -195,7 +196,7 @@ enum key_extra {
   // KE_CSI = 81,           // Nvim doesn't need escaping CSI
   KE_SNR = 82,              // <SNR>
   KE_PLUG = 83,             // <Plug>
-  KE_CMDWIN = 84,           // open command-line window from Command-line Mode
+  // KE_CMDWIN = 84,        // Nvim "cmdwin" is not special. #40312
 
   KE_C_LEFT = 85,           // control-left
   KE_C_RIGHT = 86,          // control-right
@@ -215,10 +216,17 @@ enum key_extra {
   // KE_FOCUSGAINED = 98,   // focus gained
   // KE_FOCUSLOST = 99,     // focus lost
   KE_MOUSEMOVE = 100,       // mouse moved with no button down
-  // KE_CANCEL = 101,       // return from vgetc()
+  // KE_MOUSEMOVE_XY = 101,
+  // KE_CANCEL = 102,       // return from vgetc()
   KE_EVENT = 102,           // event
   KE_LUA = 103,             // Lua special key
   KE_COMMAND = 104,         // <Cmd> special key
+  // KE_S_BS = 105,
+  // KE_SID = 106,
+  // KE_ESC = 107,
+  KE_WILD = 108,            // triggers wildmode completion
+  // KE_OSC = 109,
+  KE_COMPLETE_DELAY = 110,  // 'autocompletedelay' expired
 };
 
 // the three byte codes are replaced with the following int when using vgetc()
@@ -352,6 +360,8 @@ enum key_extra {
 
 #define K_HELP          TERMCAP2KEY('%', '1')
 #define K_UNDO          TERMCAP2KEY('&', '8')
+#define K_FIND          TERMCAP2KEY('@', '0')   // DEC key, often used as Home
+#define K_KSELECT       TERMCAP2KEY('*', '6')   // DEC key, often used as End
 
 #define K_BS            TERMCAP2KEY('k', 'b')
 
@@ -379,6 +389,10 @@ enum key_extra {
 #define K_KMULTIPLY     TERMCAP2KEY('K', '9')   // keypad *
 #define K_KENTER        TERMCAP2KEY('K', 'A')   // keypad Enter
 #define K_KPOINT        TERMCAP2KEY('K', 'B')   // keypad . or ,
+
+// Delimits pasted text (to repeat nvim_paste). Internal-only, not sent by UIs.
+#define K_PASTE_START   TERMCAP2KEY('P', 'S')   // paste start
+#define K_PASTE_END     TERMCAP2KEY('P', 'E')   // paste end
 
 #define K_K0            TERMCAP2KEY('K', 'C')   // keypad 0
 #define K_K1            TERMCAP2KEY('K', 'D')   // keypad 1
@@ -437,13 +451,16 @@ enum key_extra {
 
 #define K_SNR           TERMCAP2KEY(KS_EXTRA, KE_SNR)
 #define K_PLUG          TERMCAP2KEY(KS_EXTRA, KE_PLUG)
-#define K_CMDWIN        TERMCAP2KEY(KS_EXTRA, KE_CMDWIN)
 
 #define K_DROP          TERMCAP2KEY(KS_EXTRA, KE_DROP)
+
+#define K_COMPLETE_DELAY TERMCAP2KEY(KS_EXTRA, KE_COMPLETE_DELAY)
 
 #define K_EVENT         TERMCAP2KEY(KS_EXTRA, KE_EVENT)
 #define K_COMMAND       TERMCAP2KEY(KS_EXTRA, KE_COMMAND)
 #define K_LUA           TERMCAP2KEY(KS_EXTRA, KE_LUA)
+
+#define K_WILD          TERMCAP2KEY(KS_EXTRA, KE_WILD)
 
 // Bits for modifier mask
 // 0x01 cannot be used, because the modifier must be 0x02 or higher
@@ -488,6 +505,10 @@ enum {
   FSK_SIMPLIFY   = 0x08,  ///< simplify <C-H>, etc.
 };
 
-#ifdef INCLUDE_GENERATED_DECLARATIONS
-# include "keycodes.h.generated.h"
-#endif
+extern const struct modmasktable {
+  uint16_t mod_mask;  ///< Bit-mask for particular key modifier.
+  uint16_t mod_flag;  ///< Bit(s) for particular key modifier.
+  char name;  ///< Single letter name of modifier.
+} mod_mask_table[];
+
+#include "keycodes.h.generated.h"

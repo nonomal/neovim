@@ -2998,8 +2998,8 @@ msgid "E146: Regular expressions can't be delimited by letters"
 msgstr "E146: 正規表現は文字で区切ることができません"
 
 #, c-format
-msgid "replace with %s (y/n/a/q/l/^E/^Y)?"
-msgstr "%s に置換しますか? (y/n/a/q/l/^E/^Y)"
+msgid "replace with %s? (y)es/(n)o/(a)ll/(q)uit/(l)ast/scroll up(^E)/down(^Y)"
+msgstr "%s に置換しますか? (y)es/(n)o/(a)ll/(q)uit/(l)ast/scroll up(^E)/down(^Y)"
 
 msgid "(Interrupted) "
 msgstr "(割込まれました) "
@@ -3590,11 +3590,6 @@ msgstr "E471: 引数が必要です"
 msgid "E10: \\ should be followed by /, ? or &"
 msgstr "E10: \\ の後は / か ? か & でなければなりません"
 
-msgid "E11: Invalid in command-line window; <CR> executes, CTRL-C quits"
-msgstr ""
-"E11: コマンドラインウィンドウでは使用できません。<CR> で実行、CTRL-C で終了し"
-"ます。"
-
 #, fuzzy
 #~ msgid "E12: Command not allowed in secure mode in current dir or tag search"
 #~ msgstr "E12: このコマンドは現在のディレクトリやタグ検索では使用できません"
@@ -4112,16 +4107,16 @@ msgid "E478: Don't panic!"
 msgstr "E478: 慌てないでください!"
 
 #, c-format
-msgid "E661: Sorry, no '%s' help for %s"
-msgstr "E661: 残念ですが '%s' のヘルプが %s にはありません"
+msgid "E661: No '%s' help for %s"
+msgstr "E661: '%s' のヘルプが %s にはありません"
 
 #, c-format
-msgid "E149: Sorry, no help for %s"
-msgstr "E149: 残念ですが %s にはヘルプがありません"
+msgid "E149: No help for %s"
+msgstr "E149: %s にはヘルプがありません"
 
 #, c-format
-msgid "Sorry, help file \"%s\" not found"
-msgstr "残念ですがヘルプファイル \"%s\" が見つかりません"
+msgid "Help file \"%s\" not found"
+msgstr "ヘルプファイル \"%s\" が見つかりません"
 
 #, c-format
 msgid "E151: No match: %s"
@@ -4247,8 +4242,8 @@ msgstr " ユーザー定義補完 (^U^N^P)"
 msgid " Omni completion (^O^N^P)"
 msgstr " オムニ補完 (^O^N^P)"
 
-msgid " Spelling suggestion (s^N^P)"
-msgstr " 綴り修正候補 (s^N^P)"
+msgid " Spelling suggestion (^S^N^P)"
+msgstr " 綴り修正候補 (^S^N^P)"
 
 msgid " Keyword Local completion (^N^P)"
 msgstr " 局所キーワード補完 (^N^P)"
@@ -5061,12 +5056,8 @@ msgstr "E773: \"%s\" のシンボリックリンクがループになってい�
 msgid "E325: ATTENTION"
 msgstr "E325: 注意"
 
-msgid ""
-"\n"
-"Found a swap file by the name \""
-msgstr ""
-"\n"
-"次の名前でスワップファイルを見つけました \""
+msgid "Found a swap file by the name \""
+msgstr "次の名前でスワップファイルを見つけました \""
 
 msgid "While opening file \""
 msgstr "次のファイルを開いている最中 \""
@@ -5092,8 +5083,8 @@ msgstr ""
 msgid "(2) An edit session for this file crashed.\n"
 msgstr "(2) このファイルの編集セッションがクラッシュした.\n"
 
-msgid "    If this is the case, use \":recover\" or \"vim -r "
-msgstr "    この場合には \":recover\" か \"vim -r "
+msgid "    If this is the case, use \":recover\" or \"nvim -r "
+msgstr "    この場合には \":recover\" か \"nvim -r "
 
 msgid ""
 "\"\n"
@@ -5567,12 +5558,8 @@ msgstr "現在の %s言語: \"%s\""
 msgid "E197: Cannot set language to \"%s\""
 msgstr "E197: 言語を \"%s\" に設定できません"
 
-msgid ""
-"\n"
-"shell returned "
-msgstr ""
-"\n"
-"シェルが値を返しました "
+msgid "shell returned "
+msgstr "シェルが値を返しました "
 
 msgid ""
 "\n"
@@ -6615,12 +6602,12 @@ msgstr "単語 '%.*s' が %s へ追加されました"
 msgid "E763: Word characters differ between spell files"
 msgstr "E763: 単語の文字がスペルファイルと異なります"
 
-msgid "Sorry, no suggestions"
-msgstr "残念ですが、修正候補はありません"
+msgid "No suggestions"
+msgstr "修正候補はありません"
 
 #, c-format
-msgid "Sorry, only %<PRId64> suggestions"
-msgstr "残念ですが、修正候補は %<PRId64> 個しかありません"
+msgid "Only %<PRId64> suggestions"
+msgstr "修正候補は %<PRId64> 個しかありません"
 
 #, c-format
 msgid "Change \"%.*s\" to:"
@@ -6668,44 +6655,14 @@ msgstr "E1505: 無効なフォーマット指示子です: %s"
 msgid "unknown"
 msgstr "不明"
 
-msgid "int"
-msgstr "int"
-
-msgid "long int"
-msgstr "long int"
-
-msgid "long long int"
-msgstr "long long int"
-
-msgid "signed size_t"
-msgstr "signed size_t"
-
-msgid "unsigned int"
-msgstr "unsigned int"
-
-msgid "unsigned long int"
-msgstr "unsigned long int"
-
-msgid "unsigned long long int"
-msgstr "unsigned long long int"
-
-msgid "size_t"
-msgstr "size_t"
-
 msgid "pointer"
 msgstr "pointer"
 
 msgid "percent"
 msgstr "percent"
 
-msgid "char"
-msgstr "char"
-
 msgid "string"
 msgstr "string"
-
-msgid "float"
-msgstr "float"
 
 msgid "E766: Insufficient arguments for printf()"
 msgstr "E766: printf() の引数が不十分です"

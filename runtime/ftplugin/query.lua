@@ -1,6 +1,5 @@
 -- Neovim filetype plugin file
 -- Language:	Treesitter query
--- Last Change:	2023 Aug 23
 
 if vim.b.did_ftplugin == 1 then
   return
@@ -12,18 +11,18 @@ end
 vim.treesitter.start()
 
 -- set omnifunc
-vim.bo.omnifunc = 'v:lua.vim.treesitter.query.omnifunc'
+vim.bo.omnifunc = vim.treesitter.query.omnifunc
 
-vim.opt_local.iskeyword:append('.')
+vim.api.nvim_set_option_value('iskeyword', '.', { scope = 'local', operation = 'append' })
 
 -- query linter
 local buf = vim.api.nvim_get_current_buf()
-local query_lint_on = vim.g.query_lint_on or { 'BufEnter', 'BufWrite' }
+local query_lint_on = vim.g.query_lint_on or {}
 
 if not vim.b.disable_query_linter and #query_lint_on > 0 then
   vim.api.nvim_create_autocmd(query_lint_on, {
-    group = vim.api.nvim_create_augroup('querylint', { clear = false }),
-    buffer = buf,
+    group = vim.api.nvim_create_augroup('nvim.querylint', { clear = false }),
+    buf = buf,
     callback = function()
       vim.treesitter.query.lint(buf)
     end,
@@ -32,4 +31,7 @@ if not vim.b.disable_query_linter and #query_lint_on > 0 then
 end
 
 -- it's a lisp!
-vim.cmd([[ runtime! ftplugin/lisp.vim ]])
+vim.cmd([[runtime! ftplugin/lisp.vim]])
+
+vim.b.undo_ftplugin = (vim.b.undo_ftplugin or '') .. '\n setl omnifunc< iskeyword<'
+vim.b.undo_ftplugin = vim.b.undo_ftplugin .. ' | call v:lua.vim.treesitter.stop()'

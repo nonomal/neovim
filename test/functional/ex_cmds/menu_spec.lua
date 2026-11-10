@@ -1,6 +1,7 @@
 local t = require('test.testutil')
 local n = require('test.functional.testnvim')()
 
+local describe, it, before_each = t.describe, t.it, t.before_each
 local clear, command = n.clear, n.command
 local expect, feed = n.expect, n.feed
 local eq, eval = t.eq, n.eval
@@ -57,28 +58,102 @@ describe(':emenu', function()
     -- Assert that Edit.Paste pasted @" into the commandline.
     eq('thiscmdmode', eval('getcmdline()'))
   end)
+
+  it('popup menu in visual mode via <C-o> from insert mode #19473', function()
+    n.exec([[
+      aunmenu *
+      source $VIMRUNTIME/menu.vim
+    ]])
+    feed('itext<C-o>V')
+    command('emenu PopUp.Cut')
+    eq('', fn.getline(1))
+    eq('text\n', fn.getreg('"'))
+    eq('', n.api.nvim_get_vvar('errmsg'))
+  end)
 end)
+
+local test_menus_cmd = [=[
+  aunmenu *
+
+  nnoremenu &Test.Test inormal<ESC>
+  inoremenu Test.Test insert
+  vnoremenu Test.Test x
+  cnoremenu Test.Test cmdmode
+  menu Test.Nested.test level1
+  menu Test.Nested.Nested2 level2
+
+  nnoremenu <script> Export.Script p
+  tmenu Export.Script This is the tooltip
+  menu ]Export.hidden thisoneshouldbehidden
+
+  nnoremenu Edit.Paste p
+  cnoremenu Edit.Paste <C-R>"
+]=]
+
+describe(':menu listing', function()
+  before_each(function()
+    clear()
+    command(test_menus_cmd)
+  end)
+
+  it('matches by path argument', function()
+    eq(
+      [[
+--- Menus ---
+500 Edit
+  500 Paste
+      c*   <C-R>"]],
+      n.exec_capture('cmenu Edit')
+    )
+    eq(
+      [[
+--- Menus ---
+500 &Test
+  500 Test
+      n*   inormal<Esc>
+  500 Nested
+    500 test
+        n    level1
+    500 Nested2
+        n    level2]],
+      n.exec_capture('nmenu Test')
+    )
+    eq(
+      [[
+--- Menus ---
+500 Nested
+  500 test
+      o    level1
+  500 Nested2
+      o    level2]],
+      n.exec_capture('omenu Test.Nested')
+    )
+    eq(
+      [[
+--- Menus ---
+500 Test
+    n*   inormal<Esc>
+    v*   x
+    s*   x
+    i*   insert
+    c*   cmdmode]],
+      n.exec_capture('amenu Test.Test')
+    )
+  end)
+end)
+
+local function menu_mapping(overrides)
+  return vim.tbl_extend('force', {
+    enabled = 1,
+    sid = 0,
+    silent = 0,
+  }, overrides)
+end
 
 describe('menu_get', function()
   before_each(function()
     clear()
-    command([=[
-      aunmenu *
-
-      nnoremenu &Test.Test inormal<ESC>
-      inoremenu Test.Test insert
-      vnoremenu Test.Test x
-      cnoremenu Test.Test cmdmode
-      menu Test.Nested.test level1
-      menu Test.Nested.Nested2 level2
-
-      nnoremenu <script> Export.Script p
-      tmenu Export.Script This is the tooltip
-      menu ]Export.hidden thisoneshouldbehidden
-
-      nnoremenu Edit.Paste p
-      cnoremenu Edit.Paste <C-R>"
-    ]=])
+    command(test_menus_cmd)
   end)
 
   it("path='', modes='a'", function()
@@ -92,41 +167,11 @@ describe('menu_get', function()
         submenus = {
           {
             mappings = {
-              i = {
-                sid = 1,
-                noremap = 1,
-                enabled = 1,
-                rhs = 'insert',
-                silent = 0,
-              },
-              s = {
-                sid = 1,
-                noremap = 1,
-                enabled = 1,
-                rhs = 'x',
-                silent = 0,
-              },
-              n = {
-                sid = 1,
-                noremap = 1,
-                enabled = 1,
-                rhs = 'inormal<Esc>',
-                silent = 0,
-              },
-              v = {
-                sid = 1,
-                noremap = 1,
-                enabled = 1,
-                rhs = 'x',
-                silent = 0,
-              },
-              c = {
-                sid = 1,
-                noremap = 1,
-                enabled = 1,
-                rhs = 'cmdmode',
-                silent = 0,
-              },
+              i = menu_mapping({ noremap = 1, rhs = 'insert' }),
+              s = menu_mapping({ noremap = 1, rhs = 'x' }),
+              n = menu_mapping({ noremap = 1, rhs = 'inormal<Esc>' }),
+              v = menu_mapping({ noremap = 1, rhs = 'x' }),
+              c = menu_mapping({ noremap = 1, rhs = 'cmdmode' }),
             },
             priority = 500,
             name = 'Test',
@@ -138,34 +183,10 @@ describe('menu_get', function()
             submenus = {
               {
                 mappings = {
-                  o = {
-                    sid = 0,
-                    noremap = 0,
-                    enabled = 1,
-                    rhs = 'level1',
-                    silent = 0,
-                  },
-                  v = {
-                    sid = 0,
-                    noremap = 0,
-                    enabled = 1,
-                    rhs = 'level1',
-                    silent = 0,
-                  },
-                  s = {
-                    sid = 0,
-                    noremap = 0,
-                    enabled = 1,
-                    rhs = 'level1',
-                    silent = 0,
-                  },
-                  n = {
-                    sid = 0,
-                    noremap = 0,
-                    enabled = 1,
-                    rhs = 'level1',
-                    silent = 0,
-                  },
+                  o = menu_mapping({ noremap = 0, rhs = 'level1' }),
+                  v = menu_mapping({ noremap = 0, rhs = 'level1' }),
+                  s = menu_mapping({ noremap = 0, rhs = 'level1' }),
+                  n = menu_mapping({ noremap = 0, rhs = 'level1' }),
                 },
                 priority = 500,
                 name = 'test',
@@ -173,34 +194,10 @@ describe('menu_get', function()
               },
               {
                 mappings = {
-                  o = {
-                    sid = 0,
-                    noremap = 0,
-                    enabled = 1,
-                    rhs = 'level2',
-                    silent = 0,
-                  },
-                  v = {
-                    sid = 0,
-                    noremap = 0,
-                    enabled = 1,
-                    rhs = 'level2',
-                    silent = 0,
-                  },
-                  s = {
-                    sid = 0,
-                    noremap = 0,
-                    enabled = 1,
-                    rhs = 'level2',
-                    silent = 0,
-                  },
-                  n = {
-                    sid = 0,
-                    noremap = 0,
-                    enabled = 1,
-                    rhs = 'level2',
-                    silent = 0,
-                  },
+                  o = menu_mapping({ noremap = 0, rhs = 'level2' }),
+                  v = menu_mapping({ noremap = 0, rhs = 'level2' }),
+                  s = menu_mapping({ noremap = 0, rhs = 'level2' }),
+                  n = menu_mapping({ noremap = 0, rhs = 'level2' }),
                 },
                 priority = 500,
                 name = 'Nested2',
@@ -223,13 +220,7 @@ describe('menu_get', function()
             name = 'Script',
             priority = 500,
             mappings = {
-              n = {
-                sid = 1,
-                noremap = 1,
-                enabled = 1,
-                rhs = 'p',
-                silent = 0,
-              },
+              n = menu_mapping({ sid = 1, noremap = 0, rhs = 'p' }),
             },
           },
         },
@@ -241,20 +232,8 @@ describe('menu_get', function()
         submenus = {
           {
             mappings = {
-              c = {
-                sid = 1,
-                noremap = 1,
-                enabled = 1,
-                rhs = '<C-R>"',
-                silent = 0,
-              },
-              n = {
-                sid = 1,
-                noremap = 1,
-                enabled = 1,
-                rhs = 'p',
-                silent = 0,
-              },
+              c = menu_mapping({ noremap = 1, rhs = '<C-R>"' }),
+              n = menu_mapping({ noremap = 1, rhs = 'p' }),
             },
             priority = 500,
             name = 'Paste',
@@ -269,34 +248,10 @@ describe('menu_get', function()
         submenus = {
           {
             mappings = {
-              o = {
-                sid = 0,
-                noremap = 0,
-                enabled = 1,
-                rhs = 'thisoneshouldbehidden',
-                silent = 0,
-              },
-              v = {
-                sid = 0,
-                noremap = 0,
-                enabled = 1,
-                rhs = 'thisoneshouldbehidden',
-                silent = 0,
-              },
-              s = {
-                sid = 0,
-                noremap = 0,
-                enabled = 1,
-                rhs = 'thisoneshouldbehidden',
-                silent = 0,
-              },
-              n = {
-                sid = 0,
-                noremap = 0,
-                enabled = 1,
-                rhs = 'thisoneshouldbehidden',
-                silent = 0,
-              },
+              o = menu_mapping({ noremap = 0, rhs = 'thisoneshouldbehidden' }),
+              v = menu_mapping({ noremap = 0, rhs = 'thisoneshouldbehidden' }),
+              s = menu_mapping({ noremap = 0, rhs = 'thisoneshouldbehidden' }),
+              n = menu_mapping({ noremap = 0, rhs = 'thisoneshouldbehidden' }),
             },
             priority = 500,
             name = 'hidden',
@@ -323,13 +278,7 @@ describe('menu_get', function()
             name = 'Script',
             priority = 500,
             mappings = {
-              n = {
-                sid = 1,
-                noremap = 1,
-                enabled = 1,
-                rhs = 'p',
-                silent = 0,
-              },
+              n = menu_mapping({ sid = 1, noremap = 0, rhs = 'p' }),
             },
           },
         },
@@ -347,13 +296,7 @@ describe('menu_get', function()
         submenus = {
           {
             mappings = {
-              i = {
-                sid = 1,
-                noremap = 1,
-                enabled = 1,
-                rhs = 'insert',
-                silent = 0,
-              },
+              i = menu_mapping({ noremap = 1, rhs = 'insert' }),
             },
             priority = 500,
             name = 'Test',
@@ -375,13 +318,7 @@ describe('menu_get', function()
         submenus = {
           {
             mappings = {
-              i = {
-                sid = 1,
-                noremap = 1,
-                enabled = 1,
-                rhs = 'insert',
-                silent = 0,
-              },
+              i = menu_mapping({ noremap = 1, rhs = 'insert' }),
             },
             priority = 500,
             name = 'Test',
@@ -423,13 +360,7 @@ describe('menu_get', function()
           {
             priority = 500,
             mappings = {
-              n = {
-                sid = 1,
-                noremap = 1,
-                enabled = 1,
-                rhs = 'inormal<Esc>',
-                silent = 0,
-              },
+              n = menu_mapping({ noremap = 1, rhs = 'inormal<Esc>' }),
             },
             name = 'Test',
             hidden = 0,
@@ -437,13 +368,7 @@ describe('menu_get', function()
           {
             priority = 500,
             mappings = {
-              i = {
-                sid = 1,
-                noremap = 1,
-                enabled = 1,
-                rhs = '<Tab><Esc>',
-                silent = 0,
-              },
+              i = menu_mapping({ noremap = 1, rhs = '<Tab><Esc>' }),
             },
             name = 'Test2',
             hidden = 0,
@@ -451,20 +376,8 @@ describe('menu_get', function()
           {
             priority = 500,
             mappings = {
-              s = {
-                sid = 1,
-                noremap = 1,
-                enabled = 1,
-                rhs = 'yA<C-R>0<Tab>xyz<Esc>',
-                silent = 0,
-              },
-              v = {
-                sid = 1,
-                noremap = 1,
-                enabled = 1,
-                rhs = 'yA<C-R>0<Tab>xyz<Esc>',
-                silent = 0,
-              },
+              s = menu_mapping({ noremap = 1, rhs = 'yA<C-R>0<Tab>xyz<Esc>' }),
+              v = menu_mapping({ noremap = 1, rhs = 'yA<C-R>0<Tab>xyz<Esc>' }),
             },
             name = 'Test3',
             hidden = 0,
@@ -472,13 +385,7 @@ describe('menu_get', function()
           {
             priority = 500,
             mappings = {
-              i = {
-                sid = 1,
-                noremap = 1,
-                enabled = 1,
-                rhs = '<C-R>*',
-                silent = 0,
-              },
+              i = menu_mapping({ noremap = 1, rhs = '<C-R>*' }),
             },
             name = 'Test4',
             hidden = 0,
@@ -486,13 +393,7 @@ describe('menu_get', function()
           {
             priority = 500,
             mappings = {
-              i = {
-                sid = 1,
-                noremap = 1,
-                enabled = 1,
-                rhs = '<C-R>+',
-                silent = 0,
-              },
+              i = menu_mapping({ noremap = 1, rhs = '<C-R>+' }),
             },
             name = 'Test5',
             hidden = 0,
@@ -500,13 +401,7 @@ describe('menu_get', function()
           {
             priority = 500,
             mappings = {
-              n = {
-                sid = 1,
-                noremap = 1,
-                enabled = 1,
-                rhs = '',
-                silent = 0,
-              },
+              n = menu_mapping({ noremap = 1, rhs = '' }),
             },
             name = 'Test6',
             hidden = 0,
@@ -514,13 +409,7 @@ describe('menu_get', function()
           {
             priority = 500,
             mappings = {
-              n = {
-                sid = 1,
-                noremap = 1,
-                enabled = 1,
-                rhs = '',
-                silent = 0,
-              },
+              n = menu_mapping({ noremap = 1, rhs = '' }),
             },
             name = 'Test7',
             hidden = 0,
@@ -528,13 +417,7 @@ describe('menu_get', function()
           {
             priority = 500,
             mappings = {
-              n = {
-                sid = 1,
-                noremap = 1,
-                enabled = 1,
-                rhs = '',
-                silent = 0,
-              },
+              n = menu_mapping({ noremap = 1, rhs = '' }),
             },
             name = 'Test8',
             hidden = 0,
@@ -542,13 +425,7 @@ describe('menu_get', function()
           {
             priority = 500,
             mappings = {
-              n = {
-                sid = 1,
-                noremap = 1,
-                enabled = 1,
-                rhs = '""',
-                silent = 0,
-              },
+              n = menu_mapping({ noremap = 1, rhs = '""' }),
             },
             name = 'Test9',
             hidden = 0,
@@ -559,7 +436,7 @@ describe('menu_get', function()
       },
     }
 
-    eq(m, expected)
+    eq(expected, m)
   end)
 
   it('works with right-aligned text and spaces', function()
@@ -576,13 +453,7 @@ describe('menu_get', function()
         submenus = {
           {
             mappings = {
-              n = {
-                sid = 1,
-                noremap = 1,
-                enabled = 1,
-                rhs = 'inormal<Alt-j>',
-                silent = 0,
-              },
+              n = menu_mapping({ noremap = 1, rhs = 'inormal<Alt-j>' }),
             },
             hidden = 0,
             actext = 'X x',
@@ -600,13 +471,7 @@ describe('menu_get', function()
           {
             priority = 500,
             mappings = {
-              n = {
-                sid = 1,
-                noremap = 1,
-                enabled = 1,
-                rhs = 'Wargl',
-                silent = 0,
-              },
+              n = menu_mapping({ noremap = 1, rhs = 'Wargl' }),
             },
             name = 'Test 2',
             hidden = 0,
@@ -621,13 +486,7 @@ describe('menu_get', function()
         submenus = {
           {
             mappings = {
-              n = {
-                sid = 1,
-                noremap = 1,
-                enabled = 1,
-                rhs = 'i space<Esc>',
-                silent = 0,
-              },
+              n = menu_mapping({ noremap = 1, rhs = 'i space<Esc>' }),
             },
             hidden = 0,
             actext = '3',
@@ -640,6 +499,15 @@ describe('menu_get', function()
       },
     }
 
-    eq(m, expected)
+    eq(expected, m)
+  end)
+
+  it('stores terminal-mode mappings in `tl`', function()
+    command('tlnoremenu &Test.Test bar')
+    local mappings = fn.menu_get('', 'tl')[1].submenus[1].mappings
+    -- "tl" is the mode designator for terminal mode, "t" is the one for a
+    -- tooltip, so a terminal mapping must not land under "t".
+    eq('bar', mappings.tl.rhs)
+    eq(nil, mappings.t)
   end)
 end)

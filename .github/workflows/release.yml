@@ -12,8 +12,10 @@ on:
     tags:
       - v[0-9]+.[0-9]+.[0-9]+
 
+permissions:
+  contents: read
+
 # Build on the oldest supported images, so we have broader compatibility
-# Build with gcc-10 to prevent triggering #14150 (default is still gcc-9 on 20.04)
 jobs:
   setup:
     runs-on: ubuntu-latest
@@ -39,35 +41,55 @@ jobs:
           printf "appimage_tag=${APPIMAGE_TAG}\n" >> $GITHUB_OUTPUT
 
   linux:
-    runs-on: ubuntu-20.04
     needs: setup
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ ubuntu-22.04, ubuntu-22.04-arm ]
+        include:
+          - runner: ubuntu-22.04
+            arch: x86_64
+          - runner: ubuntu-22.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
     env:
-      CC: gcc-10
+      CC: ${{ matrix.cc }}
+      LDAI_NO_APPSTREAM: 1 # skip checking (broken) AppStream metadata for issues
     outputs:
       version: ${{ steps.build.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
         with:
           # Perform a full checkout #13471
           fetch-depth: 0
+          persist-credentials: false
       - run: ./.github/scripts/install_deps.sh
-      - run: echo "CMAKE_BUILD_TYPE=${{ needs.setup.outputs.build_type }}" >> $GITHUB_ENV
+      - run: sudo apt-get install -y libfuse2
+
+      - run: echo "CMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}" >> $GITHUB_ENV
+        env:
+          CMAKE_BUILD_TYPE: ${{ needs.setup.outputs.build_type }}
+
       - name: appimage
-        run: ./scripts/genappimage.sh ${{ needs.setup.outputs.appimage_tag }}
+        env:
+          APPIMAGE_TAG: ${{ needs.setup.outputs.appimage_tag }}
+        run:  |
+          ./scripts/genappimage.sh "${APPIMAGE_TAG}"
+
       - name: tar.gz
         run: cpack --config build/CPackConfig.cmake -G TGZ
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
-          name: appimage
+          name: nvim-appimage-${{ matrix.arch }}
           path: |
-            build/bin/nvim.appimage
-            build/bin/nvim.appimage.zsync
+            build/bin/nvim-linux-${{ matrix.arch }}.appimage
+            build/bin/nvim-linux-${{ matrix.arch }}.appimage.zsync
           retention-days: 1
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
-          name: nvim-linux64
+          name: nvim-linux-${{ matrix.arch }}
           path: |
-            build/nvim-linux64.tar.gz
+            build/nvim-linux-${{ matrix.arch }}.tar.gz
           retention-days: 1
       - name: Export version
         id: build
@@ -75,48 +97,47 @@ jobs:
           printf 'version<<END\n' >> $GITHUB_OUTPUT
           ./build/bin/nvim --version | head -n 3 >> $GITHUB_OUTPUT
           printf 'END\n' >> $GITHUB_OUTPUT
-
   macos:
     needs: setup
     strategy:
       fail-fast: false
       matrix:
-        runner: [ macos-12, macos-14 ]
+        runner: [ macos-15-intel, macos-15 ]
         include:
-          - runner: macos-12
+          - runner: macos-15-intel
             arch: x86_64
-          - runner: macos-14
+          - runner: macos-15
             arch: arm64
     runs-on: ${{ matrix.runner }}
     env:
+      CMAKE_BUILD_TYPE: ${{ needs.setup.outputs.build_type }}
       MACOSX_DEPLOYMENT_TARGET: 11.0
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
         with:
           # Perform a full checkout #13471
           fetch-depth: 0
+          persist-credentials: false
       - name: Install dependencies
         run: ./.github/scripts/install_deps.sh
 
       - name: Build deps
         run: |
           cmake -S cmake.deps -B .deps -G Ninja \
-            -D CMAKE_BUILD_TYPE=${{ needs.setup.outputs.build_type }} \
+            -D CMAKE_BUILD_TYPE="${CMAKE_BUILD_TYPE}" \
             -D CMAKE_FIND_FRAMEWORK=NEVER
           cmake --build .deps
-
       - name: Build neovim
         run: |
           cmake -B build -G Ninja \
-            -D CMAKE_BUILD_TYPE=${{ needs.setup.outputs.build_type }} \
+            -D CMAKE_BUILD_TYPE="${CMAKE_BUILD_TYPE}" \
             -D ENABLE_LIBINTL=OFF \
             -D CMAKE_FIND_FRAMEWORK=NEVER
           cmake --build build
-
       - name: Package
         run: cpack --config build/CPackConfig.cmake
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: nvim-macos-${{ matrix.arch }}
           path: build/nvim-macos-${{ matrix.arch }}.tar.gz
@@ -124,31 +145,96 @@ jobs:
 
   windows:
     needs: setup
-    runs-on: windows-2019
+    strategy:
+      matrix:
+        include:
+          - runner: windows-2022
+            arch: x86_64
+            archive_name: nvim-win64
+          - runner: windows-11-arm
+            arch: arm64
+            archive_name: nvim-win-arm64
+    runs-on: ${{ matrix.runner }}
+    env:
+      CMAKE_BUILD_TYPE: ${{ needs.setup.outputs.build_type }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
         with:
           # Perform a full checkout #13471
           fetch-depth: 0
+          persist-credentials: false
       - run: .github/scripts/env.ps1
+        env:
+          BUILD_ARCH: ${{ matrix.arch }}
+      - name: Install Wix
+        run: |
+          Invoke-WebRequest -Uri "https://github.com/wixtoolset/wix3/releases/download/wix3141rtm/wix314-binaries.zip" -OutFile "wix314-binaries.zip"
+          Expand-Archive -Path "wix314-binaries.zip" -DestinationPath "C:/wix"
+          echo "C:\wix" >> $env:GITHUB_PATH
       - name: Build deps
+        shell: pwsh
         run: |
-          cmake -S cmake.deps -B .deps -G Ninja -DCMAKE_BUILD_TYPE=${{ needs.setup.outputs.build_type }}
+          cmake -S cmake.deps -B .deps -G Ninja -DCMAKE_BUILD_TYPE="${env:CMAKE_BUILD_TYPE}"
           cmake --build .deps
-      - name: build package
+      - name: Build package
+        shell: pwsh
         run: |
-          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=${{ needs.setup.outputs.build_type }}
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE="${env:CMAKE_BUILD_TYPE}"
           cmake --build build --target package
-      - uses: actions/upload-artifact@v4
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
         with:
-          name: nvim-win64
+          name: nvim-win-${{ matrix.arch }}
           path: |
-            build/nvim-win64.msi
-            build/nvim-win64.zip
+            build/${{ matrix.archive_name }}.zip
+            build/${{ matrix.archive_name }}.msi
+          retention-days: 1
+
+  wasm:
+    needs: setup
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.16.0
+          use-cache: false
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            python3 python3-pip curl unzip zip
+
+      - name: Install Emscripten SDK
+        run: |
+          set -euo pipefail
+          git clone https://github.com/emscripten-core/emsdk.git ./.emsdk
+          cd ./.emsdk
+          ./emsdk install 6.0.2
+          ./emsdk activate 6.0.2
+          cd -
+
+      - name: Build nvim.wasm
+        run: .github/scripts/build_wasm.sh
+        env:
+          BUNDLE_WASM: "1"
+
+      - name: Upload wasm artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: nvim-wasm-emscripten
+          path: nvim-wasm-emscripten.zip
           retention-days: 1
 
   publish:
-    needs: [linux, macos, windows]
+    needs: [linux, macos, windows, wasm]
     runs-on: ubuntu-latest
     env:
       GH_REPO: ${{ github.repository }}
@@ -158,74 +244,49 @@ jobs:
     steps:
       # Must perform checkout first, since it deletes the target directory
       # before running, and would therefore delete the downloaded artifacts
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
 
       - name: Install dependencies
         run: sudo apt-get update && sudo apt-get install -y gettext-base
 
       - if: github.event_name == 'workflow_dispatch'
-        run: echo "TAG_NAME=${{ github.event.inputs.tag_name }}" >> $GITHUB_ENV
+        env:
+          TAG_NAME: ${{ github.event.inputs.tag_name }}
+        run: echo "TAG_NAME=${TAG_NAME}" >> $GITHUB_ENV
+
       - if: github.event_name == 'schedule'
         run: echo 'TAG_NAME=nightly' >> $GITHUB_ENV
+
       - if: github.event_name == 'push'
         run: |
-          TAG_NAME=${{ github.ref }}
-          echo "TAG_NAME=${TAG_NAME#refs/tags/}" >> $GITHUB_ENV
+          echo "TAG_NAME=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
+
       - if: env.TAG_NAME == 'nightly'
         run: |
           (echo 'SUBJECT=Nvim development (prerelease) build';
            echo 'PRERELEASE=--prerelease') >> $GITHUB_ENV
           gh release delete nightly --yes || true
-          git push origin :nightly || true
+          git push https://${GITHUB_ACTOR}:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY} :nightly || true
+
       - if: env.TAG_NAME != 'nightly'
         run: |
           (echo 'SUBJECT=Nvim release build';
            echo 'PRERELEASE=') >> $GITHUB_ENV
           gh release delete stable --yes || true
-          git push origin :stable || true
-      # `sha256sum` outputs <sha> <path>, so we cd into each dir to drop the
-      # containing folder from the output.
-      - name: Generate Linux64 SHA256 checksums
-        run: |
-          cd ./nvim-linux64
-          sha256sum nvim-linux64.tar.gz > nvim-linux64.tar.gz.sha256sum
-          echo "SHA_LINUX_64_TAR=$(cat nvim-linux64.tar.gz.sha256sum)" >> $GITHUB_ENV
-      - name: Generate App Image SHA256 checksums
-        run: |
-          cd ./appimage
-          sha256sum nvim.appimage > nvim.appimage.sha256sum
-          echo "SHA_APP_IMAGE=$(cat nvim.appimage.sha256sum)" >> $GITHUB_ENV
-      - name: Generate App Image Zsync SHA256 checksums
-        run: |
-          cd ./appimage
-          sha256sum nvim.appimage.zsync > nvim.appimage.zsync.sha256sum
-          echo "SHA_APP_IMAGE_ZSYNC=$(cat nvim.appimage.zsync.sha256sum)" >> $GITHUB_ENV
-      - name: Generate macos x86_64 SHA256 checksums
-        run: |
-          cd ./nvim-macos-x86_64
-          sha256sum nvim-macos-x86_64.tar.gz > nvim-macos-x86_64.tar.gz.sha256sum
-          echo "SHA_MACOS_X86_64=$(cat nvim-macos-x86_64.tar.gz.sha256sum)" >> $GITHUB_ENV
-      - name: Generate macos arm64 SHA256 checksums
-        run: |
-          cd ./nvim-macos-arm64
-          sha256sum nvim-macos-arm64.tar.gz > nvim-macos-arm64.tar.gz.sha256sum
-          echo "SHA_MACOS_ARM64=$(cat nvim-macos-arm64.tar.gz.sha256sum)" >> $GITHUB_ENV
-      - name: Generate Win64 SHA256 checksums
-        run: |
-          cd ./nvim-win64
-          sha256sum nvim-win64.zip > nvim-win64.zip.sha256sum
-          echo "SHA_WIN_64_ZIP=$(cat nvim-win64.zip.sha256sum)" >> $GITHUB_ENV
-          sha256sum nvim-win64.msi > nvim-win64.msi.sha256sum
-          echo "SHA_WIN_64_MSI=$(cat nvim-win64.msi.sha256sum)" >> $GITHUB_ENV
+          git push https://${GITHUB_ACTOR}:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY} :stable || true
+
       - name: Publish release
         env:
           NVIM_VERSION: ${{ needs.linux.outputs.version }}
+          NVIM_COMMIT: ${{ github.sha }}
           DEBUG: api
         run: |
           envsubst < "$GITHUB_WORKSPACE/.github/workflows/notes.md" > "$RUNNER_TEMP/notes.md"
           if [ "$TAG_NAME" != "nightly" ]; then
-            gh release create stable $PRERELEASE --notes-file "$RUNNER_TEMP/notes.md" --title "$SUBJECT" --target $GITHUB_SHA nvim-macos-x86_64/* nvim-macos-arm64/* nvim-linux64/* appimage/* nvim-win64/*
+            gh release create stable $PRERELEASE --notes-file "$RUNNER_TEMP/notes.md" --title "$SUBJECT" --target $GITHUB_SHA nvim-macos-x86_64/* nvim-macos-arm64/* nvim-linux-x86_64/* nvim-linux-arm64/* nvim-appimage-x86_64/* nvim-appimage-arm64/* nvim-win-x86_64/* nvim-win-arm64/* nvim-wasm-emscripten/*
           fi
-          gh release create $TAG_NAME $PRERELEASE --notes-file "$RUNNER_TEMP/notes.md" --title "$SUBJECT" --target $GITHUB_SHA nvim-macos-x86_64/* nvim-macos-arm64/* nvim-linux64/* appimage/* nvim-win64/*
+          gh release create $TAG_NAME $PRERELEASE --notes-file "$RUNNER_TEMP/notes.md" --title "$SUBJECT" --target $GITHUB_SHA nvim-macos-x86_64/* nvim-macos-arm64/* nvim-linux-x86_64/* nvim-linux-arm64/* nvim-appimage-x86_64/* nvim-appimage-arm64/* nvim-win-x86_64/* nvim-win-arm64/* nvim-wasm-emscripten/*

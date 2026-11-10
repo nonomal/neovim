@@ -16,6 +16,7 @@
 #include <string.h>
 
 #include "auto/config.h"
+#include "nvim/api/private/helpers.h"
 #include "nvim/ascii_defs.h"
 #include "nvim/autocmd.h"
 #include "nvim/autocmd_defs.h"
@@ -23,10 +24,14 @@
 #include "nvim/bufwrite.h"
 #include "nvim/change.h"
 #include "nvim/charset.h"
+#include "nvim/context.h"
 #include "nvim/cursor.h"
+#include "nvim/decoration.h"
 #include "nvim/diff.h"
 #include "nvim/drawscreen.h"
-#include "nvim/eval.h"
+#include "nvim/errors.h"
+#include "nvim/eval/typval.h"
+#include "nvim/eval/vars.h"
 #include "nvim/ex_cmds.h"
 #include "nvim/ex_cmds_defs.h"
 #include "nvim/ex_docmd.h"
@@ -43,6 +48,7 @@
 #include "nvim/mbyte.h"
 #include "nvim/mbyte_defs.h"
 #include "nvim/memline.h"
+#include "nvim/memline_defs.h"
 #include "nvim/memory.h"
 #include "nvim/message.h"
 #include "nvim/move.h"
@@ -66,6 +72,9 @@
 #include "nvim/window.h"
 #include "xdiff/xdiff.h"
 
+// KeyDict_dip + KeyDict_dip_get_field, generated from the 'diffopt' schema (reusing hashy.lua).
+#include "options_keysets.generated.h"
+
 static bool diff_busy = false;         // using diff structs, don't change them
 static bool diff_need_update = false;  // ex_diffupdate needs to be called
 
@@ -83,17 +92,32 @@ static bool diff_need_update = false;  // ex_diffupdate needs to be called
 #define DIFF_CLOSE_OFF  0x400   // diffoff when closing window
 #define DIFF_FOLLOWWRAP 0x800   // follow the wrap option
 #define DIFF_LINEMATCH  0x1000  // match most similar lines within diff
+#define DIFF_INLINE_NONE    0x2000  // no inline highlight
+#define DIFF_INLINE_SIMPLE  0x4000  // inline highlight with simple algorithm
+#define DIFF_INLINE_CHAR    0x8000  // inline highlight with character diff
+#define DIFF_INLINE_WORD    0x10000  // inline highlight with word diff
+#define DIFF_ANCHOR     0x20000  // use 'diffanchors' to anchor the diff
 #define ALL_WHITE_DIFF (DIFF_IWHITE | DIFF_IWHITEALL | DIFF_IWHITEEOL)
-static int diff_flags = DIFF_INTERNAL | DIFF_FILLER | DIFF_CLOSE_OFF;
+#define ALL_INLINE (DIFF_INLINE_NONE | DIFF_INLINE_SIMPLE | DIFF_INLINE_CHAR | DIFF_INLINE_WORD)
+#define ALL_INLINE_DIFF (DIFF_INLINE_CHAR | DIFF_INLINE_WORD)
+static int diff_flags = DIFF_INTERNAL | DIFF_FILLER | DIFF_CLOSE_OFF
+                        | DIFF_LINEMATCH | DIFF_INLINE_CHAR;
 
-static int diff_algorithm = 0;
-static int linematch_lines = 0;
+static int diff_algorithm = XDF_INDENT_HEURISTIC;
+static int diff_word_gap = 5;  // gap threshold for inline:word
+static int linematch_lines = 40;
 
 #define LBUFLEN 50               // length of line in diff file
+
+// Max file size xdiff is equipped to deal with. The value (1GB - 1MB) comes
+// from Git's implementation.
+#define MAX_XDIFF_SIZE (1024L * 1024 * 1023)
 
 // kTrue when "diff -a" works, kFalse when it doesn't work,
 // kNone when not checked yet
 static TriState diff_a_works = kNone;
+
+enum { MAX_DIFF_ANCHORS = 20, };
 
 // used for diff input
 typedef struct {
@@ -129,9 +153,53 @@ typedef enum {
   DIFF_NONE,
 } diffstyle_T;
 
-#ifdef INCLUDE_GENERATED_DECLARATIONS
-# include "diff.c.generated.h"
-#endif
+#include "diff.c.generated.h"
+
+#define FOR_ALL_DIFFBLOCKS_IN_TAB(tp, dp) \
+  for ((dp) = (tp)->tp_first_diff; (dp) != NULL; (dp) = (dp)->df_next)
+
+// Cursor into the diff block list for diff_infold() and
+// diff_check_with_linestatus(): both scan blocks in ascending df_lnum order,
+// usually with an increasing "lnum" during redraw.  Remembering the last block
+// at or before "lnum" lets the next call resume there instead of from the head.
+// Cleared when a block is freed, allocated or line-shifted (see below).
+static diff_T *diff_finger_dp = NULL;
+static tabpage_T *diff_finger_tp = NULL;
+static int diff_finger_idx = -1;
+static linenr_T diff_finger_lnum = 0;
+
+static void clear_diffblock(diff_T *dp)
+{
+  if (dp == diff_finger_dp) {
+    diff_finger_dp = NULL;          // don't leave a dangling finger
+  }
+  ga_clear(&dp->df_changes);
+  xfree(dp);
+}
+
+/// Return the diff block to start a forward scan for line "lnum" in tab "tp",
+/// buffer index "idx".  Resumes from the finger when it is still valid and
+/// "lnum" did not move backwards, else starts at the first block.
+static diff_T *diff_scan_start(tabpage_T *tp, int idx, linenr_T lnum)
+{
+  if (diff_finger_dp != NULL
+      && diff_finger_tp == tp
+      && diff_finger_idx == idx
+      && lnum >= diff_finger_lnum) {
+    return diff_finger_dp;
+  }
+  return tp->tp_first_diff;
+}
+
+/// Remember "dp" as the finger for the next scan: the last block with
+/// df_lnum[idx] <= "lnum" seen by the scan, or NULL when there is none.
+static void diff_scan_remember(tabpage_T *tp, int idx, linenr_T lnum, diff_T *dp)
+{
+  diff_finger_tp = tp;
+  diff_finger_idx = idx;
+  diff_finger_lnum = lnum;
+  diff_finger_dp = dp != NULL ? dp : tp->tp_first_diff;
+}
 
 /// Called when deleting or unloading a buffer: No longer make a diff with it.
 ///
@@ -139,7 +207,7 @@ typedef enum {
 void diff_buf_delete(buf_T *buf)
 {
   FOR_ALL_TABS(tp) {
-    int i = diff_buf_idx_tp(buf, tp);
+    int i = diff_buf_idx(buf, tp);
 
     if (i != DB_COUNT) {
       tp->tp_diffbuf[i] = NULL;
@@ -172,7 +240,7 @@ void diff_buf_adjust(win_T *win)
     }
 
     if (!found_win) {
-      int i = diff_buf_idx(win->w_buffer);
+      int i = diff_buf_idx(win->w_buffer, curtab);
       if (i != DB_COUNT) {
         curtab->tp_diffbuf[i] = NULL;
         curtab->tp_diff_invalid = true;
@@ -195,7 +263,7 @@ void diff_buf_adjust(win_T *win)
 /// @param buf The buffer to add.
 void diff_buf_add(buf_T *buf)
 {
-  if (diff_buf_idx(buf) != DB_COUNT) {
+  if (diff_buf_idx(buf, curtab) != DB_COUNT) {
     // It's already there.
     return;
   }
@@ -209,12 +277,10 @@ void diff_buf_add(buf_T *buf)
     }
   }
 
-  semsg(_("E96: Cannot diff more than %" PRId64 " buffers"), (int64_t)DB_COUNT);
+  semsg(_("E96: Cannot diff more than %d buffers"), DB_COUNT);
 }
 
-///
 /// Remove all buffers to make diffs for.
-///
 static void diff_buf_clear(void)
 {
   for (int i = 0; i < DB_COUNT; i++) {
@@ -226,23 +292,13 @@ static void diff_buf_clear(void)
   }
 }
 
-/// Find buffer "buf" in the list of diff buffers for the current tab page.
-///
-/// @param buf The buffer to find.
-///
-/// @return Its index or DB_COUNT if not found.
-static int diff_buf_idx(buf_T *buf)
-{
-  return diff_buf_idx_tp(buf, curtab);
-}
-
 /// Find buffer "buf" in the list of diff buffers for tab page "tp".
 ///
 /// @param buf
 /// @param tp
 ///
 /// @return its index or DB_COUNT if not found.
-static int diff_buf_idx_tp(buf_T *buf, tabpage_T *tp)
+static int diff_buf_idx(buf_T *buf, tabpage_T *tp)
 {
   int idx;
   for (idx = 0; idx < DB_COUNT; idx++) {
@@ -260,7 +316,7 @@ static int diff_buf_idx_tp(buf_T *buf, tabpage_T *tp)
 void diff_invalidate(buf_T *buf)
 {
   FOR_ALL_TABS(tp) {
-    int i = diff_buf_idx_tp(buf, tp);
+    int i = diff_buf_idx(buf, tp);
     if (i != DB_COUNT) {
       tp->tp_diff_invalid = true;
       if (tp == curtab) {
@@ -281,7 +337,7 @@ void diff_mark_adjust(buf_T *buf, linenr_T line1, linenr_T line2, linenr_T amoun
 {
   // Handle all tab pages that use "buf" in a diff.
   FOR_ALL_TABS(tp) {
-    int idx = diff_buf_idx_tp(buf, tp);
+    int idx = diff_buf_idx(buf, tp);
     if (idx != DB_COUNT) {
       diff_mark_adjust_tp(tp, idx, line1, line2, amount, amount_after);
     }
@@ -304,6 +360,8 @@ void diff_mark_adjust(buf_T *buf, linenr_T line1, linenr_T line2, linenr_T amoun
 static void diff_mark_adjust_tp(tabpage_T *tp, int idx, linenr_T line1, linenr_T line2,
                                 linenr_T amount, linenr_T amount_after)
 {
+  diff_finger_dp = NULL;              // may shift df_lnum, invalidate the finger
+
   if (diff_internal()) {
     // Will update diffs before redrawing.  Set _invalid to update the
     // diffs themselves, set _update to also update folds properly just
@@ -366,7 +424,6 @@ static void diff_mark_adjust_tp(tabpage_T *tp, int idx, linenr_T line1, linenr_T
       break;
     }
 
-    //
     // Check for these situations:
     //    1  2  3
     //    1  2  3
@@ -382,9 +439,22 @@ static void diff_mark_adjust_tp(tabpage_T *tp, int idx, linenr_T line1, linenr_T
 
     // 1. change completely above line1: nothing to do
     if (last >= line1 - 1) {
+      if (diff_busy) {
+        // Currently in the middle of updating diff blocks. All we want
+        // is to adjust the line numbers and nothing else.
+        if (dp->df_lnum[idx] > line2) {
+          dp->df_lnum[idx] += amount_after;
+        }
+
+        // Advance to next entry.
+        dprev = dp;
+        dp = dp->df_next;
+        continue;
+      }
+
       // 6. change below line2: only adjust for amount_after; also when
       // "deleted" became zero when deleted all lines between two diffs.
-      if (dp->df_lnum[idx] - (deleted + inserted != 0) > line2 - dp->is_linematched) {
+      if (dp->df_lnum[idx] - (deleted + inserted != 0) > line2) {
         if (amount_after == 0) {
           // nothing left to change
           break;
@@ -476,7 +546,7 @@ static void diff_mark_adjust_tp(tabpage_T *tp, int idx, linenr_T line1, linenr_T
     }
 
     // check if this block touches the previous one, may merge them.
-    if ((dprev != NULL) && !dp->is_linematched
+    if ((dprev != NULL) && !dp->is_linematched && !diff_busy
         && (dprev->df_lnum[idx] + dprev->df_count[idx] == dp->df_lnum[idx])) {
       for (int i = 0; i < DB_COUNT; i++) {
         if (tp->tp_diffbuf[i] != NULL) {
@@ -532,7 +602,8 @@ static void diff_mark_adjust_tp(tabpage_T *tp, int idx, linenr_T line1, linenr_T
 /// @return The new diff block.
 static diff_T *diff_alloc_new(tabpage_T *tp, diff_T *dprev, diff_T *dp)
 {
-  diff_T *dnew = xmalloc(sizeof(*dnew));
+  diff_T *dnew = xcalloc(1, sizeof(*dnew));
+  diff_finger_dp = NULL;              // list changed, invalidate the finger
 
   dnew->is_linematched = false;
   dnew->df_next = dp;
@@ -542,13 +613,15 @@ static diff_T *diff_alloc_new(tabpage_T *tp, diff_T *dprev, diff_T *dp)
     dprev->df_next = dnew;
   }
 
+  dnew->has_changes = false;
+  ga_init(&dnew->df_changes, sizeof(diffline_change_T), 20);
   return dnew;
 }
 
 static diff_T *diff_free(tabpage_T *tp, diff_T *dprev, diff_T *dp)
 {
   diff_T *ret = dp->df_next;
-  xfree(dp);
+  clear_diffblock(dp);
 
   if (dprev == NULL) {
     tp->tp_first_diff = ret;
@@ -692,11 +765,11 @@ void diff_redraw(bool dofold)
 
     // A change may have made filler lines invalid, need to take care of
     // that for other windows.
-    int n = diff_check(wp, wp->w_topline);
+    int n = diff_check_fill(wp, wp->w_topline);
 
     if (((wp != curwin) && (wp->w_topfill > 0)) || (n > 0)) {
       if (wp->w_topfill > n) {
-        wp->w_topfill = (n < 0 ? 0 : n);
+        wp->w_topfill = MAX(n, 0);
       } else if ((n > 0) && (n > wp->w_topfill)) {
         wp->w_topfill = n;
         if (wp == curwin) {
@@ -748,30 +821,23 @@ static void clear_diffout(diffout_T *dout)
 /// @return FAIL for failure.
 static int diff_write_buffer(buf_T *buf, mmfile_t *m, linenr_T start, linenr_T end)
 {
-  size_t len = 0;
-
   if (end < 0) {
     end = buf->b_ml.ml_line_count;
   }
+
+  if (buf->b_ml.ml_flags & ML_EMPTY || end < start) {
+    m->ptr = NULL;
+    m->size = 0;
+    return OK;
+  }
+
+  size_t len = 0;
 
   // xdiff requires one big block of memory with all the text.
   for (linenr_T lnum = start; lnum <= end; lnum++) {
     len += (size_t)ml_get_buf_len(buf, lnum) + 1;
   }
-  char *ptr = try_malloc(len);
-  if (ptr == NULL) {
-    // Allocating memory failed.  This can happen, because we try to read
-    // the whole buffer text into memory.  Set the failed flag, the diff
-    // will be retried with external diff.  The flag is never reset.
-    buf->b_diff_failed = true;
-    if (p_verbose > 0) {
-      verbose_enter();
-      smsg(0, _("Not enough memory to use internal diff for buffer \"%s\""),
-           buf->b_fname);
-      verbose_leave();
-    }
-    return FAIL;
-  }
+  char *ptr = xmalloc(len);
   m->ptr = ptr;
   m->size = (int)len;
 
@@ -780,15 +846,32 @@ static int diff_write_buffer(buf_T *buf, mmfile_t *m, linenr_T start, linenr_T e
     char *s = ml_get_buf(buf, lnum);
     if (diff_flags & DIFF_ICASE) {
       while (*s != NUL) {
+        int c;
+        int c_len = 1;
         char cbuf[MB_MAXBYTES + 1];
 
-        // xdiff doesn't support ignoring case, fold-case the text.
-        int c = *s == NL ? NUL : utf_fold(utf_ptr2char(s));
+        if (*s == NL) {
+          c = NUL;
+        } else {
+          // xdiff doesn't support ignoring case, fold-case the text.
+          c = utf_ptr2char(s);
+          c_len = utf_char2len(c);
+          c = utf_fold(c);
+        }
         const int orig_len = utfc_ptr2len(s);
 
-        // TODO(Bram): handle byte length difference
-        char *s1 = (utf_char2bytes(c, cbuf) != orig_len) ? s : cbuf;
-        memmove(ptr + len, s1, (size_t)orig_len);
+        if (utf_char2bytes(c, cbuf) != c_len) {
+          // TODO(Bram): handle byte length difference
+          // One example is Å (3 bytes) and å (2 bytes).
+          memmove(ptr + len, s, (size_t)orig_len);
+        } else {
+          memmove(ptr + len, cbuf, (size_t)c_len);
+          if (orig_len > c_len) {
+            // Copy remaining composing characters
+            memmove(ptr + len + c_len, s + c_len, (size_t)(orig_len - c_len));
+          }
+        }
+
         s += orig_len;
         len += (size_t)orig_len;
       }
@@ -812,29 +895,60 @@ static int diff_write_buffer(buf_T *buf, mmfile_t *m, linenr_T start, linenr_T e
 /// @param din
 ///
 /// @return FAIL for failure
-static int diff_write(buf_T *buf, diffin_T *din)
+static int diff_write(buf_T *buf, diffin_T *din, linenr_T start, linenr_T end)
 {
   if (din->din_fname == NULL) {
-    return diff_write_buffer(buf, &din->din_mmfile, 1, -1);
+    return diff_write_buffer(buf, &din->din_mmfile, start, end);
+  }
+
+  // Writing the diff buffers may trigger changes in the window structure
+  // via ctx_switch()/ctx_restore() commands.
+  // This may cause recursively calling winframe_remove() which is not safe and causes
+  // use after free, so let's stop it here.
+  if (frames_locked()) {
+    return FAIL;
+  }
+
+  if (end < 0) {
+    end = buf->b_ml.ml_line_count;
   }
 
   // Always use 'fileformat' set to "unix".
+  int save_ml_flags = buf->b_ml.ml_flags;
   char *save_ff = buf->b_p_ff;
-  buf->b_p_ff = xstrdup(FF_UNIX);
+  buf->b_p_ff = xstrdup("unix");
   const bool save_cmod_flags = cmdmod.cmod_flags;
   // Writing the buffer is an implementation detail of performing the diff,
   // so it shouldn't update the '[ and '] marks.
   cmdmod.cmod_flags |= CMOD_LOCKMARKS;
+  if (end < start) {
+    // The line range specifies a completely empty file.
+    end = start;
+    buf->b_ml.ml_flags |= ML_EMPTY;
+  }
   int r = buf_write(buf, din->din_fname, NULL,
-                    1, buf->b_ml.ml_line_count,
+                    start, end,
                     NULL, false, false, false, true);
   cmdmod.cmod_flags = save_cmod_flags;
   free_string_option(buf->b_p_ff);
   buf->b_p_ff = save_ff;
+  buf->b_ml.ml_flags = (buf->b_ml.ml_flags & ~ML_EMPTY) | (save_ml_flags & ML_EMPTY);
   return r;
 }
 
-///
+static int lnum_compare(const void *s1, const void *s2)
+{
+  linenr_T lnum1 = *(linenr_T *)s1;
+  linenr_T lnum2 = *(linenr_T *)s2;
+  if (lnum1 < lnum2) {
+    return -1;
+  }
+  if (lnum1 > lnum2) {
+    return 1;
+  }
+  return 0;
+}
+
 /// Update the diffs for all buffers involved.
 ///
 /// @param dio
@@ -854,53 +968,127 @@ static void diff_try_update(diffio_T *dio, int idx_orig, exarg_T *eap)
         || dio->dio_diff.dout_fname == NULL) {
       goto theend;
     }
+    // Check external diff is actually working.
+    if (check_external_diff(dio) == FAIL) {
+      goto theend;
+    }
   }
-
-  // Check external diff is actually working.
-  if (!dio->dio_internal && check_external_diff(dio) == FAIL) {
-    goto theend;
-  }
-
-  buf_T *buf;
 
   // :diffupdate!
   if (eap != NULL && eap->forceit) {
     for (int idx_new = idx_orig; idx_new < DB_COUNT; idx_new++) {
-      buf = curtab->tp_diffbuf[idx_new];
+      buf_T *buf = curtab->tp_diffbuf[idx_new];
       if (buf_valid(buf)) {
         buf_check_timestamp(buf);
       }
     }
   }
 
-  // Write the first buffer to a tempfile or mmfile_t.
-  buf = curtab->tp_diffbuf[idx_orig];
-  if (diff_write(buf, &dio->dio_orig) == FAIL) {
-    goto theend;
+  // Parse and sort diff anchors if enabled
+  int num_anchors = INT_MAX;
+  linenr_T anchors[DB_COUNT][MAX_DIFF_ANCHORS];
+  CLEAR_FIELD(anchors);
+  if (diff_flags & DIFF_ANCHOR) {
+    for (int idx = 0; idx < DB_COUNT; idx++) {
+      if (curtab->tp_diffbuf[idx] == NULL) {
+        continue;
+      }
+      int buf_num_anchors = 0;
+      if (parse_diffanchors(false,
+                            curtab->tp_diffbuf[idx],
+                            anchors[idx],
+                            &buf_num_anchors) != OK) {
+        emsg(_(e_failed_to_find_all_diff_anchors));
+        num_anchors = 0;
+        CLEAR_FIELD(anchors);
+        break;
+      }
+      if (buf_num_anchors < num_anchors) {
+        num_anchors = buf_num_anchors;
+      }
+
+      if (buf_num_anchors > 0) {
+        qsort((void *)anchors[idx],
+              (size_t)buf_num_anchors,
+              sizeof(linenr_T),
+              lnum_compare);
+      }
+    }
+  }
+  if (num_anchors == INT_MAX) {
+    num_anchors = 0;
   }
 
-  // Make a difference between the first buffer and every other.
-  for (int idx_new = idx_orig + 1; idx_new < DB_COUNT; idx_new++) {
-    buf = curtab->tp_diffbuf[idx_new];
-    if (buf == NULL || buf->b_ml.ml_mfp == NULL) {
-      continue;  // skip buffer that isn't loaded
+  // Split the files into multiple sections by anchors. Each section starts
+  // from one anchor (inclusive) and ends at the next anchor (exclusive).
+  // Diff each section separately before combining the results. If we don't
+  // have any anchors, we will have one big section of the entire file.
+  for (int anchor_i = 0; anchor_i <= num_anchors; anchor_i++) {
+    diff_T *orig_diff = NULL;
+    if (anchor_i != 0) {
+      orig_diff = curtab->tp_first_diff;
+      curtab->tp_first_diff = NULL;
+    }
+    linenr_T lnum_start = (anchor_i == 0) ? 1 : anchors[idx_orig][anchor_i - 1];
+    linenr_T lnum_end = (anchor_i == num_anchors) ? -1 : anchors[idx_orig][anchor_i] - 1;
+
+    // Write the first buffer to a tempfile or mmfile_t.
+    buf_T *buf = curtab->tp_diffbuf[idx_orig];
+    if (diff_write(buf, &dio->dio_orig, lnum_start, lnum_end) == FAIL) {
+      if (orig_diff != NULL) {
+        // Clean up in-progress diff blocks
+        curtab->tp_first_diff = orig_diff;
+        diff_clear(curtab);
+      }
+      goto theend;
     }
 
-    // Write the other buffer and diff with the first one.
-    if (diff_write(buf, &dio->dio_new) == FAIL) {
-      continue;
-    }
-    if (diff_file(dio) == FAIL) {
-      continue;
-    }
+    // Make a difference between the first buffer and every other.
+    for (int idx_new = idx_orig + 1; idx_new < DB_COUNT; idx_new++) {
+      buf = curtab->tp_diffbuf[idx_new];
+      if (buf == NULL || buf->b_ml.ml_mfp == NULL) {
+        continue;  // skip buffer that isn't loaded
+      }
+      lnum_start = anchor_i == 0 ? 1 : anchors[idx_new][anchor_i - 1];
+      lnum_end = anchor_i == num_anchors ? -1 : anchors[idx_new][anchor_i] - 1;
 
-    // Read the diff output and add each entry to the diff list.
-    diff_read(idx_orig, idx_new, dio);
+      // Write the other buffer and diff with the first one.
+      if (diff_write(buf, &dio->dio_new, lnum_start, lnum_end) == FAIL) {
+        continue;
+      }
+      if (diff_file(dio) == FAIL) {
+        continue;
+      }
 
-    clear_diffin(&dio->dio_new);
-    clear_diffout(&dio->dio_diff);
+      // Read the diff output and add each entry to the diff list.
+      diff_read(idx_orig, idx_new, dio);
+
+      clear_diffin(&dio->dio_new);
+      clear_diffout(&dio->dio_diff);
+    }
+    clear_diffin(&dio->dio_orig);
+
+    if (anchor_i != 0) {
+      diff_finger_dp = NULL;      // df_lnum shifted, invalidate the finger
+
+      // Combine the new diff blocks with the existing ones
+      for (diff_T *dp = curtab->tp_first_diff; dp != NULL; dp = dp->df_next) {
+        for (int idx = 0; idx < DB_COUNT; idx++) {
+          if (anchors[idx][anchor_i - 1] > 0) {
+            dp->df_lnum[idx] += anchors[idx][anchor_i - 1] - 1;
+          }
+        }
+      }
+      if (orig_diff != NULL) {
+        diff_T *last_diff = orig_diff;
+        while (last_diff->df_next != NULL) {
+          last_diff = last_diff->df_next;
+        }
+        last_diff->df_next = curtab->tp_first_diff;
+        curtab->tp_first_diff = orig_diff;
+      }
+    }
   }
-  clear_diffin(&dio->dio_orig);
 
 theend:
   xfree(dio->dio_orig.din_fname);
@@ -908,30 +1096,13 @@ theend:
   xfree(dio->dio_diff.dout_fname);
 }
 
-///
 /// Return true if the options are set to use the internal diff library.
 /// Note that if the internal diff failed for one of the buffers, the external
 /// diff will be used anyway.
-///
 int diff_internal(void)
   FUNC_ATTR_PURE
 {
-  return (diff_flags & DIFF_INTERNAL) != 0 && *p_dex == NUL;
-}
-
-///
-/// Return true if the internal diff failed for one of the diff buffers.
-///
-static int diff_internal_failed(void)
-{
-  // Only need to do something when there is another buffer.
-  for (int idx = 0; idx < DB_COUNT; idx++) {
-    if (curtab->tp_diffbuf[idx] != NULL
-        && curtab->tp_diffbuf[idx]->b_diff_failed) {
-      return true;
-    }
-  }
-  return false;
+  return (diff_flags & DIFF_INTERNAL) != 0 && p_dex.type == kCallbackNone;
 }
 
 /// Completely update the diffs for the buffers involved.
@@ -979,34 +1150,28 @@ void ex_diffupdate(exarg_T *eap)
   }
 
   // Only use the internal method if it did not fail for one of the buffers.
-  diffio_T diffio;
-  CLEAR_FIELD(diffio);
-  diffio.dio_internal = diff_internal() && !diff_internal_failed();
+  diffio_T diffio = { 0 };
+  diffio.dio_internal = diff_internal();
 
   diff_try_update(&diffio, idx_orig, eap);
-  if (diffio.dio_internal && diff_internal_failed()) {
-    // Internal diff failed, use external diff instead.
-    CLEAR_FIELD(diffio);
-    diff_try_update(&diffio, idx_orig, eap);
-  }
 
   // force updating cursor position on screen
-  curwin->w_valid_cursor.lnum = 0;
+  changed_line_abv_curs();
 
 theend:
   // A redraw is needed if there were diffs and they were cleared, or there
   // are diffs now, which means they got updated.
   if (had_diffs || curtab->tp_first_diff != NULL) {
     diff_redraw(true);
+    window_layout_lock();
     apply_autocmds(EVENT_DIFFUPDATED, NULL, NULL, false, curbuf);
+    window_layout_unlock();
   }
 }
 
-///
 /// Do a quick test if "diff" really works.  Otherwise it looks like there
 /// are no differences.  Can't use the return value, it's non-zero when
 /// there are differences.
-///
 static int check_external_diff(diffio_T *diffio)
 {
   // May try twice, first with "-a" and then without.
@@ -1032,10 +1197,9 @@ static int check_external_diff(diffio_T *diffio)
           io_error = true;
         }
         fclose(fd);
-        fd = NULL;
-        if (diff_file(diffio) == OK) {
-          fd = os_fopen(diffio->dio_diff.dout_fname, "r");
-        }
+        fd = diff_file(diffio) == OK
+             ? os_fopen(diffio->dio_diff.dout_fname, "r")
+             : NULL;
 
         if (fd == NULL) {
           io_error = true;
@@ -1063,7 +1227,7 @@ static int check_external_diff(diffio_T *diffio)
     }
 
     // When using 'diffexpr' break here.
-    if (*p_dex != NUL) {
+    if (p_dex.type != kCallbackNone) {
       break;
     }
 
@@ -1090,9 +1254,7 @@ static int check_external_diff(diffio_T *diffio)
   return OK;
 }
 
-///
 /// Invoke the xdiff function.
-///
 static int diff_file_internal(diffio_T *diffio)
 {
   xpparam_t param;
@@ -1121,10 +1283,15 @@ static int diff_file_internal(diffio_T *diffio)
   emit_cfg.ctxlen = 0;  // don't need any diff_context here
   emit_cb.priv = &diffio->dio_diff;
   emit_cfg.hunk_func = xdiff_out;
+  if (diffio->dio_orig.din_mmfile.size > MAX_XDIFF_SIZE
+      || diffio->dio_new.din_mmfile.size > MAX_XDIFF_SIZE) {
+    emsg(_(e_problem_creating_internal_diff));
+    return FAIL;
+  }
   if (xdl_diff(&diffio->dio_orig.din_mmfile,
                &diffio->dio_new.din_mmfile,
                &param, &emit_cfg, &emit_cb) < 0) {
-    emsg(_("E960: Problem creating the internal diff"));
+    emsg(_(e_problem_creating_internal_diff));
     return FAIL;
   }
   return OK;
@@ -1140,7 +1307,7 @@ static int diff_file(diffio_T *dio)
   char *tmp_orig = dio->dio_orig.din_fname;
   char *tmp_new = dio->dio_new.din_fname;
   char *tmp_diff = dio->dio_diff.dout_fname;
-  if (*p_dex != NUL) {
+  if (p_dex.type != kCallbackNone) {
     // Use 'diffexpr' to generate the diff file.
     eval_diff(tmp_orig, tmp_new, tmp_diff);
     return OK;
@@ -1155,7 +1322,7 @@ static int diff_file(diffio_T *dio)
   char *const cmd = xmalloc(len);
 
   // We don't want $DIFF_OPTIONS to get in the way.
-  if (os_getenv("DIFF_OPTIONS")) {
+  if (os_env_exists("DIFF_OPTIONS", true)) {
     os_unsetenv("DIFF_OPTIONS");
   }
 
@@ -1245,7 +1412,7 @@ void ex_diffpatch(exarg_T *eap)
   }
 #endif
 
-  if (*p_pex != NUL) {
+  if (p_pex.type != kCallbackNone) {
     // Use 'patchexpr' to generate the new file.
 #ifdef UNIX
     eval_patch(tmp_orig, (fullname != NULL ? fullname : eap->arg), tmp_new);
@@ -1272,10 +1439,10 @@ void ex_diffpatch(exarg_T *eap)
 
   // Delete any .orig or .rej file created.
   STRCPY(buf, tmp_new);
-  STRCAT(buf, ".orig");
+  strcat(buf, ".orig");
   os_remove(buf);
   STRCPY(buf, tmp_new);
-  STRCAT(buf, ".rej");
+  strcat(buf, ".rej");
   os_remove(buf);
 
   // Only continue if the output file was created.
@@ -1287,7 +1454,7 @@ void ex_diffpatch(exarg_T *eap)
   } else {
     if (curbuf->b_fname != NULL) {
       newname = xstrnsave(curbuf->b_fname, strlen(curbuf->b_fname) + 4);
-      STRCAT(newname, ".new");
+      strcat(newname, ".new");
     }
 
     // don't use a new tab page, each tab page has its own diffs
@@ -1396,7 +1563,7 @@ static void set_diff_option(win_T *wp, bool value)
   curwin = wp;
   curbuf = curwin->w_buffer;
   curbuf->b_ro_locked++;
-  set_option_value_give_err(kOptDiff, BOOLEAN_OPTVAL(value), OPT_LOCAL);
+  set_option_value_give_err(kOptDiff, BOOLEAN_OBJ(value), OPT_LOCAL);
   curbuf->b_ro_locked--;
   curwin = old_curwin;
   curbuf = curwin->w_buffer;
@@ -1438,8 +1605,8 @@ void diff_win_options(win_T *wp, bool addbuf)
     }
     wp->w_p_fdm_save = xstrdup(wp->w_p_fdm);
   }
-  set_option_direct_for(kOptFoldmethod, STATIC_CSTR_AS_OPTVAL("diff"), OPT_LOCAL, 0, kOptReqWin,
-                        wp);
+  set_option_direct_for(kOptFoldmethod, STATIC_CSTR_AS_OBJ("diff"), OPT_LOCAL, 0,
+                        kOptScopeWin, wp);
 
   if (!wp->w_p_diff) {
     wp->w_p_fen_save = wp->w_p_fen;
@@ -1657,6 +1824,7 @@ static void process_hunk(diff_T **dpp, diff_T **dprevp, int idx_orig, int idx_ne
       for (int i = idx_orig; i < idx_new; i++) {
         if (curtab->tp_diffbuf[i] != NULL) {
           dp->df_lnum[i] -= off;
+          dp->df_count[i] += off;
         }
       }
       dp->df_lnum[idx_new] = hunk->lnum_new;
@@ -1667,11 +1835,23 @@ static void process_hunk(diff_T **dpp, diff_T **dprevp, int idx_orig, int idx_ne
       dp->df_count[idx_new] = (linenr_T)hunk->count_new - off;
     } else {
       // second overlap of new block with existing block
-      dp->df_count[idx_new] += (linenr_T)hunk->count_new - (linenr_T)hunk->count_orig
-                               + dpl->df_lnum[idx_orig] +
-                               dpl->df_count[idx_orig]
-                               - (dp->df_lnum[idx_orig] +
-                                  dp->df_count[idx_orig]);
+
+      // if this hunk has different orig/new counts, adjust
+      // the diff block size first. When we handled the first hunk we
+      // would have expanded it to fit, without knowing that this
+      // hunk exists
+      int orig_size_in_dp = MIN(hunk->count_orig,
+                                dp->df_lnum[idx_orig] +
+                                dp->df_count[idx_orig] - hunk->lnum_orig);
+      int size_diff = hunk->count_new - orig_size_in_dp;
+      dp->df_count[idx_new] += size_diff;
+
+      // grow existing block to include the overlap completely
+      off = hunk->lnum_new + hunk->count_new
+            - (dp->df_lnum[idx_new] + dp->df_count[idx_new]);
+      if (off > 0) {
+        dp->df_count[idx_new] += off;
+      }
     }
 
     // Adjust the size of the block to include all the lines to the
@@ -1680,9 +1860,13 @@ static void process_hunk(diff_T **dpp, diff_T **dprevp, int idx_orig, int idx_ne
           - (dpl->df_lnum[idx_orig] + dpl->df_count[idx_orig]);
 
     if (off < 0) {
-      // new change ends in existing block, adjust the end if not
-      // done already
-      if (*notsetp) {
+      // new change ends in existing block, adjust the end. We only
+      // need to do this once per block or we will over-adjust.
+      if (*notsetp || dp != dpl) {
+        // adjusting by 'off' here is only correct if
+        // there is not another hunk in this block. we
+        // adjust for this when we encounter a second
+        // overlap later.
         dp->df_count[idx_new] += -off;
       }
       off = 0;
@@ -1701,7 +1885,7 @@ static void process_hunk(diff_T **dpp, diff_T **dprevp, int idx_orig, int idx_ne
 
     while (dn != dp->df_next) {
       dpl = dn->df_next;
-      xfree(dn);
+      clear_diffblock(dn);
       dn = dpl;
     }
   } else {
@@ -1735,7 +1919,7 @@ static void process_hunk(diff_T **dpp, diff_T **dprevp, int idx_orig, int idx_ne
 static void diff_read(int idx_orig, int idx_new, diffio_T *dio)
 {
   FILE *fd = NULL;
-  int line_idx = 0;
+  int line_hunk_idx = 0;  // line or hunk index
   diff_T *dprev = NULL;
   diff_T *dp = curtab->tp_first_diff;
   diffout_T *dout = &dio->dio_diff;
@@ -1753,7 +1937,7 @@ static void diff_read(int idx_orig, int idx_new, diffio_T *dio)
   while (true) {
     diffhunk_T hunk = { 0 };
     bool eof = dio->dio_internal
-               ? extract_hunk_internal(dout, &hunk, &line_idx)
+               ? extract_hunk_internal(dout, &hunk, &line_hunk_idx)
                : extract_hunk(fd, &hunk, &diffstyle);
 
     if (eof) {
@@ -1807,14 +1991,12 @@ void diff_clear(tabpage_T *tp)
   diff_T *next_p;
   for (diff_T *p = tp->tp_first_diff; p != NULL; p = next_p) {
     next_p = p->df_next;
-    xfree(p);
+    clear_diffblock(p);
   }
   tp->tp_first_diff = NULL;
 }
 
-///
-/// return true if the options are set to use diff linematch
-///
+/// Return true if the options are set to use diff linematch.
 bool diff_linematch(diff_T *dp)
 {
   if (!(diff_flags & DIFF_LINEMATCH)) {
@@ -1850,7 +2032,10 @@ static int get_max_diff_length(const diff_T *dp)
   return maxlength;
 }
 
-static void find_top_diff_block(diff_T **thistopdiff, diff_T **nextblockblock, int fromidx,
+/// Find the first diff block that includes the specified line. Also find the
+/// next diff block that's not in the current chain of adjacent blocks that are
+/// all touching each other directly.
+static void find_top_diff_block(diff_T **thistopdiff, diff_T **next_adjacent_blocks, int fromidx,
                                 int topline)
 {
   diff_T *topdiff = NULL;
@@ -1865,7 +2050,8 @@ static void find_top_diff_block(diff_T **thistopdiff, diff_T **nextblockblock, i
       topdiffchange = 0;
     }
 
-    // check if the fromwin topline is matched by the current diff. if so, set it to the top of the diff block
+    // check if the fromwin topline is matched by the current diff. if so,
+    // set it to the top of the diff block
     if (topline >= topdiff->df_lnum[fromidx] && topline <=
         (topdiff->df_lnum[fromidx] + topdiff->df_count[fromidx])) {
       // this line is inside the current diff block, so we will save the
@@ -1885,61 +2071,31 @@ static void find_top_diff_block(diff_T **thistopdiff, diff_T **nextblockblock, i
       // if we already have found that the line number is inside a diff block,
       // set the marker of the next block and finish the iteration
       if (*thistopdiff) {
-        (*nextblockblock) = topdiff->df_next;
+        (*next_adjacent_blocks) = topdiff->df_next;
         break;
       }
     }
   }
 }
 
-static void count_filler_lines_and_topline(int *curlinenum_to, int *linesfiller,
-                                           const diff_T *thistopdiff, const int toidx,
-                                           int virtual_lines_passed)
-{
-  const diff_T *curdif = thistopdiff;
-  int ch_virtual_lines = 0;
-  bool isfiller = false;
-  while (virtual_lines_passed > 0) {
-    if (ch_virtual_lines) {
-      virtual_lines_passed--;
-      ch_virtual_lines--;
-      if (!isfiller) {
-        (*curlinenum_to)++;
-      } else {
-        (*linesfiller)++;
-      }
-    } else {
-      (*linesfiller) = 0;
-      ch_virtual_lines = get_max_diff_length(curdif);
-      isfiller = (curdif->df_count[toidx] ? false : true);
-      if (isfiller) {
-        while (curdif && curdif->df_next && curdif->df_lnum[toidx] ==
-               curdif->df_next->df_lnum[toidx]
-               && curdif->df_next->df_count[toidx] == 0) {
-          curdif = curdif->df_next;
-          ch_virtual_lines += get_max_diff_length(curdif);
-        }
-      }
-      if (curdif) {
-        curdif = curdif->df_next;
-      }
-    }
-  }
-}
-
+/// Calculates topline/topfill of a target diff window to fit the source diff window.
 static void calculate_topfill_and_topline(const int fromidx, const int toidx, const
                                           int from_topline, const int from_topfill, int *topfill,
                                           linenr_T *topline)
 {
-  // 1. find the position from the top of the diff block, and the start
-  // of the next diff block
+  // find the position from the top of the diff block, and the next diff
+  // block that's no longer adjacent to the current block. "Adjacency" means
+  // a chain of diff blocks that are directly touching each other, allowed by
+  // linematch and diff anchors.
   diff_T *thistopdiff = NULL;
-  diff_T *nextblockblock = NULL;
+  diff_T *next_adjacent_blocks = NULL;
   int virtual_lines_passed = 0;
 
-  find_top_diff_block(&thistopdiff, &nextblockblock, fromidx, from_topline);
+  find_top_diff_block(&thistopdiff, &next_adjacent_blocks, fromidx, from_topline);
 
-  // count the virtual lines that have been passed
+  // count the virtual lines (either filler or concrete line) that have been
+  // passed in the source buffer. There could be multiple diff blocks if
+  // there are adjacent empty blocks (count == 0 at fromidx).
 
   diff_T *curdif = thistopdiff;
   while (curdif && (curdif->df_lnum[fromidx] + curdif->df_count[fromidx])
@@ -1949,64 +2105,51 @@ static void calculate_topfill_and_topline(const int fromidx, const int toidx, co
     curdif = curdif->df_next;
   }
 
-  if (curdif != nextblockblock) {
+  if (curdif != next_adjacent_blocks) {
     virtual_lines_passed += from_topline - curdif->df_lnum[fromidx];
   }
   virtual_lines_passed -= from_topfill;
 
-  // count the same amount of virtual lines in the toidx buffer
-  int curlinenum_to = thistopdiff->df_lnum[toidx];
-  int linesfiller = 0;
-  count_filler_lines_and_topline(&curlinenum_to, &linesfiller,
-                                 thistopdiff, toidx, virtual_lines_passed);
+  // clamp negative values in case from_topfill hasn't been updated yet and
+  // is larger than total virtual lines, which could happen when setting
+  // diffopt multiple times
+  if (virtual_lines_passed < 0) {
+    virtual_lines_passed = 0;
+  }
 
-  // count the number of filler lines that would normally be above this line
-  int maxfiller = 0;
-  for (diff_T *dpfillertest = thistopdiff; dpfillertest != NULL;
-       dpfillertest = dpfillertest->df_next) {
-    if (dpfillertest->df_lnum[toidx] == curlinenum_to) {
-      while (dpfillertest && dpfillertest->df_lnum[toidx] == curlinenum_to) {
-        maxfiller += dpfillertest->df_count[toidx] ? 0 : get_max_diff_length(dpfillertest);
-        dpfillertest = dpfillertest->df_next;
+  // move the same amount of virtual lines in the target buffer to find the
+  // cursor's line number
+  int curlinenum_to
+    = thistopdiff != NULL  // this should not be null, but just for safety
+      ? thistopdiff->df_lnum[toidx] : 1;
+
+  int virt_lines_left = virtual_lines_passed;
+  curdif = thistopdiff;
+  while (virt_lines_left > 0 && curdif != NULL && curdif != next_adjacent_blocks) {
+    curlinenum_to += MIN(virt_lines_left, curdif->df_count[toidx]);
+    virt_lines_left -= MIN(virt_lines_left, get_max_diff_length(curdif));
+    curdif = curdif->df_next;
+  }
+
+  // count the total number of virtual lines between the top diff block and
+  // the found line in the target buffer
+  int max_virt_lines = 0;
+  for (diff_T *dp = thistopdiff; dp != NULL; dp = dp->df_next) {
+    if (dp->df_lnum[toidx] + dp->df_count[toidx] <= curlinenum_to) {
+      max_virt_lines += get_max_diff_length(dp);
+    } else {
+      if (dp->df_lnum[toidx] <= curlinenum_to) {
+        max_virt_lines += curlinenum_to - dp->df_lnum[toidx];
       }
       break;
     }
   }
-  (*topfill) = maxfiller - linesfiller;
+
+  if (diff_flags & DIFF_FILLER) {
+    // should always be non-negative as max_virt_lines is larger
+    (*topfill) = max_virt_lines - virtual_lines_passed;
+  }
   (*topline) = curlinenum_to;
-}
-
-static int linematched_filler_lines(diff_T *dp, int idx, linenr_T lnum, int *linestatus)
-{
-  int filler_lines_d1 = 0;
-  while (dp && dp->df_next
-         && lnum == (dp->df_lnum[idx] + dp->df_count[idx])
-         && dp->df_next->df_lnum[idx] == lnum) {
-    if (dp->df_count[idx] == 0) {
-      filler_lines_d1 += get_max_diff_length(dp);
-    }
-    dp = dp->df_next;
-  }
-
-  if (dp->df_count[idx] == 0) {
-    filler_lines_d1 += get_max_diff_length(dp);
-  }
-
-  if (lnum < dp->df_lnum[idx] + dp->df_count[idx]) {
-    int j = 0;
-    for (int i = 0; i < DB_COUNT; i++) {
-      if (curtab->tp_diffbuf[i] != NULL) {
-        if (dp->df_count[i]) {
-          j++;
-        }
-      }
-      // is this an added line or a changed line?
-      if (linestatus) {
-        (*linestatus) = (j == 1) ? -2 : -1;
-      }
-    }
-  }
-  return filler_lines_d1;
 }
 
 // Apply results from the linematch algorithm and apply to 'dp' by splitting it into multiple
@@ -2061,19 +2204,22 @@ static void run_linematch_algorithm(diff_T *dp)
 {
   // define buffers for diff algorithm
   mmfile_t diffbufs_mm[DB_COUNT];
-  const char *diffbufs[DB_COUNT];
+  const mmfile_t *diffbufs[DB_COUNT];
   int diff_length[DB_COUNT];
   size_t ndiffs = 0;
   for (int i = 0; i < DB_COUNT; i++) {
     if (curtab->tp_diffbuf[i] != NULL) {
-      // write the contents of the entire buffer to
-      // diffbufs_mm[diffbuffers_count]
-      diff_write_buffer(curtab->tp_diffbuf[i], &diffbufs_mm[ndiffs],
-                        dp->df_lnum[i], dp->df_lnum[i] + dp->df_count[i] - 1);
+      if (dp->df_count[i] > 0) {
+        // write the contents of the entire buffer to
+        // diffbufs_mm[diffbuffers_count]
+        diff_write_buffer(curtab->tp_diffbuf[i], &diffbufs_mm[ndiffs],
+                          dp->df_lnum[i], dp->df_lnum[i] + dp->df_count[i] - 1);
+      } else {
+        diffbufs_mm[ndiffs].size = 0;
+        diffbufs_mm[ndiffs].ptr = NULL;
+      }
 
-      // we want to get the char* to the diff buffer that was just written
-      // we add it to the array of char*, diffbufs
-      diffbufs[ndiffs] = diffbufs_mm[ndiffs].ptr;
+      diffbufs[ndiffs] = &diffbufs_mm[ndiffs];
 
       // keep track of the length of this diff block to pass it to the linematch
       // algorithm
@@ -2101,12 +2247,19 @@ static void run_linematch_algorithm(diff_T *dp)
 
 /// Check diff status for line "lnum" in buffer "buf":
 ///
-/// Returns 0 for nothing special
-/// Returns -1 for a line that should be highlighted as changed.
-/// Returns -2 for a line that should be highlighted as added/deleted.
 /// Returns > 0 for inserting that many filler lines above it (never happens
-/// when 'diffopt' doesn't contain "filler").
+/// when 'diffopt' doesn't contain "filler"). Otherwise returns 0.
+///
+/// "linestatus" (can be NULL) will be set to:
+/// 0 for nothing special.
+/// -1 for a line that should be highlighted as changed.
+/// -2 for a line that should be highlighted as added/deleted.
+///
 /// This should only be used for windows where 'diff' is set.
+///
+/// Note that it's possible for a changed/added/deleted line to also have filler
+/// lines above it. This happens when using linematch or using diff anchors (at
+/// the anchored lines).
 ///
 /// @param wp
 /// @param lnum
@@ -2116,6 +2269,10 @@ static void run_linematch_algorithm(diff_T *dp)
 int diff_check_with_linestatus(win_T *wp, linenr_T lnum, int *linestatus)
 {
   buf_T *buf = wp->w_buffer;
+
+  if (linestatus != NULL) {
+    *linestatus = 0;
+  }
 
   if (curtab->tp_diff_invalid) {
     // update after a big change
@@ -2132,7 +2289,7 @@ int diff_check_with_linestatus(win_T *wp, linenr_T lnum, int *linestatus)
     return 0;
   }
 
-  int idx = diff_buf_idx(buf);  // index in tp_diffbuf[] for this buffer
+  int idx = diff_buf_idx(buf, curtab);  // index in tp_diffbuf[] for this buffer
 
   if (idx == DB_COUNT) {
     // no diffs for buffer "buf"
@@ -2140,28 +2297,60 @@ int diff_check_with_linestatus(win_T *wp, linenr_T lnum, int *linestatus)
   }
 
   // A closed fold never has filler lines.
-  if (hasFolding(wp, lnum, NULL, NULL)) {
+  if (hasFolding(wp, lnum, NULL, NULL) || decor_conceal_line(wp, lnum - 1, false)) {
     return 0;
   }
 
-  // search for a change that includes "lnum" in the list of diffblocks.
+  // Search for a change that includes "lnum" in the list of diffblocks.
+  // Resume from the scan finger to avoid restarting at the first block.
+  diff_T *le = NULL;             // last block with df_lnum[idx] <= lnum
   diff_T *dp;
-  for (dp = curtab->tp_first_diff; dp != NULL; dp = dp->df_next) {
+  for (dp = diff_scan_start(curtab, idx, lnum); dp != NULL; dp = dp->df_next) {
+    if (dp->df_lnum[idx] <= lnum) {
+      le = dp;
+    }
     if (lnum <= dp->df_lnum[idx] + dp->df_count[idx]) {
       break;
     }
   }
-
+  diff_scan_remember(curtab, idx, lnum, le);
   if ((dp == NULL) || (lnum < dp->df_lnum[idx])) {
     return 0;
   }
 
-  if (!dp->is_linematched && diff_linematch(dp)) {
+  // Don't run linematch when lnum is offscreen.
+  // Useful for scrollbind calculations which need to count all the filler lines
+  // above the screen.
+  if (lnum >= wp->w_topline && lnum < wp->w_botline
+      && !dp->is_linematched && diff_linematch(dp)
+      && diff_check_sanity(curtab, dp)) {
     run_linematch_algorithm(dp);
   }
 
-  if (dp->is_linematched) {
-    return linematched_filler_lines(dp, idx, lnum, linestatus);
+  // Insert filler lines above the line just below the change.  Will return 0
+  // when this buf had the max count.
+  int num_fill = 0;
+  while (lnum == dp->df_lnum[idx] + dp->df_count[idx]) {
+    // Only calculate fill lines if 'diffopt' contains "filler". Otherwise
+    // returns 0 filler lines.
+    if (diff_flags & DIFF_FILLER) {
+      int maxcount = get_max_diff_length(dp);
+      num_fill += maxcount - dp->df_count[idx];
+    }
+
+    // If there are adjacent blocks (e.g. linematch or anchor), loop
+    // through them. It's possible for multiple adjacent blocks to
+    // contribute to filler lines.
+    // This also helps us find the last diff block in the list of adjacent
+    // blocks which is necessary when it is a change/inserted line right
+    // after added lines.
+    if (dp->df_next != NULL
+        && lnum >= dp->df_next->df_lnum[idx]
+        && lnum <= dp->df_next->df_lnum[idx] + dp->df_next->df_count[idx]) {
+      dp = dp->df_next;
+    } else {
+      break;
+    }
   }
 
   if (lnum < dp->df_lnum[idx] + dp->df_count[idx]) {
@@ -2178,8 +2367,10 @@ int diff_check_with_linestatus(win_T *wp, linenr_T lnum, int *linestatus)
           zero = true;
         } else {
           if (dp->df_count[i] != dp->df_count[idx]) {
-            // nr of lines changed.
-            return -1;
+            if (linestatus) {
+              *linestatus = -1;  // nr of lines changed.
+            }
+            return num_fill;
           }
           cmp = true;
         }
@@ -2194,7 +2385,10 @@ int diff_check_with_linestatus(win_T *wp, linenr_T lnum, int *linestatus)
             && (curtab->tp_diffbuf[i] != NULL)
             && (dp->df_count[i] != 0)) {
           if (!diff_equal_entry(dp, idx, i)) {
-            return -1;
+            if (linestatus) {
+              *linestatus = -1;
+            }
+            return num_fill;
           }
         }
       }
@@ -2206,26 +2400,25 @@ int diff_check_with_linestatus(win_T *wp, linenr_T lnum, int *linestatus)
     // through updating the window.  Just report the text as unchanged.
     // Other windows might still show the change though.
     if (!zero) {
-      return 0;
+      return num_fill;
     }
-    return -2;
+    if (linestatus) {
+      *linestatus = -2;
+    }
+    return num_fill;
   }
-
-  // If 'diffopt' doesn't contain "filler", return 0.
-  if (!(diff_flags & DIFF_FILLER)) {
-    return 0;
-  }
-
-  // Insert filler lines above the line just below the change.  Will return
-  // 0 when this buf had the max count.
-  int maxcount = get_max_diff_length(dp);
-  return maxcount - dp->df_count[idx];
+  return num_fill;
 }
 
 /// See diff_check_with_linestatus
-int diff_check(win_T *wp, linenr_T lnum)
+int diff_check_fill(win_T *wp, linenr_T lnum)
 {
-  return diff_check_with_linestatus(wp, lnum, NULL);
+  // be quick when there are no filler lines
+  if (!(diff_flags & DIFF_FILLER)) {
+    return 0;
+  }
+  int n = diff_check_with_linestatus(wp, lnum, NULL);
+  return MAX(n, 0);
 }
 
 /// Compare two entries in diff "dp" and return true if they are equal.
@@ -2347,9 +2540,8 @@ static int diff_cmp(char *s1, char *s2)
 void diff_set_topline(win_T *fromwin, win_T *towin)
 {
   buf_T *frombuf = fromwin->w_buffer;
-  linenr_T lnum = fromwin->w_topline;
 
-  int fromidx = diff_buf_idx(frombuf);
+  int fromidx = diff_buf_idx(frombuf, curtab);
   if (fromidx == DB_COUNT) {
     // safety check
     return;
@@ -2359,6 +2551,7 @@ void diff_set_topline(win_T *fromwin, win_T *towin)
     // update after a big change
     ex_diffupdate(NULL);
   }
+  linenr_T lnum = fromwin->w_topline;
   towin->w_topfill = 0;
 
   // search for a change that includes "lnum" in the list of diffblocks.
@@ -2376,7 +2569,7 @@ void diff_set_topline(win_T *fromwin, win_T *towin)
                        - (frombuf->b_ml.ml_line_count - lnum);
   } else {
     // Find index for "towin".
-    int toidx = diff_buf_idx(towin->w_buffer);
+    int toidx = diff_buf_idx(towin->w_buffer, curtab);
 
     if (toidx == DB_COUNT) {
       // safety check
@@ -2385,54 +2578,9 @@ void diff_set_topline(win_T *fromwin, win_T *towin)
     towin->w_topline = lnum + (dp->df_lnum[toidx] - dp->df_lnum[fromidx]);
 
     if (lnum >= dp->df_lnum[fromidx]) {
-      if (dp->is_linematched) {
-        calculate_topfill_and_topline(fromidx, toidx, fromwin->w_topline,
-                                      fromwin->w_topfill, &towin->w_topfill, &towin->w_topline);
-      } else {
-        // Inside a change: compute filler lines. With three or more
-        // buffers we need to know the largest count.
-        linenr_T max_count = 0;
-
-        for (int i = 0; i < DB_COUNT; i++) {
-          if ((curtab->tp_diffbuf[i] != NULL) && (max_count < dp->df_count[i])) {
-            max_count = dp->df_count[i];
-          }
-        }
-
-        if (dp->df_count[toidx] == dp->df_count[fromidx]) {
-          // same number of lines: use same filler count
-          towin->w_topfill = fromwin->w_topfill;
-        } else if (dp->df_count[toidx] > dp->df_count[fromidx]) {
-          if (lnum == dp->df_lnum[fromidx] + dp->df_count[fromidx]) {
-            // more lines in towin and fromwin doesn't show diff
-            // lines, only filler lines
-            if (max_count - fromwin->w_topfill >= dp->df_count[toidx]) {
-              // towin also only shows filler lines
-              towin->w_topline = dp->df_lnum[toidx] + dp->df_count[toidx];
-              towin->w_topfill = fromwin->w_topfill;
-            } else {
-              // towin still has some diff lines to show
-              towin->w_topline = dp->df_lnum[toidx]
-                                 + max_count - fromwin->w_topfill;
-            }
-          }
-        } else if (towin->w_topline >= dp->df_lnum[toidx]
-                   + dp->df_count[toidx]) {
-          // less lines in towin and no diff lines to show: compute
-          // filler lines
-          towin->w_topline = dp->df_lnum[toidx] + dp->df_count[toidx];
-
-          if (diff_flags & DIFF_FILLER) {
-            if (lnum == dp->df_lnum[fromidx] + dp->df_count[fromidx]) {
-              // fromwin is also out of diff lines
-              towin->w_topfill = fromwin->w_topfill;
-            } else {
-              // fromwin has some diff lines
-              towin->w_topfill = dp->df_lnum[fromidx] + max_count - lnum;
-            }
-          }
-        }
-      }
+      calculate_topfill_and_topline(fromidx, toidx,
+                                    fromwin->w_topline, fromwin->w_topfill,
+                                    &towin->w_topfill, &towin->w_topline);
     }
   }
 
@@ -2450,133 +2598,179 @@ void diff_set_topline(win_T *fromwin, win_T *towin)
   }
 
   // When w_topline changes need to recompute w_botline and cursor position
-  invalidate_botline(towin);
+  invalidate_botline_win(towin);
   changed_line_abv_curs_win(towin);
 
   check_topfill(towin, false);
   hasFolding(towin, towin->w_topline, &towin->w_topline, NULL);
+  set_topline_valid(towin);
 }
 
-/// This is called when 'diffopt' is changed.
-///
-/// @return
-int diffopt_changed(void)
+/// Parse the diff anchors. If "check_only" is set, will only make sure the
+/// syntax is correct.
+static int parse_diffanchors(bool check_only, buf_T *buf, linenr_T *anchors, int *num_anchors)
 {
-  int diff_context_new = 6;
-  int linematch_lines_new = 0;
-  int diff_flags_new = 0;
-  int diff_foldcolumn_new = 2;
-  int diff_algorithm_new = 0;
-  int diff_indent_heuristic = 0;
+  int i;
+  char *dia = (*buf->b_p_dia == NUL) ? p_dia : buf->b_p_dia;
 
-  char *p = p_dip;
-  while (*p != NUL) {
-    // Note: Keep this in sync with p_dip_values
-    if (strncmp(p, "filler", 6) == 0) {
-      p += 6;
-      diff_flags_new |= DIFF_FILLER;
-    } else if ((strncmp(p, "context:", 8) == 0) && ascii_isdigit(p[8])) {
-      p += 8;
-      diff_context_new = getdigits_int(&p, false, diff_context_new);
-    } else if (strncmp(p, "iblank", 6) == 0) {
-      p += 6;
-      diff_flags_new |= DIFF_IBLANK;
-    } else if (strncmp(p, "icase", 5) == 0) {
-      p += 5;
-      diff_flags_new |= DIFF_ICASE;
-    } else if (strncmp(p, "iwhiteall", 9) == 0) {
-      p += 9;
-      diff_flags_new |= DIFF_IWHITEALL;
-    } else if (strncmp(p, "iwhiteeol", 9) == 0) {
-      p += 9;
-      diff_flags_new |= DIFF_IWHITEEOL;
-    } else if (strncmp(p, "iwhite", 6) == 0) {
-      p += 6;
-      diff_flags_new |= DIFF_IWHITE;
-    } else if (strncmp(p, "horizontal", 10) == 0) {
-      p += 10;
-      diff_flags_new |= DIFF_HORIZONTAL;
-    } else if (strncmp(p, "vertical", 8) == 0) {
-      p += 8;
-      diff_flags_new |= DIFF_VERTICAL;
-    } else if ((strncmp(p, "foldcolumn:", 11) == 0) && ascii_isdigit(p[11])) {
-      p += 11;
-      diff_foldcolumn_new = getdigits_int(&p, false, diff_foldcolumn_new);
-    } else if (strncmp(p, "hiddenoff", 9) == 0) {
-      p += 9;
-      diff_flags_new |= DIFF_HIDDEN_OFF;
-    } else if (strncmp(p, "closeoff", 8) == 0) {
-      p += 8;
-      diff_flags_new |= DIFF_CLOSE_OFF;
-    } else if (strncmp(p, "followwrap", 10) == 0) {
-      p += 10;
-      diff_flags_new |= DIFF_FOLLOWWRAP;
-    } else if (strncmp(p, "indent-heuristic", 16) == 0) {
-      p += 16;
-      diff_indent_heuristic = XDF_INDENT_HEURISTIC;
-    } else if (strncmp(p, "internal", 8) == 0) {
-      p += 8;
-      diff_flags_new |= DIFF_INTERNAL;
-    } else if (strncmp(p, "algorithm:", 10) == 0) {
-      // Note: Keep this in sync with p_dip_algorithm_values.
-      p += 10;
-      if (strncmp(p, "myers", 5) == 0) {
-        p += 5;
-        diff_algorithm_new = 0;
-      } else if (strncmp(p, "minimal", 7) == 0) {
-        p += 7;
-        diff_algorithm_new = XDF_NEED_MINIMAL;
-      } else if (strncmp(p, "patience", 8) == 0) {
-        p += 8;
-        diff_algorithm_new = XDF_PATIENCE_DIFF;
-      } else if (strncmp(p, "histogram", 9) == 0) {
-        p += 9;
-        diff_algorithm_new = XDF_HISTOGRAM_DIFF;
-      } else {
-        return FAIL;
+  buf_T *orig_curbuf = curbuf;
+  win_T *orig_curwin = curwin;
+
+  win_T *bufwin = NULL;
+  if (check_only) {
+    bufwin = curwin;
+  } else {
+    // Find the first window tied to this buffer and ignore the rest. Will
+    // only matter for window-specific addresses like `.` or `''`.
+    for (bufwin = firstwin; bufwin != NULL; bufwin = bufwin->w_next) {
+      if (bufwin->w_buffer == buf && bufwin->w_p_diff) {
+        break;
       }
-    } else if ((strncmp(p, "linematch:", 10) == 0) && ascii_isdigit(p[10])) {
-      p += 10;
-      linematch_lines_new = getdigits_int(&p, false, linematch_lines_new);
-      diff_flags_new |= DIFF_LINEMATCH;
     }
+    if (bufwin == NULL && *dia != NUL) {
+      // The buffer is hidden. Currently this is not supported due to the
+      // edge cases of needing to decide if an address is window-specific
+      // or not. We could add more checks in the future so we can detect
+      // whether an address relies on curwin to make this more fleixble.
+      emsg(_(e_diff_anchors_with_hidden_windows));
+      return FAIL;
+    }
+  }
 
-    if ((*p != ',') && (*p != NUL)) {
+  for (i = 0; i < MAX_DIFF_ANCHORS && *dia != NUL; i++) {
+    if (*dia == ',') {  // don't allow empty values
       return FAIL;
     }
 
-    if (*p == ',') {
-      p++;
+    curbuf = buf;
+    curwin = bufwin;
+    const char *errormsg = NULL;
+    linenr_T lnum = get_address(NULL, &dia, ADDR_LINES, check_only, true, false, 1, &errormsg);
+    curbuf = orig_curbuf;
+    curwin = orig_curwin;
+
+    if (errormsg != NULL) {
+      emsg(errormsg);
+    }
+    if (dia == NULL) {  // error detected
+      return FAIL;
+    }
+    if (*dia != ',' && *dia != NUL) {
+      return FAIL;
+    }
+
+    if (!check_only
+        && (lnum == MAXLNUM || lnum <= 0 || lnum > buf->b_ml.ml_line_count + 1)) {
+      emsg(_(e_invrange));
+      return FAIL;
+    }
+
+    if (anchors != NULL) {
+      anchors[i] = lnum;
+    }
+
+    if (*dia == ',') {
+      dia++;
     }
   }
-
-  diff_algorithm_new |= diff_indent_heuristic;
-
-  // Can't have both "horizontal" and "vertical".
-  if ((diff_flags_new & DIFF_HORIZONTAL) && (diff_flags_new & DIFF_VERTICAL)) {
+  if (i == MAX_DIFF_ANCHORS && *dia != NUL) {
+    semsg(_(e_cannot_have_more_than_nr_diff_anchors), MAX_DIFF_ANCHORS);
     return FAIL;
   }
+  if (num_anchors != NULL) {
+    *num_anchors = i;
+  }
+  return OK;
+}
 
-  // If flags were added or removed, or the algorithm was changed, need to
-  // update the diff.
-  if (diff_flags != diff_flags_new || diff_algorithm != diff_algorithm_new) {
+/// This is called when 'diffanchors' is changed.
+int diffanchors_changed(bool buflocal)
+{
+  int result = parse_diffanchors(true, curbuf, NULL, NULL);
+  if (result == OK && (diff_flags & DIFF_ANCHOR)) {
     FOR_ALL_TABS(tp) {
-      tp->tp_diff_invalid = true;
+      if (!buflocal) {
+        tp->tp_diff_invalid = true;
+      } else {
+        for (int idx = 0; idx < DB_COUNT; idx++) {
+          if (tp->tp_diffbuf[idx] == curbuf) {
+            tp->tp_diff_invalid = true;
+            break;
+          }
+        }
+      }
     }
   }
+  return result;
+}
 
-  diff_flags = diff_flags_new;
-  diff_context = diff_context_new == 0 ? 1 : diff_context_new;
-  linematch_lines = linematch_lines_new;
-  diff_foldcolumn = diff_foldcolumn_new;
-  diff_algorithm = diff_algorithm_new;
+/// Map the 'diffopt' keyset onto diff.c's globals. `v` is `p_dip` reified into a keyset.
+///
+/// @return  FAIL only for the cross-part "horizontal" + "vertical" conflict.
+int diffopt_changed(void)
+{
+  OptKeyDict_dip *v = opt_keyset(p_dip, kOptDiffopt, NULL);
 
-  diff_redraw(true);
+  int flags = (v->filler ? DIFF_FILLER : 0) | (v->anchor ? DIFF_ANCHOR : 0)
+              | (v->iblank ? DIFF_IBLANK : 0) | (v->icase ? DIFF_ICASE : 0)
+              | (v->iwhiteall ? DIFF_IWHITEALL : 0) | (v->iwhiteeol ? DIFF_IWHITEEOL : 0)
+              | (v->iwhite ? DIFF_IWHITE : 0) | (v->horizontal ? DIFF_HORIZONTAL : 0)
+              | (v->vertical ? DIFF_VERTICAL : 0) | (v->closeoff ? DIFF_CLOSE_OFF : 0)
+              | (v->hiddenoff ? DIFF_HIDDEN_OFF : 0) | (v->followwrap ? DIFF_FOLLOWWRAP : 0)
+              | (v->internal ? DIFF_INTERNAL : 0);
+  if (HAS_KEY(v, dip, linematch)) {
+    flags |= DIFF_LINEMATCH | DIFF_FILLER;  // linematch needs filler
+  }
+  if (HAS_KEY(v, dip, inline_)) {
+    flags &= ~ALL_INLINE;
+    if (strequal(v->inline_, "simple")) {
+      flags |= DIFF_INLINE_SIMPLE;
+    } else if (strequal(v->inline_, "char")) {
+      flags |= DIFF_INLINE_CHAR;
+    } else if (strequal(v->inline_, "word")) {
+      flags |= DIFF_INLINE_WORD;
+    } else {
+      flags |= DIFF_INLINE_NONE;
+    }
+  }
+  int algorithm = v->indent_heuristic ? XDF_INDENT_HEURISTIC : 0;
+  if (HAS_KEY(v, dip, algorithm)) {
+    if (strequal(v->algorithm, "minimal")) {
+      algorithm |= XDF_NEED_MINIMAL;
+    } else if (strequal(v->algorithm, "patience")) {
+      algorithm |= XDF_PATIENCE_DIFF;
+    } else if (strequal(v->algorithm, "histogram")) {
+      algorithm |= XDF_HISTOGRAM_DIFF;
+    }  // else "myers" -> 0
+  }
 
-  // recompute the scroll binding with the new option value, may
-  // remove or add filler lines
-  check_scrollbind(0, 0);
-  return OK;
+  int ret = OK;
+  // Can't have both "horizontal" and "vertical".
+  if ((flags & DIFF_HORIZONTAL) && (flags & DIFF_VERTICAL)) {
+    ret = FAIL;
+  } else {
+    // If flags were added or removed, or the algorithm was changed, update the diff.
+    if (diff_flags != flags || diff_algorithm != algorithm) {
+      FOR_ALL_TABS(tp) {
+        tp->tp_diff_invalid = true;
+      }
+    }
+
+    int context = HAS_KEY(v, dip, context) ? (int)v->context : 6;
+    diff_flags = flags;
+    diff_context = context == 0 ? 1 : context;
+    linematch_lines = HAS_KEY(v, dip, linematch) ? (int)v->linematch : 0;
+    diff_foldcolumn = HAS_KEY(v, dip, foldcolumn) ? (int)v->foldcolumn : 2;
+    diff_algorithm = algorithm;
+
+    diff_redraw(true);
+
+    // recompute the scroll binding with the new option value, may
+    // remove or add filler lines
+    check_scrollbind(0, 0);
+  }
+
+  return ret;
 }
 
 /// Check that "diffopt" contains "horizontal".
@@ -2607,7 +2801,81 @@ bool diffopt_filler(void)
   return (diff_flags & DIFF_FILLER) != 0;
 }
 
-/// Find the difference within a changed line.
+/// Called when a line has been updated. Used for updating inline diff in Insert
+/// mode without waiting for global diff update later.
+void diff_update_line(linenr_T lnum)
+{
+  if (!(diff_flags & ALL_INLINE_DIFF)) {
+    // We only care if we are doing inline-diff where we cache the diff results
+    return;
+  }
+
+  int idx = diff_buf_idx(curbuf, curtab);
+  if (idx == DB_COUNT) {
+    return;
+  }
+  diff_T *dp;
+  FOR_ALL_DIFFBLOCKS_IN_TAB(curtab, dp) {
+    if (lnum <= dp->df_lnum[idx] + dp->df_count[idx]) {
+      break;
+    }
+  }
+
+  // clear the inline change cache as it's invalid
+  if (dp != NULL) {
+    dp->has_changes = false;
+    dp->df_changes.ga_len = 0;
+  }
+}
+
+/// used for simple inline diff algorithm
+static diffline_change_T simple_diffline_change;
+
+/// Parse a diffline struct and returns the [start,end] byte offsets
+///
+/// Returns true if this change was added, no other buffer has it.
+bool diff_change_parse(diffline_T *diffline, diffline_change_T *change, int *change_start,
+                       int *change_end)
+{
+  if (change->dc_start_lnum_off[diffline->bufidx] < diffline->lineoff) {
+    *change_start = 0;
+  } else {
+    *change_start = change->dc_start[diffline->bufidx];
+  }
+  if (change->dc_end_lnum_off[diffline->bufidx] > diffline->lineoff) {
+    *change_end = INT_MAX;
+  } else {
+    *change_end = change->dc_end[diffline->bufidx];
+  }
+
+  if (change == &simple_diffline_change) {
+    // This is what we returned from simple inline diff. We always consider
+    // the range to be changed, rather than added for now.
+    return false;
+  }
+
+  // Find out whether this is an addition. Note that for multi buffer diff,
+  // to tell whether lines are additions we check whether all the other diff
+  // lines are identical (in diff_check_with_linestatus). If so, we mark them
+  // as add. We don't do that for inline diff here for simplicity.
+  for (int i = 0; i < DB_COUNT; i++) {
+    if (i == diffline->bufidx) {
+      continue;
+    }
+    if (change->dc_start[i] != change->dc_end[i]
+        || change->dc_end_lnum_off[i] != change->dc_start_lnum_off[i]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/// Find the difference within a changed line and returns [startp,endp] byte
+/// positions.  Performs a simple algorithm by finding a single range in the
+/// middle.
+///
+/// If diffopt has DIFF_INLINE_NONE set, then this will only calculate the return
+/// value (added or changed), but startp/endp will not be calculated.
 ///
 /// @param  wp      window whose current buffer to check
 /// @param  lnum    line number to check within the buffer
@@ -2615,38 +2883,17 @@ bool diffopt_filler(void)
 /// @param  endp    last char of the change
 ///
 /// @return true if the line was added, no other buffer has it.
-bool diff_find_change(win_T *wp, linenr_T lnum, int *startp, int *endp)
+static bool diff_find_change_simple(win_T *wp, linenr_T lnum, const diff_T *dp, int idx,
+                                    int *startp, int *endp)
   FUNC_ATTR_WARN_UNUSED_RESULT FUNC_ATTR_NONNULL_ALL
 {
-  // Make a copy of the line, the next ml_get() will invalidate it.
-  char *line_org = xstrdup(ml_get_buf(wp->w_buffer, lnum));
-
-  int idx = diff_buf_idx(wp->w_buffer);
-  if (idx == DB_COUNT) {
-    // cannot happen
-    xfree(line_org);
-    return false;
-  }
-
-  // search for a change that includes "lnum" in the list of diffblocks.
-  diff_T *dp;
-  for (dp = curtab->tp_first_diff; dp != NULL; dp = dp->df_next) {
-    if (lnum <= dp->df_lnum[idx] + dp->df_count[idx]) {
-      break;
-    }
-  }
-  if (dp != NULL && dp->is_linematched) {
-    while (dp && dp->df_next
-           && lnum == dp->df_count[idx] + dp->df_lnum[idx]
-           && dp->df_next->df_lnum[idx] == lnum) {
-      dp = dp->df_next;
-    }
-  }
-
-  if ((dp == NULL) || (diff_check_sanity(curtab, dp) == FAIL)) {
-    xfree(line_org);
-
-    return false;
+  char *line_org;
+  if (diff_flags & DIFF_INLINE_NONE) {
+    // We only care about the return value, not the actual string comparisons.
+    line_org = NULL;
+  } else {
+    // Make a copy of the line, the next ml_get() will invalidate it.
+    line_org = xstrdup(ml_get_buf(wp->w_buffer, lnum));
   }
 
   int si_org;
@@ -2663,6 +2910,10 @@ bool diff_find_change(win_T *wp, linenr_T lnum, int *startp, int *endp)
         continue;
       }
       added = false;
+      if (diff_flags & DIFF_INLINE_NONE) {
+        break;  // early terminate as we only care about the return value
+      }
+
       char *line_new = ml_get_buf(curtab->tp_diffbuf[i], dp->df_lnum[i] + off);
 
       // Search for start of difference
@@ -2692,9 +2943,7 @@ bool diff_find_change(win_T *wp, linenr_T lnum, int *startp, int *endp)
       si_org -= utf_head_off(line_org, line_org + si_org);
       si_new -= utf_head_off(line_new, line_new + si_new);
 
-      if (*startp > si_org) {
-        *startp = si_org;
-      }
+      *startp = MIN(*startp, si_org);
 
       // Search for end of difference, if any.
       if ((line_org[si_org] != NUL) || (line_new[si_new] != NUL)) {
@@ -2734,14 +2983,593 @@ bool diff_find_change(win_T *wp, linenr_T lnum, int *startp, int *endp)
           }
         }
 
-        if (*endp < ei_org) {
-          *endp = ei_org;
-        }
+        *endp = MAX(*endp, ei_org);
       }
     }
   }
 
   xfree(line_org);
+  return added;
+}
+
+/// Mapping used for mapping from temporary mmfile created for inline diff back
+/// to original buffer's line/col.
+typedef struct {
+  colnr_T byte_start;
+  colnr_T num_bytes;
+  int lineoff;
+} linemap_entry_T;
+
+/// Refine inline character-wise diff blocks to create a more human readable
+/// highlight. Otherwise a naive diff under existing algorithms tends to create
+/// a messy output with lots of small gaps.
+/// It does this by merging adjacent long diff blocks if they are only separated
+/// by a couple characters.
+/// These are done by heuristics and can be further tuned.
+static void diff_refine_inline_char_highlight(diff_T *dp_orig, garray_T *linemap, int idx1)
+{
+  // Perform multiple passes so that newly merged blocks will now be long
+  // enough which may cause other previously unmerged gaps to be merged as
+  // well.
+  int pass = 1;
+  do {
+    bool has_unmerged_gaps = false;
+    bool has_merged_gaps = false;
+    diff_T *dp = dp_orig;
+    while (dp != NULL && dp->df_next != NULL) {
+      // Only use first buffer to calculate the gap because the gap is
+      // unchanged text, which would be the same in all buffers.
+      if (dp->df_lnum[idx1] + dp->df_count[idx1] - 1 >= linemap[idx1].ga_len
+          || dp->df_next->df_lnum[idx1] - 1 >= linemap[idx1].ga_len) {
+        dp = dp->df_next;
+        continue;
+      }
+
+      // If the gap occurs over different lines, don't consider it
+      linemap_entry_T *entry1 =
+        &((linemap_entry_T *)linemap[idx1].ga_data)[dp->df_lnum[idx1]
+                                                    + dp->df_count[idx1] - 1];
+      linemap_entry_T *entry2 =
+        &((linemap_entry_T *)linemap[idx1].ga_data)[dp->df_next->df_lnum[idx1] - 1];
+      if (entry1->lineoff != entry2->lineoff) {
+        dp = dp->df_next;
+        continue;
+      }
+
+      linenr_T gap = dp->df_next->df_lnum[idx1] - (dp->df_lnum[idx1] + dp->df_count[idx1]);
+      if (gap <= 3) {
+        linenr_T max_df_count = 0;
+        for (int i = 0; i < DB_COUNT; i++) {
+          max_df_count = MAX(max_df_count, dp->df_count[i] + dp->df_next->df_count[i]);
+        }
+
+        if (max_df_count >= gap * 4) {
+          // Merge current block with the next one. Don't advance the
+          // pointer so we try the same merged block against the next
+          // one.
+          for (int i = 0; i < DB_COUNT; i++) {
+            dp->df_count[i] = dp->df_next->df_lnum[i]
+                              + dp->df_next->df_count[i] - dp->df_lnum[i];
+          }
+          diff_T *dp_next = dp->df_next;
+          dp->df_next = dp_next->df_next;
+          clear_diffblock(dp_next);
+          has_merged_gaps = true;
+          continue;
+        } else {
+          has_unmerged_gaps = true;
+        }
+      }
+      dp = dp->df_next;
+    }
+    if (!has_unmerged_gaps || !has_merged_gaps) {
+      break;
+    }
+  } while (pass++ < 4);  // use limited number of passes to avoid excessive looping
+}
+
+/// Refine inline word diff blocks by merging blocks that are only separated
+/// by whitespace or punctuation. This creates more coherent highlighting.
+static void diff_refine_inline_word_highlight(diff_T *dp_orig, garray_T *linemap, int idx1,
+                                              linenr_T start_lnum)
+{
+  int pass = 1;
+  do {
+    diff_T *dp = dp_orig;
+
+    while (dp != NULL && dp->df_next != NULL) {
+      // Index of the last line of this block and of the first line of the
+      // next one.  When this block is empty, which happens for inserted
+      // lines, it has no last line and "idx_entry1" is negative.
+      linenr_T idx_entry1 = dp->df_lnum[idx1] + dp->df_count[idx1] - 2;
+      linenr_T idx_entry2 = dp->df_next->df_lnum[idx1] - 1;
+
+      // Only merge blocks on the same line
+      if (idx_entry1 < 0 || idx_entry1 >= linemap[idx1].ga_len
+          || idx_entry2 < 0 || idx_entry2 >= linemap[idx1].ga_len) {
+        dp = dp->df_next;
+        continue;
+      }
+
+      linemap_entry_T *entry1 =
+        &((linemap_entry_T *)linemap[idx1].ga_data)[idx_entry1];
+      linemap_entry_T *entry2 =
+        &((linemap_entry_T *)linemap[idx1].ga_data)[idx_entry2];
+
+      // Skip if blocks are on different lines
+      if (entry1->lineoff != entry2->lineoff) {
+        dp = dp->df_next;
+        continue;
+      }
+
+      // Calculate the gap between blocks
+      int gap_start = entry1->byte_start + entry1->num_bytes;
+      int gap_end = entry2->byte_start;
+      int gap_size = gap_end - gap_start;
+
+      // Merge adjacent diff blocks separated by small gaps to reduce visual
+      // fragmentation. Gap threshold is set to 5 bytes which handles most
+      // common separators (spaces, punctuation, short variable names) while
+      // still preserving visually distinct changes.
+      if (gap_size <= 0 || gap_size > diff_word_gap) {
+        dp = dp->df_next;
+        continue;
+      }
+
+      // Get the text between the two blocks
+      char *line = ml_get_buf(curtab->tp_diffbuf[idx1],
+                              start_lnum + entry1->lineoff);
+      char *gap_text = line + gap_start;
+
+      // Check if gap contains only whitespace and/or punctuation
+      bool only_non_word = true;
+      bool has_content = false;
+      for (int i = 0; i < gap_size && gap_text[i] != NUL; i++) {
+        has_content = true;
+        int char_class = mb_get_class_tab(gap_text + i,
+                                          curtab->tp_diffbuf[idx1]->b_chartab);
+        // class 2 is word characters, if we find any, don't merge
+        if (char_class == 2) {
+          only_non_word = false;
+          break;
+        }
+      }
+
+      // Merge if the gap is small and contains only non-word characters
+      if (has_content && only_non_word) {
+        long total_change_bytes = 0;
+        for (int i = 0; i < DB_COUNT; i++) {
+          if (curtab->tp_diffbuf[i] != NULL) {
+            // count bytes in the first block
+            for (int k = 0; k < dp->df_count[i]; k++) {
+              int idx = dp->df_lnum[i] + k - 1;
+              if (idx < linemap[i].ga_len) {
+                total_change_bytes += ((linemap_entry_T *)linemap[i].ga_data)[idx].num_bytes;
+              }
+            }
+            // count bytes in the next block
+            for (int k = 0; k < dp->df_next->df_count[i]; k++) {
+              int idx = dp->df_next->df_lnum[i] + k - 1;
+              if (idx < linemap[i].ga_len) {
+                total_change_bytes += ((linemap_entry_T *)linemap[i].ga_data)[idx].num_bytes;
+              }
+            }
+          }
+        }
+
+        if (total_change_bytes >= gap_size * 2) {
+          // Merge the blocks by extending the first block to include the next
+          for (int i = 0; i < DB_COUNT; i++) {
+            if (curtab->tp_diffbuf[i] != NULL) {
+              dp->df_count[i] = dp->df_next->df_lnum[i] + dp->df_next->df_count[i]
+                                - dp->df_lnum[i];
+            }
+          }
+
+          diff_T *dp_next = dp->df_next;
+          dp->df_next = dp_next->df_next;
+          clear_diffblock(dp_next);
+
+          // Don't advance dp, check if can merge with the next block too
+          continue;
+        }
+      }
+
+      dp = dp->df_next;
+    }
+  } while (pass++ < 4);  // use limited number of passes to avoid excessive looping
+}
+
+/// Find the inline difference within a diff block among different buffers.  Do
+/// this by splitting each block's content into characters or words, and then
+/// use internal xdiff to calculate the per-character/word diff.  The result is
+/// stored in dp instead of returned by the function.
+static void diff_find_change_inline_diff(diff_T *dp)
+{
+  const int save_diff_algorithm = diff_algorithm;
+
+  diffio_T dio = { 0 };
+  ga_init(&dio.dio_diff.dout_ga, sizeof(diffhunk_T), 1000);
+
+  // inline diff only supports internal algo
+  dio.dio_internal = true;
+
+  // always use indent-heuristics to slide diff splits along
+  // whitespace
+  diff_algorithm |= XDF_INDENT_HEURISTIC;
+
+  // diff_read() has an implicit dependency on curtab->tp_first_diff
+  diff_T *orig_diff = curtab->tp_first_diff;
+  curtab->tp_first_diff = NULL;
+
+  // diff_read() also uses curtab->tp_diffbuf to determine what's an active
+  // buffer
+  buf_T *(orig_diffbuf[DB_COUNT]);
+  memcpy(orig_diffbuf, curtab->tp_diffbuf, sizeof(orig_diffbuf));
+
+  garray_T linemap[DB_COUNT];
+  garray_T file1_str;
+  garray_T file2_str;
+
+  // Buffers to populate mmfile 1/2 that would be passed to xdiff as memory
+  // files. Use a grow array as it is not obvious how much exact space we
+  // need.
+  ga_init(&file1_str, 1, 1024);
+  ga_init(&file2_str, 1, 1024);
+
+  // Line map to map from generated mmfiles' line numbers back to original
+  // diff blocks' locations. Need this even for char diff because not all
+  // characters are 1-byte long / ASCII.
+  for (int i = 0; i < DB_COUNT; i++) {
+    ga_init(&linemap[i], sizeof(linemap_entry_T), 128);
+  }
+
+  int file1_idx = -1;
+  for (int i = 0; i < DB_COUNT; i++) {
+    dio.dio_diff.dout_ga.ga_len = 0;
+
+    buf_T *buf = curtab->tp_diffbuf[i];
+    if (buf == NULL || buf->b_ml.ml_mfp == NULL) {
+      continue;  // skip buffer that isn't loaded
+    }
+    if (dp->df_count[i] == 0) {
+      // skip buffers that don't have any texts in this block so we don't
+      // end up marking the entire block as modified in multi-buffer diff
+      curtab->tp_diffbuf[i] = NULL;
+      continue;
+    }
+
+    if (file1_idx == -1) {
+      file1_idx = i;
+    }
+
+    garray_T *curstr = (file1_idx != i) ? &file2_str : &file1_str;
+
+    linenr_T numlines = 0;
+    curstr->ga_len = 0;
+
+    // Split each line into chars/words and populate fake file buffer as
+    // newline-delimited tokens as that's what xdiff requires.
+    for (int off = 0; off < dp->df_count[i]; off++) {
+      char *curline = ml_get_buf(curtab->tp_diffbuf[i], dp->df_lnum[i] + off);
+
+      bool in_keyword = false;
+
+      // iwhiteeol support vars
+      bool last_white = false;
+      int eol_ga_len = -1;
+      int eol_linemap_len = -1;
+      int eol_numlines = -1;
+
+      char *s = curline;
+      while (*s != NUL) {
+        bool new_in_keyword = false;
+        if (diff_flags & DIFF_INLINE_WORD) {
+          // Always use the first buffer's 'iskeyword' to have a
+          // consistent diff.
+          // For multibyte chars, only treat alphanumeric chars
+          // (class 2) as "word", as other classes such as emojis and
+          // CJK ideographs do not usually benefit from word diff as
+          // Vim doesn't have a good way to segment them.
+          new_in_keyword = (mb_get_class_tab(s, curtab->tp_diffbuf[file1_idx]->b_chartab) == 2);
+        }
+        if (in_keyword && !new_in_keyword) {
+          ga_append(curstr, NL);
+          numlines++;
+        }
+
+        if (ascii_iswhite(*s)) {
+          if (diff_flags & DIFF_IWHITEALL) {
+            in_keyword = false;
+            s = skipwhite(s);
+            continue;
+          } else if ((diff_flags & DIFF_IWHITEEOL) || (diff_flags & DIFF_IWHITE)) {
+            if (!last_white) {
+              eol_ga_len = curstr->ga_len;
+              eol_linemap_len = linemap[i].ga_len;
+              eol_numlines = numlines;
+              last_white = true;
+            }
+          }
+        } else {
+          if ((diff_flags & DIFF_IWHITEEOL) || (diff_flags & DIFF_IWHITE)) {
+            last_white = false;
+            eol_ga_len = -1;
+            eol_linemap_len = -1;
+            eol_numlines = -1;
+          }
+        }
+
+        int char_len = 1;
+        if (*s == NL) {
+          // NL is internal substitute for NUL
+          ga_append(curstr, NUL);
+        } else {
+          char_len = utfc_ptr2len(s);
+
+          if (ascii_iswhite(*s) && (diff_flags & DIFF_IWHITE)) {
+            // Treat the entire white space span as a single char.
+            char_len = (int)(skipwhite(s) - s);
+          }
+
+          if (diff_flags & DIFF_ICASE) {
+            // xdiff doesn't support ignoring case, fold-case the text manually.
+            int c = utf_ptr2char(s);
+            int c_len = utf_char2len(c);
+            c = utf_fold(c);
+            char cbuf[MB_MAXBYTES + 1];
+            int c_fold_len = utf_char2bytes(c, cbuf);
+            ga_concat_len(curstr, cbuf, (size_t)c_fold_len);
+            if (char_len > c_len) {
+              // There may be remaining composing characters. Write those back in.
+              // Composing characters don't need case folding.
+              ga_concat_len(curstr, s + c_len, (size_t)(char_len - c_len));
+            }
+          } else {
+            ga_concat_len(curstr, s, (size_t)char_len);
+          }
+        }
+
+        if (!new_in_keyword) {
+          ga_append(curstr, NL);
+          numlines++;
+        }
+
+        if (!new_in_keyword || (new_in_keyword && !in_keyword)) {
+          // create a new mapping entry from the xdiff mmfile back to
+          // original line/col.
+          linemap_entry_T linemap_entry = {
+            .lineoff = off,
+            .byte_start = (colnr_T)(s - curline),
+            .num_bytes = char_len,
+          };
+          GA_APPEND(linemap_entry_T, &linemap[i], linemap_entry);
+        } else {
+          // Still inside a keyword. Just increment byte count but
+          // don't make a new entry.
+          // linemap always has at least one entry here
+          ((linemap_entry_T *)linemap[i].ga_data)[linemap[i].ga_len - 1].num_bytes += char_len;
+        }
+
+        in_keyword = new_in_keyword;
+        s += char_len;
+      }
+      if (in_keyword) {
+        ga_append(curstr, NL);
+        numlines++;
+      }
+
+      if ((diff_flags & DIFF_IWHITEEOL) || (diff_flags & DIFF_IWHITE)) {
+        // Need to trim trailing whitespace. Do this simply by
+        // resetting arrays back to before we encountered them.
+        if (eol_ga_len != -1) {
+          curstr->ga_len = eol_ga_len;
+          linemap[i].ga_len = eol_linemap_len;
+          numlines = eol_numlines;
+        }
+      }
+
+      if (!(diff_flags & DIFF_IWHITEALL)) {
+        // Add an empty line token mapped to the end-of-line in the
+        // original file. This helps diff newline differences among
+        // files, which will be visualized when using 'list' as the eol
+        // listchar will be highlighted.
+        ga_append(curstr, NL);
+        numlines++;
+
+        linemap_entry_T linemap_entry = {
+          .lineoff = off,
+          .byte_start = (colnr_T)(s - curline),
+          .num_bytes = sizeof(NL),
+        };
+        GA_APPEND(linemap_entry_T, &linemap[i], linemap_entry);
+      }
+    }
+
+    if (file1_idx != i) {
+      dio.dio_new.din_mmfile.ptr = (char *)curstr->ga_data;
+      dio.dio_new.din_mmfile.size = curstr->ga_len;
+    } else {
+      dio.dio_orig.din_mmfile.ptr = (char *)curstr->ga_data;
+      dio.dio_orig.din_mmfile.size = curstr->ga_len;
+    }
+    if (file1_idx != i) {
+      // Perform diff with first file and read the results
+      int diff_status = diff_file_internal(&dio);
+      if (diff_status == FAIL) {
+        goto done;
+      }
+
+      diff_read(0, i, &dio);
+      clear_diffout(&dio.dio_diff);
+    }
+  }
+  diff_T *new_diff = curtab->tp_first_diff;
+
+  if (diff_flags & DIFF_INLINE_WORD && file1_idx != -1) {
+    diff_refine_inline_word_highlight(new_diff, linemap, file1_idx, dp->df_lnum[file1_idx]);
+  } else if (diff_flags & DIFF_INLINE_CHAR && file1_idx != -1) {
+    diff_refine_inline_char_highlight(new_diff, linemap, file1_idx);
+  }
+
+  // After the diff, use the linemap to obtain the original line/col of the
+  // changes and cache them in dp.
+  dp->df_changes.ga_len = 0;  // this should already be zero
+  for (; new_diff != NULL; new_diff = new_diff->df_next) {
+    diffline_change_T change = { 0 };
+    for (int i = 0; i < DB_COUNT; i++) {
+      if (new_diff->df_lnum[i] <= 0) {  // should never be < 0. Checking just for safety
+        continue;
+      }
+      linenr_T diff_lnum = new_diff->df_lnum[i] - 1;  // use zero-index
+      linenr_T diff_lnum_end = diff_lnum + new_diff->df_count[i];
+
+      if (diff_lnum >= linemap[i].ga_len) {
+        change.dc_start[i] = MAXCOL;
+        change.dc_start_lnum_off[i] = INT_MAX;
+      } else {
+        change.dc_start[i] = ((linemap_entry_T *)linemap[i].ga_data)[diff_lnum].byte_start;
+        change.dc_start_lnum_off[i] = ((linemap_entry_T *)linemap[i].ga_data)[diff_lnum].lineoff;
+      }
+
+      if (diff_lnum == diff_lnum_end) {
+        change.dc_end[i] = change.dc_start[i];
+        change.dc_end_lnum_off[i] = change.dc_start_lnum_off[i];
+      } else if (diff_lnum_end - 1 >= linemap[i].ga_len) {
+        change.dc_end[i] = MAXCOL;
+        change.dc_end_lnum_off[i] = INT_MAX;
+      } else {
+        change.dc_end[i] = ((linemap_entry_T *)linemap[i].ga_data)[diff_lnum_end - 1].byte_start +
+                           ((linemap_entry_T *)linemap[i].ga_data)[diff_lnum_end - 1].num_bytes;
+        change.dc_end_lnum_off[i] = ((linemap_entry_T *)linemap[i].ga_data)[diff_lnum_end -
+                                                                            1].lineoff;
+      }
+    }
+    GA_APPEND(diffline_change_T, &dp->df_changes, change);
+  }
+
+done:
+  diff_algorithm = save_diff_algorithm;
+
+  dp->has_changes = true;
+
+  diff_clear(curtab);
+  curtab->tp_first_diff = orig_diff;
+  memcpy(curtab->tp_diffbuf, orig_diffbuf, sizeof(orig_diffbuf));
+
+  ga_clear(&file1_str);
+  ga_clear(&file2_str);
+  // No need to clear dio.dio_orig/dio_new because they were referencing
+  // strings that are now cleared.
+  clear_diffout(&dio.dio_diff);
+  for (int i = 0; i < DB_COUNT; i++) {
+    ga_clear(&linemap[i]);
+  }
+}
+
+/// Find the difference within a changed line.
+/// Returns true if the line was added, no other buffer has it.
+bool diff_find_change(win_T *wp, linenr_T lnum, diffline_T *diffline)
+  FUNC_ATTR_WARN_UNUSED_RESULT FUNC_ATTR_NONNULL_ALL
+{
+  int idx = diff_buf_idx(wp->w_buffer, curtab);
+  if (idx == DB_COUNT) {  // cannot happen
+    return false;
+  }
+
+  // search for a change that includes "lnum" in the list of diffblocks.
+  diff_T *dp;
+  FOR_ALL_DIFFBLOCKS_IN_TAB(curtab, dp) {
+    if (lnum < dp->df_lnum[idx] + dp->df_count[idx]) {
+      break;
+    }
+  }
+  if (dp == NULL || diff_check_sanity(curtab, dp) == FAIL) {
+    return false;
+  }
+
+  int off = lnum - dp->df_lnum[idx];
+
+  if (!(diff_flags & ALL_INLINE_DIFF)) {
+    // Use simple algorithm
+    int change_start = MAXCOL;  // first col of changed area
+    int change_end = -1;        // last col of changed area
+
+    int ret = diff_find_change_simple(wp, lnum, dp, idx, &change_start, &change_end);
+
+    // convert from inclusive end to exclusive end per diffline's contract
+    change_end += 1;
+
+    // Create a mock diffline struct. We always only have one so no need to
+    // allocate memory.
+    CLEAR_FIELD(simple_diffline_change);
+    diffline->changes = &simple_diffline_change;
+    diffline->num_changes = 1;
+    diffline->bufidx = idx;
+    diffline->lineoff = lnum - dp->df_lnum[idx];
+
+    simple_diffline_change.dc_start[idx] = change_start;
+    simple_diffline_change.dc_end[idx] = change_end;
+    simple_diffline_change.dc_start_lnum_off[idx] = off;
+    simple_diffline_change.dc_end_lnum_off[idx] = off;
+    return ret;
+  }
+
+  // Use inline diff algorithm.
+  // The diff changes are usually cached so we check that first.
+  if (!dp->has_changes) {
+    diff_find_change_inline_diff(dp);
+  }
+
+  garray_T *changes = &dp->df_changes;
+
+  // Use linear search to find the first change for this line. We could
+  // optimize this to use binary search, but there should usually be a
+  // limited number of inline changes per diff block, and limited number of
+  // diff blocks shown on screen, so it is not necessary.
+  int num_changes = 0;
+  int change_idx = 0;
+  diffline->changes = NULL;
+  for (change_idx = 0; change_idx < changes->ga_len; change_idx++) {
+    diffline_change_T *change =
+      &((diffline_change_T *)dp->df_changes.ga_data)[change_idx];
+    if (change->dc_end_lnum_off[idx] < off) {
+      continue;
+    }
+    if (change->dc_start_lnum_off[idx] > off) {
+      break;
+    }
+    if (diffline->changes == NULL) {
+      diffline->changes = change;
+    }
+    num_changes++;
+  }
+  diffline->num_changes = num_changes;
+  diffline->bufidx = idx;
+  diffline->lineoff = off;
+
+  // Detect simple cases of added lines in the end within a diff block. This
+  // has to be the last change of this diff block, and all other buffers are
+  // considering this to be an addition past their last line. Other scenarios
+  // will be considered a changed line instead.
+  bool added = false;
+  if (num_changes == 1 && change_idx == dp->df_changes.ga_len) {
+    added = true;
+    for (int i = 0; i < DB_COUNT; i++) {
+      if (idx == i) {
+        continue;
+      }
+      if (curtab->tp_diffbuf[i] == NULL) {
+        continue;
+      }
+      diffline_change_T *change =
+        &((diffline_change_T *)dp->df_changes.ga_data)[dp->df_changes.ga_len - 1];
+      if (change->dc_start_lnum_off[i] != INT_MAX) {
+        added = false;
+        break;
+      }
+    }
+  }
   return added;
 }
 
@@ -2752,7 +3580,7 @@ bool diff_find_change(win_T *wp, linenr_T lnum, int *startp, int *endp)
 /// @param  lnum  line number to check within the buffer
 ///
 /// @return false if there are no diff blocks at all in this window.
-bool diff_infold(win_T *wp, linenr_T lnum)
+bool diff_infold(win_T *wp, tabpage_T *tp, linenr_T lnum)
   FUNC_ATTR_PURE FUNC_ATTR_WARN_UNUSED_RESULT FUNC_ATTR_NONNULL_ARG(1)
 {
   // Return if 'diff' isn't set.
@@ -2760,12 +3588,16 @@ bool diff_infold(win_T *wp, linenr_T lnum)
     return false;
   }
 
+  if (tp == NULL) {
+    tp = curtab;
+  }
+
   int idx = -1;
   bool other = false;
   for (int i = 0; i < DB_COUNT; i++) {
-    if (curtab->tp_diffbuf[i] == wp->w_buffer) {
+    if (tp->tp_diffbuf[i] == wp->w_buffer) {
       idx = i;
-    } else if (curtab->tp_diffbuf[i] != NULL) {
+    } else if (tp->tp_diffbuf[i] != NULL) {
       other = true;
     }
   }
@@ -2775,35 +3607,42 @@ bool diff_infold(win_T *wp, linenr_T lnum)
     return false;
   }
 
-  if (curtab->tp_diff_invalid) {
+  if (tp == curtab && tp->tp_diff_invalid) {
     // update after a big change
     ex_diffupdate(NULL);
   }
 
   // Return if there are no diff blocks.  All lines will be folded.
-  if (curtab->tp_first_diff == NULL) {
+  if (tp->tp_first_diff == NULL) {
     return true;
   }
 
-  for (diff_T *dp = curtab->tp_first_diff; dp != NULL; dp = dp->df_next) {
-    // If this change is below the line there can't be any further match.
+  // Resume from the scan finger to avoid restarting at the first block.
+  diff_T *le = NULL;             // last block with df_lnum[idx] <= lnum
+  bool result = true;
+  for (diff_T *dp = diff_scan_start(tp, idx, lnum); dp != NULL; dp = dp->df_next) {
+    if (dp->df_lnum[idx] <= lnum) {
+      le = dp;
+    }
     if (dp->df_lnum[idx] - diff_context > lnum) {
       break;
     }
 
     // If this change ends before the line we have a match.
     if (dp->df_lnum[idx] + dp->df_count[idx] + diff_context > lnum) {
-      return false;
+      result = false;
+      break;
     }
   }
-  return true;
+  diff_scan_remember(tp, idx, lnum, le);
+  return result;
 }
 
 /// "dp" and "do" commands.
 void nv_diffgetput(bool put, size_t count)
 {
   if (bt_prompt(curbuf)) {
-    vim_beep(BO_OPER);
+    vim_beep(kOptBoFlagOperator);
     return;
   }
 
@@ -2847,7 +3686,7 @@ void ex_diffgetput(exarg_T *eap)
   int idx_other;
 
   // Find the current buffer in the list of diff buffers.
-  int idx_cur = diff_buf_idx(curbuf);
+  int idx_cur = diff_buf_idx(curbuf, curtab);
   if (idx_cur == DB_COUNT) {
     emsg(_("E99: Current buffer is not in diff mode"));
     return;
@@ -2919,7 +3758,7 @@ void ex_diffgetput(exarg_T *eap)
       // nothing to do
       return;
     }
-    idx_other = diff_buf_idx(buf);
+    idx_other = diff_buf_idx(buf, curtab);
 
     if (idx_other == DB_COUNT) {
       semsg(_("E103: Buffer \"%s\" is not in diff mode"), eap->arg);
@@ -2933,24 +3772,27 @@ void ex_diffgetput(exarg_T *eap)
   if (eap->addr_count == 0) {
     // Make it possible that ":diffget" on the last line gets line below
     // the cursor line when there is no difference above the cursor.
-    if ((eap->cmdidx == CMD_diffget)
-        && (eap->line1 == curbuf->b_ml.ml_line_count)
-        && (diff_check(curwin, eap->line1) == 0)
-        && ((eap->line1 == 1) || (diff_check(curwin, eap->line1 - 1) == 0))) {
+    int linestatus = 0;
+    if (eap->line1 == curbuf->b_ml.ml_line_count
+        && (diff_check_with_linestatus(curwin, eap->line1, &linestatus) == 0
+            && linestatus == 0)
+        && (eap->line1 == 1
+            || (diff_check_with_linestatus(curwin, eap->line1 - 1, &linestatus) >= 0
+                && linestatus == 0))) {
       eap->line2++;
     } else if (eap->line1 > 0) {
       eap->line1--;
     }
   }
 
-  aco_save_T aco;
+  CtxSwitch aco = { 0 };
 
   if (eap->cmdidx != CMD_diffget) {
     // Need to make the other buffer the current buffer to be able to make
     // changes in it.
 
     // Set curwin/curbuf to buf and save a few things.
-    aucmd_prepbuf(&aco, curtab->tp_diffbuf[idx_other]);
+    ctx_switch(&aco, NULL, NULL, curtab->tp_diffbuf[idx_other], 0);
   }
 
   const int idx_from = eap->cmdidx == CMD_diffget ? idx_other : idx_cur;
@@ -2961,8 +3803,9 @@ void ex_diffgetput(exarg_T *eap)
   // everything up.
   if (!curbuf->b_changed) {
     change_warning(curbuf, 0);
-    if (diff_buf_idx(curbuf) != idx_to) {
-      emsg(_("E787: Buffer changed unexpectedly"));
+    if (diff_buf_idx(curbuf, curtab) != idx_to) {
+      emsg(_(e_buffer_changed_unexpectedly));
+      ctx_restore(&aco);
       goto theend;
     }
   }
@@ -2977,7 +3820,7 @@ void ex_diffgetput(exarg_T *eap)
     if (KeyTyped) {
       u_sync(false);
     }
-    aucmd_restbuf(&aco);
+    ctx_restore(&aco);
   }
 
 theend:
@@ -2993,19 +3836,30 @@ theend:
   check_cursor(curwin);
   changed_line_abv_curs();
 
+  // If all diffs are gone, update folds in all diff windows.
+  if (curtab->tp_first_diff == NULL) {
+    FOR_ALL_WINDOWS_IN_TAB(wp, curtab) {
+      if (wp->w_p_diff && wp->w_p_fdm[0] == 'd' && wp->w_p_fen) {
+        foldUpdateAll(wp);
+      }
+    }
+  }
+
   if (diff_need_update) {
     // redraw already done by ex_diffupdate()
     diff_need_update = false;
   } else {
     // Also need to redraw the other buffers.
     diff_redraw(false);
+    window_layout_lock();
     apply_autocmds(EVENT_DIFFUPDATED, NULL, NULL, false, curbuf);
+    window_layout_unlock();
   }
 }
 
 /// Apply diffget/diffput to buffers and diffblocks
 ///
-/// @param idx_cur   index of "curbuf" before aucmd_prepbuf() in the list of diff buffers
+/// @param idx_cur   index of "curbuf" before ctx_switch() in the list of diff buffers
 /// @param idx_from  index of the buffer to read from in the list of diff buffers
 /// @param idx_to    index of the buffer to modify in the list of diff buffers
 static void diffgetput(const int addr_count, const int idx_cur, const int idx_from,
@@ -3016,9 +3870,11 @@ static void diffgetput(const int addr_count, const int idx_cur, const int idx_fr
 
   for (diff_T *dp = curtab->tp_first_diff; dp != NULL;) {
     if (!addr_count) {
-      // handle the case with adjacent diff blocks
-      while (dp->is_linematched
-             && dp->df_next
+      // Handle the case with adjacent diff blocks (e.g. using linematch
+      // or anchors) at/above the cursor. Since a range wasn't specified,
+      // we just want to grab one diff block rather than all of them in
+      // the vicinity.
+      while (dp->df_next
              && dp->df_next->df_lnum[idx_cur] == dp->df_lnum[idx_cur] + dp->df_count[idx_cur]
              && dp->df_next->df_lnum[idx_cur] == line1 + off + 1) {
         dprev = dp;
@@ -3034,9 +3890,12 @@ static void diffgetput(const int addr_count, const int idx_cur, const int idx_fr
     bool did_free = false;
     linenr_T lnum = dp->df_lnum[idx_to];
     linenr_T count = dp->df_count[idx_to];
+    // The empty line of an empty buffer is deleted below, include it in
+    // the undo information, otherwise undo leaves a line behind.
+    linenr_T undo_bot = lnum + count + (count == 0 && buf_is_empty(curbuf) ? 1 : 0);
 
     if ((dp->df_lnum[idx_cur] + dp->df_count[idx_cur] > line1 + off)
-        && (u_save(lnum - 1, lnum + count) != FAIL)) {
+        && (u_save(lnum - 1, undo_bot) != FAIL)) {
       // Inside the specified range and saving for undo worked.
       linenr_T start_skip = 0;
       linenr_T end_skip = 0;
@@ -3064,19 +3923,11 @@ static void diffgetput(const int addr_count, const int idx_cur, const int idx_fr
           // range ends above end of current/from diff block
           if (idx_cur == idx_from) {
             // :diffput
-            int i = dp->df_count[idx_cur] - start_skip - end_skip;
-
-            if (count > i) {
-              count = i;
-            }
+            count = MIN(count, dp->df_count[idx_cur] - start_skip - end_skip);
           } else {
             // :diffget
             count -= end_skip;
-            end_skip = dp->df_count[idx_from] - start_skip - count;
-
-            if (end_skip < 0) {
-              end_skip = 0;
-            }
+            end_skip = MAX(dp->df_count[idx_from] - start_skip - count, 0);
           }
         } else {
           end_skip = 0;
@@ -3089,7 +3940,7 @@ static void diffgetput(const int addr_count, const int idx_cur, const int idx_fr
       for (int i = 0; i < count; i++) {
         // remember deleting the last line of the buffer
         buf_empty = curbuf->b_ml.ml_line_count == 1;
-        if (ml_delete(lnum, false) == OK) {
+        if (ml_delete(lnum) == OK) {
           added--;
         }
       }
@@ -3110,7 +3961,7 @@ static void diffgetput(const int addr_count, const int idx_cur, const int idx_fr
           // which results in inaccurate reporting of the byte count of
           // previous contents in buffer-update events.
           buf_empty = false;
-          ml_delete(2, false);
+          ml_delete(2);
         }
       }
       linenr_T new_count = dp->df_count[idx_to] + added;
@@ -3145,6 +3996,10 @@ static void diffgetput(const int addr_count, const int idx_cur, const int idx_fr
           // lines.
           if (curwin->w_cursor.lnum >= lnum + count) {
             curwin->w_cursor.lnum += added;
+            // When the buffer was previously empty, the cursor may
+            // now be beyond the last line, so clamp cursor lnum.
+            curwin->w_cursor.lnum = MIN(curwin->w_cursor.lnum,
+                                        curbuf->b_ml.ml_line_count);
           } else if (added < 0) {
             curwin->w_cursor.lnum = lnum;
           }
@@ -3208,7 +4063,7 @@ bool diff_mode_buf(buf_T *buf)
   FUNC_ATTR_PURE FUNC_ATTR_WARN_UNUSED_RESULT FUNC_ATTR_NONNULL_ARG(1)
 {
   FOR_ALL_TABS(tp) {
-    if (diff_buf_idx_tp(buf, tp) != DB_COUNT) {
+    if (diff_buf_idx(buf, tp) != DB_COUNT) {
       return true;
     }
   }
@@ -3224,7 +4079,7 @@ bool diff_mode_buf(buf_T *buf)
 int diff_move_to(int dir, int count)
 {
   linenr_T lnum = curwin->w_cursor.lnum;
-  int idx = diff_buf_idx(curbuf);
+  int idx = diff_buf_idx(curbuf, curtab);
   if ((idx == DB_COUNT) || (curtab->tp_first_diff == NULL)) {
     return FAIL;
   }
@@ -3262,9 +4117,7 @@ int diff_move_to(int dir, int count)
   }
 
   // don't end up past the end of the file
-  if (lnum > curbuf->b_ml.ml_line_count) {
-    lnum = curbuf->b_ml.ml_line_count;
-  }
+  lnum = MIN(lnum, curbuf->b_ml.ml_line_count);
 
   // When the cursor didn't move at all we fail.
   if (lnum == curwin->w_cursor.lnum) {
@@ -3284,8 +4137,8 @@ static linenr_T diff_get_corresponding_line_int(buf_T *buf1, linenr_T lnum1)
 {
   linenr_T baseline = 0;
 
-  int idx1 = diff_buf_idx(buf1);
-  int idx2 = diff_buf_idx(curbuf);
+  int idx1 = diff_buf_idx(buf1, curtab);
+  int idx2 = diff_buf_idx(curbuf, curtab);
 
   if ((idx1 == DB_COUNT)
       || (idx2 == DB_COUNT)
@@ -3310,10 +4163,7 @@ static linenr_T diff_get_corresponding_line_int(buf_T *buf1, linenr_T lnum1)
     if ((dp->df_lnum[idx1] + dp->df_count[idx1]) > lnum1) {
       // Inside the diffblock
       baseline = lnum1 - dp->df_lnum[idx1];
-
-      if (baseline > dp->df_count[idx2]) {
-        baseline = dp->df_count[idx2];
-      }
+      baseline = MIN(baseline, dp->df_count[idx2]);
 
       return dp->df_lnum[idx2] + baseline;
     }
@@ -3348,10 +4198,7 @@ linenr_T diff_get_corresponding_line(buf_T *buf1, linenr_T lnum1)
   linenr_T lnum = diff_get_corresponding_line_int(buf1, lnum1);
 
   // don't end up past the end of the file
-  if (lnum > curbuf->b_ml.ml_line_count) {
-    return curbuf->b_ml.ml_line_count;
-  }
-  return lnum;
+  return MIN(lnum, curbuf->b_ml.ml_line_count);
 }
 
 /// For line "lnum" in the current window find the equivalent lnum in window
@@ -3360,7 +4207,7 @@ linenr_T diff_lnum_win(linenr_T lnum, win_T *wp)
 {
   diff_T *dp;
 
-  int idx = diff_buf_idx(curbuf);
+  int idx = diff_buf_idx(curbuf, curtab);
 
   if (idx == DB_COUNT) {
     // safety check
@@ -3386,7 +4233,7 @@ linenr_T diff_lnum_win(linenr_T lnum, win_T *wp)
   }
 
   // Find index for "wp".
-  int i = diff_buf_idx(wp->w_buffer);
+  int i = diff_buf_idx(wp->w_buffer, curtab);
 
   if (i == DB_COUNT) {
     // safety check
@@ -3394,10 +4241,7 @@ linenr_T diff_lnum_win(linenr_T lnum, win_T *wp)
   }
 
   linenr_T n = lnum + (dp->df_lnum[i] - dp->df_lnum[idx]);
-  if (n > dp->df_lnum[i] + dp->df_count[i]) {
-    n = dp->df_lnum[i] + dp->df_count[i];
-  }
-  return n;
+  return MIN(n, dp->df_lnum[i] + dp->df_count[i]);
 }
 
 /// Handle an ED style diff line.
@@ -3514,4 +4358,94 @@ static int xdiff_out(int start_a, int count_a, int start_b, int count_b, void *p
     .count_new = count_b,
   }));
   return 0;
+}
+
+/// "diff_filler()" function
+void f_diff_filler(typval_T *argvars, typval_T *rettv, EvalFuncData fptr)
+{
+  rettv->vval.v_number = MAX(0, diff_check_fill(curwin, tv_get_lnum(argvars)));
+}
+
+/// "diff_hlID()" function
+void f_diff_hlID(typval_T *argvars, typval_T *rettv, EvalFuncData fptr)
+{
+  static linenr_T prev_lnum = 0;
+  static varnumber_T changedtick = 0;
+  static int fnum = 0;
+  static int prev_diff_flags = 0;
+  static int change_start = 0;
+  static int change_end = 0;
+  static hlf_T hlID = (hlf_T)0;
+
+  diffline_T diffline = { 0 };
+  // Remember the results if using simple since it's recalculated per
+  // call. Otherwise just call diff_find_change() every time since
+  // internally the result is cached internally.
+  const bool cache_results = !(diff_flags & ALL_INLINE_DIFF);
+
+  linenr_T lnum = tv_get_lnum(argvars);
+  if (lnum < 0) {       // ignore type error in {lnum} arg
+    lnum = 0;
+  }
+  if (!cache_results
+      || lnum != prev_lnum
+      || changedtick != buf_get_changedtick(curbuf)
+      || fnum != curbuf->b_fnum
+      || diff_flags != prev_diff_flags) {
+    // New line, buffer, change: need to get the values.
+    int linestatus = 0;
+    diff_check_with_linestatus(curwin, lnum, &linestatus);
+    if (linestatus < 0) {
+      if (linestatus == -1) {
+        change_start = MAXCOL;
+        change_end = -1;
+        if (diff_find_change(curwin, lnum, &diffline)) {
+          hlID = HLF_ADD;               // added line
+        } else {
+          hlID = HLF_CHD;               // changed line
+          if (diffline.num_changes > 0 && cache_results) {
+            change_start = diffline.changes[0].dc_start[diffline.bufidx];
+            change_end = diffline.changes[0].dc_end[diffline.bufidx];
+          }
+        }
+      } else {
+        hlID = HLF_ADD;         // added line
+      }
+    } else {
+      hlID = (hlf_T)0;
+    }
+
+    if (cache_results) {
+      prev_lnum = lnum;
+      changedtick = buf_get_changedtick(curbuf);
+      fnum = curbuf->b_fnum;
+      prev_diff_flags = diff_flags;
+    }
+  }
+
+  if (hlID == HLF_CHD || hlID == HLF_TXD) {
+    int col = (int)tv_get_number(&argvars[1]) - 1;  // Ignore type error in {col}.
+    if (cache_results) {
+      if (col >= change_start && col < change_end) {
+        hlID = HLF_TXD;  // Changed text.
+      } else {
+        hlID = HLF_CHD;  // Changed line.
+      }
+    } else {
+      hlID = HLF_CHD;
+      for (int i = 0; i < diffline.num_changes; i++) {
+        bool added = diff_change_parse(&diffline, &diffline.changes[i],
+                                       &change_start, &change_end);
+        if (col >= change_start && col < change_end) {
+          hlID = added ? HLF_TXA : HLF_TXD;
+          break;
+        }
+        if (col < change_start) {
+          // the remaining changes are past this column and not relevant
+          break;
+        }
+      }
+    }
+  }
+  rettv->vval.v_number = hlID;
 }

@@ -200,7 +200,7 @@ func Test_edit_07()
     endif
   endfu
   au InsertCharPre <buffer> :call DoIt()
-  call feedkeys("A\<f5>\<c-p>u\<cr>\<c-l>\<cr>", 'tx')
+  call feedkeys("A\<f5>\<c-p>u\<C-Y>\<c-l>\<cr>", 'tx')
   call assert_equal(["Jan\<c-l>",''], 1->getline('$'))
   %d
   call setline(1, 'J')
@@ -466,13 +466,98 @@ func Test_autoindent_remove_indent()
   call delete('Xarifile')
 endfunc
 
+" Test for autoindent removing indent when insert mode is stopped and
+" autocomplete is enabled.  Some parts of the code is exercised only when
+" interactive mode is used. So use Vim in a terminal.
+func Test_autoindent_remove_indent_with_autocomplete()
+  CheckRunVimInTerminal
+  let buf = RunVimInTerminal('-N Xarifile', {'rows': 6, 'cols' : 20})
+  call TermWait(buf)
+  call term_sendkeys(buf, ":set autoindent autocomplete\n")
+  " leaving insert mode in a new line with indent added by autoindent, should
+  " remove the indent.
+  call term_sendkeys(buf, "i\<Tab>foo\<CR>\<Esc>")
+  " Need to delay for some time, otherwise the code in getchar.c will not be
+  " exercised.
+  call TermWait(buf, 50)
+  " when a line is wrapped and the cursor is at the start of the second line,
+  " leaving insert mode, should move the cursor back to the first line.
+  call term_sendkeys(buf, "o" .. repeat('x', 20) .. "\<Esc>")
+  " Need to delay for some time, otherwise the code in getchar.c will not be
+  " exercised.
+  call TermWait(buf, 50)
+  call term_sendkeys(buf, ":w\n")
+  call TermWait(buf)
+  call StopVimInTerminal(buf)
+  call assert_equal(["\tfoo", '', repeat('x', 20)], readfile('Xarifile'))
+  call delete('Xarifile')
+endfunc
+
+func Test_edit_esc_after_CR_autoindent()
+  new
+  setlocal autoindent
+  autocmd InsertLeavePre * let g:prev_cursor = getpos('.')
+
+  call setline(1, 'foobar')
+  exe "normal! $hi\<CR>\<Esc>"
+  call assert_equal(['foob', 'ar'], getline(1, '$'))
+  call assert_equal([0, 2, 1, 0], getpos('.'))
+  call assert_equal([0, 2, 1, 0], getpos("'^"))
+  call assert_equal([0, 2, 1, 0], g:prev_cursor)
+  %d
+
+  call setline(1, 'foobar')
+  exe "normal! $i\<CR>\<Esc>"
+  call assert_equal(['fooba', 'r'], getline(1, '$'))
+  call assert_equal([0, 2, 1, 0], getpos('.'))
+  call assert_equal([0, 2, 1, 0], getpos("'^"))
+  call assert_equal([0, 2, 1, 0], g:prev_cursor)
+  %d
+
+  call setline(1, 'foobar')
+  exe "normal! A\<CR>\<Esc>"
+  call assert_equal(['foobar', ''], getline(1, '$'))
+  call assert_equal([0, 2, 1, 0], getpos('.'))
+  call assert_equal([0, 2, 1, 0], getpos("'^"))
+  call assert_equal([0, 2, 1, 0], g:prev_cursor)
+  %d
+
+  call setline(1, '  foobar')
+  exe "normal! $hi\<CR>\<Esc>"
+  call assert_equal(['  foob', '  ar'], getline(1, '$'))
+  call assert_equal([0, 2, 2, 0], getpos('.'))
+  call assert_equal([0, 2, 3, 0], getpos("'^"))
+  call assert_equal([0, 2, 3, 0], g:prev_cursor)
+  %d
+
+  call setline(1, '  foobar')
+  exe "normal! $i\<CR>\<Esc>"
+  call assert_equal(['  fooba', '  r'], getline(1, '$'))
+  call assert_equal([0, 2, 2, 0], getpos('.'))
+  call assert_equal([0, 2, 3, 0], getpos("'^"))
+  call assert_equal([0, 2, 3, 0], g:prev_cursor)
+  %d
+
+  call setline(1, '  foobar')
+  exe "normal! A\<CR>\<Esc>"
+  call assert_equal(['  foobar', ''], getline(1, '$'))
+  call assert_equal([0, 2, 1, 0], getpos('.'))
+  call assert_equal([0, 2, 1, 0], getpos("'^"))
+  call assert_equal([0, 2, 1, 0], g:prev_cursor)
+  %d
+
+  autocmd! InsertLeavePre
+  unlet g:prev_cursor
+  bwipe!
+endfunc
+
 func Test_edit_CR()
   " Test for <CR> in insert mode
   " basically only in quickfix mode it's tested, the rest
   " has been taken care of by other tests
   CheckFeature quickfix
   botright new
-  call writefile(range(1, 10), 'Xqflist.txt')
+  call writefile(range(1, 10), 'Xqflist.txt', 'D')
   call setqflist([{'filename': 'Xqflist.txt', 'lnum': 2}])
   copen
   set modifiable
@@ -492,16 +577,15 @@ func Test_edit_CR()
   call feedkeys("A\n", 'tnix')
   call feedkeys("A\r", 'tnix')
   call assert_equal(map(range(1, 10), 'string(v:val)') + ['', '', '', ''], getline(1, '$'))
+
   bw!
   lclose
-  call delete('Xqflist.txt')
 endfunc
 
 func Test_edit_CTRL_()
+  CheckFeature rightleft
   " disabled for Windows builds, why?
-  if !has("rightleft") || has("win32")
-    return
-  endif
+  CheckNotMSWindows
   let _encoding=&encoding
   set encoding=utf-8
   " Test for CTRL-_
@@ -592,7 +676,7 @@ func Test_edit_CTRL_I()
   call feedkeys("Arunt\<c-x>\<c-f>\<tab>\<cr>\<esc>", 'tnix')
   call assert_match('runtest\.vim', getline(1))
   %d
-  call writefile(['one', 'two', 'three'], 'Xinclude.txt')
+  call writefile(['one', 'two', 'three'], 'Xinclude.txt', 'D')
   let include='#include Xinclude.txt'
   call setline(1, [include, ''])
   call cursor(2, 1)
@@ -604,14 +688,13 @@ func Test_edit_CTRL_I()
   call assert_equal([include, 'three', ''], getline(1, '$'))
   call feedkeys("2ggC\<c-x>\<tab>\<down>\<down>\<down>\<cr>\<esc>", 'tnix')
   call assert_equal([include, '', ''], getline(1, '$'))
-  call delete("Xinclude.txt")
   bw!
 endfunc
 
 func Test_edit_CTRL_K()
   " Test pressing CTRL-K (basically only dictionary completion and digraphs
   " the rest is already covered
-  call writefile(['A', 'AA', 'AAA', 'AAAA'], 'Xdictionary.txt')
+  call writefile(['A', 'AA', 'AAA', 'AAAA'], 'Xdictionary.txt', 'D')
   set dictionary=Xdictionary.txt
   new
   call setline(1, 'A')
@@ -660,24 +743,19 @@ func Test_edit_CTRL_K()
   %d
   call setline(1, 'A')
   call cursor(1, 1)
-  let v:testing = 1
   try
     call feedkeys("A\<c-x>\<c-k>\<esc>", 'tnix')
   catch
-    " error sleeps 2 seconds, when v:testing is not set
-    let v:testing = 0
   endtry
-  call delete('Xdictionary.txt')
 
-  if exists('*test_override')
-    call test_override("char_avail", 1)
-    set showcmd
-    %d
-    call feedkeys("A\<c-k>a:\<esc>", 'tnix')
-    call assert_equal(['ä'], getline(1, '$'))
-    call test_override("char_avail", 0)
-    set noshowcmd
-  endif
+  call Ntest_override("char_avail", 1)
+  set showcmd
+  %d
+  call feedkeys("A\<c-k>a:\<esc>", 'tnix')
+  call assert_equal(['ä'], getline(1, '$'))
+  call Ntest_override("char_avail", 0)
+  set noshowcmd
+
   bw!
 endfunc
 
@@ -709,9 +787,9 @@ func Test_edit_CTRL_L()
   call assert_equal(['one', 'two', 'three', 'three', "\<c-l>\<c-p>\<c-n>", '', ''], getline(1, '$'))
   set complete&
   %d
-  if has("conceal") && has("syntax") && !has("nvim")
+  if has("conceal") && has("syntax")
     call setline(1, ['foo', 'bar', 'foobar'])
-    call test_override("char_avail", 1)
+    call Ntest_override("char_avail", 1)
     set conceallevel=2 concealcursor=n
     syn on
     syn match ErrorMsg "^bar"
@@ -727,7 +805,7 @@ func Test_edit_CTRL_L()
     call assert_equal(['foo', 'bar ', 'foobar'], getline(1, '$'))
     call assert_equal(1, g:change)
 
-    call test_override("char_avail", 0)
+    call Ntest_override("char_avail", 0)
     call clearmatches()
     syn off
     au! TextChangedI
@@ -851,7 +929,7 @@ func Test_edit_CTRL_S()
   bw!
 endfunc
 
-func Test_edit_CTRL_T()
+func Edit_CTRL_T()
   " Check for CTRL-T and CTRL-X CTRL-T in insert mode
   " 1) increase indent
   new
@@ -867,7 +945,7 @@ func Test_edit_CTRL_T()
   call assert_equal(["\<tab>abcxyz"], getline(1, '$'))
   set nopaste
   " CTRL-X CTRL-T (thesaurus complete)
-  call writefile(['angry furious mad enraged'], 'Xthesaurus')
+  call writefile(['angry furious mad enraged'], 'Xthesaurus', 'D')
   set thesaurus=Xthesaurus
   call setline(1, 'mad')
   call cursor(1, 1)
@@ -916,21 +994,40 @@ func Test_edit_CTRL_T()
   %d
   call setline(1, 'mad')
   call cursor(1, 1)
-  let v:testing = 1
   try
     call feedkeys("A\<c-x>\<c-t>\<esc>", 'tnix')
   catch
-    " error sleeps 2 seconds, when v:testing is not set
-    let v:testing = 0
   endtry
   call assert_equal(['mad'], getline(1, '$'))
-  call delete('Xthesaurus')
   bw!
+endfunc
+
+func Test_edit_CTRL_T()
+  call Edit_CTRL_T()
+  set completeopt+=fuzzy
+  call Edit_CTRL_T()
+  set completeopt&
+endfunc
+
+func Test_edit_CTRL_T_longest()
+  " CTRL-X CTRL-T (thesaurus complete) with 'longest' should not insert
+  " longest match
+  set completeopt+=longest
+  new
+  call writefile(['angry furious mad madder maddest'], 'Xthesaurus', 'D')
+  set thesaurus=Xthesaurus
+  call setline(1, 'mad')
+  call cursor(1, 1)
+  call feedkeys("A\<c-x>\<c-t>\<cr>\<esc>", 'tnix')
+  call assert_equal(['mad', ''], getline(1, '$'))
+  bw!
+  set thesaurus=
+  set completeopt&
 endfunc
 
 " Test thesaurus completion with different encodings
 func Test_thesaurus_complete_with_encoding()
-  call writefile(['angry furious mad enraged'], 'Xthesaurus')
+  call writefile(['angry furious mad enraged'], 'Xthesaurus', 'D')
   set thesaurus=Xthesaurus
   " for e in ['latin1', 'utf-8']
   for e in ['utf-8']
@@ -943,7 +1040,6 @@ func Test_thesaurus_complete_with_encoding()
     bw!
   endfor
   set thesaurus=
-  call delete('Xthesaurus')
 endfunc
 
 " Test 'thesaurusfunc'
@@ -1104,7 +1200,7 @@ func Test_edit_CTRL_V()
 
   " force some redraws
   set showmode showcmd
-  " call test_override('char_avail', 1)
+  call Ntest_override('char_avail', 1)
 
   call feedkeys("A\<c-v>\<c-n>\<c-v>\<c-l>\<c-v>\<c-b>\<esc>", 'tnix')
   call assert_equal(["abc\x0e\x0c\x02"], getline(1, '$'))
@@ -1119,7 +1215,7 @@ func Test_edit_CTRL_V()
   endif
 
   set noshowmode showcmd
-  " call test_override('char_avail', 0)
+  call Ntest_override('char_avail', 0)
 
   " No modifiers should be applied to the char typed using i_CTRL-V_digit.
   call feedkeys(":append\<CR>\<C-V>76c\<C-V>76\<C-F2>\<C-V>u3c0j\<C-V>u3c0\<M-F3>\<CR>.\<CR>", 'tnix')
@@ -1301,97 +1397,97 @@ func Test_edit_PAGEUP_PAGEDOWN()
   10new
   call setline(1, repeat(['abc def ghi'], 30))
   call cursor(1, 1)
-  call feedkeys("i\<PageDown>\<esc>", 'tnix')
+  call assert_nobeep('call feedkeys("i\<PageDown>\<esc>", "tnix")')
   call assert_equal([0, 9, 1, 0], getpos('.'))
-  call feedkeys("i\<PageDown>\<esc>", 'tnix')
+  call assert_nobeep('call feedkeys("i\<PageDown>\<esc>", "tnix")')
   call assert_equal([0, 17, 1, 0], getpos('.'))
-  call feedkeys("i\<PageDown>\<esc>", 'tnix')
+  call assert_nobeep('call feedkeys("i\<PageDown>\<esc>", "tnix")')
   call assert_equal([0, 25, 1, 0], getpos('.'))
-  call feedkeys("i\<PageDown>\<esc>", 'tnix')
+  call assert_nobeep('call feedkeys("i\<PageDown>\<esc>", "tnix")')
   call assert_equal([0, 30, 1, 0], getpos('.'))
-  call feedkeys("i\<PageDown>\<esc>", 'tnix')
+  call assert_beeps('call feedkeys("i\<PageDown>\<esc>", "tnix")')
   call assert_equal([0, 30, 1, 0], getpos('.'))
-  call feedkeys("A\<PageUp>\<esc>", 'tnix')
+  call assert_nobeep('call feedkeys("A\<PageUp>\<esc>", "tnix")')
   call assert_equal([0, 29, 1, 0], getpos('.'))
-  call feedkeys("A\<PageUp>\<esc>", 'tnix')
+  call assert_nobeep('call feedkeys("A\<PageUp>\<esc>", "tnix")')
   call assert_equal([0, 21, 1, 0], getpos('.'))
-  call feedkeys("A\<PageUp>\<esc>", 'tnix')
+  call assert_nobeep('call feedkeys("A\<PageUp>\<esc>", "tnix")')
   call assert_equal([0, 13, 1, 0], getpos('.'))
-  call feedkeys("A\<PageUp>\<esc>", 'tnix')
+  call assert_nobeep('call feedkeys("A\<PageUp>\<esc>", "tnix")')
   call assert_equal([0, 10, 1, 0], getpos('.'))
-  call feedkeys("A\<PageUp>\<esc>", 'tnix')
+  call assert_beeps('call feedkeys("A\<PageUp>\<esc>", "tnix")')
   call assert_equal([0, 10, 11, 0], getpos('.'))
   " <S-Up> is the same as <PageUp>
   " <S-Down> is the same as <PageDown>
   call cursor(1, 1)
-  call feedkeys("i\<S-Down>\<esc>", 'tnix')
+  call assert_nobeep('call feedkeys("i\<S-Down>\<esc>", "tnix")')
   call assert_equal([0, 9, 1, 0], getpos('.'))
-  call feedkeys("i\<S-Down>\<esc>", 'tnix')
+  call assert_nobeep('call feedkeys("i\<S-Down>\<esc>", "tnix")')
   call assert_equal([0, 17, 1, 0], getpos('.'))
-  call feedkeys("i\<S-Down>\<esc>", 'tnix')
+  call assert_nobeep('call feedkeys("i\<S-Down>\<esc>", "tnix")')
   call assert_equal([0, 25, 1, 0], getpos('.'))
-  call feedkeys("i\<S-Down>\<esc>", 'tnix')
+  call assert_nobeep('call feedkeys("i\<S-Down>\<esc>", "tnix")')
   call assert_equal([0, 30, 1, 0], getpos('.'))
-  call feedkeys("i\<S-Down>\<esc>", 'tnix')
+  call assert_beeps('call feedkeys("i\<S-Down>\<esc>", "tnix")')
   call assert_equal([0, 30, 1, 0], getpos('.'))
-  call feedkeys("A\<S-Up>\<esc>", 'tnix')
+  call assert_nobeep('call feedkeys("A\<S-Up>\<esc>", "tnix")')
   call assert_equal([0, 29, 1, 0], getpos('.'))
-  call feedkeys("A\<S-Up>\<esc>", 'tnix')
+  call assert_nobeep('call feedkeys("A\<S-Up>\<esc>", "tnix")')
   call assert_equal([0, 21, 1, 0], getpos('.'))
-  call feedkeys("A\<S-Up>\<esc>", 'tnix')
+  call assert_nobeep('call feedkeys("A\<S-Up>\<esc>", "tnix")')
   call assert_equal([0, 13, 1, 0], getpos('.'))
-  call feedkeys("A\<S-Up>\<esc>", 'tnix')
+  call assert_nobeep('call feedkeys("A\<S-Up>\<esc>", "tnix")')
   call assert_equal([0, 10, 1, 0], getpos('.'))
-  call feedkeys("A\<S-Up>\<esc>", 'tnix')
+  call assert_beeps('call feedkeys("A\<S-Up>\<esc>", "tnix")')
   call assert_equal([0, 10, 11, 0], getpos('.'))
   set nostartofline
   call cursor(30, 11)
   norm! zt
-  call feedkeys("A\<PageUp>\<esc>", 'tnix')
+  call assert_nobeep('call feedkeys("A\<PageUp>\<esc>", "tnix")')
   call assert_equal([0, 29, 11, 0], getpos('.'))
-  call feedkeys("A\<PageUp>\<esc>", 'tnix')
+  call assert_nobeep('call feedkeys("A\<PageUp>\<esc>", "tnix")')
   call assert_equal([0, 21, 11, 0], getpos('.'))
-  call feedkeys("A\<PageUp>\<esc>", 'tnix')
+  call assert_nobeep('call feedkeys("A\<PageUp>\<esc>", "tnix")')
   call assert_equal([0, 13, 11, 0], getpos('.'))
-  call feedkeys("A\<PageUp>\<esc>", 'tnix')
+  call assert_nobeep('call feedkeys("A\<PageUp>\<esc>", "tnix")')
   call assert_equal([0, 10, 11, 0], getpos('.'))
-  call feedkeys("A\<PageUp>\<esc>", 'tnix')
+  call assert_beeps('call feedkeys("A\<PageUp>\<esc>", "tnix")')
   call assert_equal([0, 10, 11, 0], getpos('.'))
   call cursor(1, 1)
-  call feedkeys("A\<PageDown>\<esc>", 'tnix')
+  call assert_nobeep('call feedkeys("A\<PageDown>\<esc>", "tnix")')
   call assert_equal([0, 9, 11, 0], getpos('.'))
-  call feedkeys("A\<PageDown>\<esc>", 'tnix')
+  call assert_nobeep('call feedkeys("A\<PageDown>\<esc>", "tnix")')
   call assert_equal([0, 17, 11, 0], getpos('.'))
-  call feedkeys("A\<PageDown>\<esc>", 'tnix')
+  call assert_nobeep('call feedkeys("A\<PageDown>\<esc>", "tnix")')
   call assert_equal([0, 25, 11, 0], getpos('.'))
-  call feedkeys("A\<PageDown>\<esc>", 'tnix')
+  call assert_nobeep('call feedkeys("A\<PageDown>\<esc>", "tnix")')
   call assert_equal([0, 30, 11, 0], getpos('.'))
-  call feedkeys("A\<PageDown>\<esc>", 'tnix')
+  call assert_beeps('call feedkeys("A\<PageDown>\<esc>", "tnix")')
   call assert_equal([0, 30, 11, 0], getpos('.'))
   " <S-Up> is the same as <PageUp>
   " <S-Down> is the same as <PageDown>
   call cursor(30, 11)
   norm! zt
-  call feedkeys("A\<S-Up>\<esc>", 'tnix')
+  call assert_nobeep('call feedkeys("A\<S-Up>\<esc>", "tnix")')
   call assert_equal([0, 29, 11, 0], getpos('.'))
-  call feedkeys("A\<S-Up>\<esc>", 'tnix')
+  call assert_nobeep('call feedkeys("A\<S-Up>\<esc>", "tnix")')
   call assert_equal([0, 21, 11, 0], getpos('.'))
-  call feedkeys("A\<S-Up>\<esc>", 'tnix')
+  call assert_nobeep('call feedkeys("A\<S-Up>\<esc>", "tnix")')
   call assert_equal([0, 13, 11, 0], getpos('.'))
-  call feedkeys("A\<S-Up>\<esc>", 'tnix')
+  call assert_nobeep('call feedkeys("A\<S-Up>\<esc>", "tnix")')
   call assert_equal([0, 10, 11, 0], getpos('.'))
-  call feedkeys("A\<S-Up>\<esc>", 'tnix')
+  call assert_beeps('call feedkeys("A\<S-Up>\<esc>", "tnix")')
   call assert_equal([0, 10, 11, 0], getpos('.'))
   call cursor(1, 1)
-  call feedkeys("A\<S-Down>\<esc>", 'tnix')
+  call assert_nobeep('call feedkeys("A\<S-Down>\<esc>", "tnix")')
   call assert_equal([0, 9, 11, 0], getpos('.'))
-  call feedkeys("A\<S-Down>\<esc>", 'tnix')
+  call assert_nobeep('call feedkeys("A\<S-Down>\<esc>", "tnix")')
   call assert_equal([0, 17, 11, 0], getpos('.'))
-  call feedkeys("A\<S-Down>\<esc>", 'tnix')
+  call assert_nobeep('call feedkeys("A\<S-Down>\<esc>", "tnix")')
   call assert_equal([0, 25, 11, 0], getpos('.'))
-  call feedkeys("A\<S-Down>\<esc>", 'tnix')
+  call assert_nobeep('call feedkeys("A\<S-Down>\<esc>", "tnix")')
   call assert_equal([0, 30, 11, 0], getpos('.'))
-  call feedkeys("A\<S-Down>\<esc>", 'tnix')
+  call assert_beeps('call feedkeys("A\<S-Down>\<esc>", "tnix")')
   call assert_equal([0, 30, 11, 0], getpos('.'))
   bw!
 endfunc
@@ -1524,7 +1620,7 @@ func Test_edit_complete_very_long_name()
   let dirname = getcwd() . "/Xlongdir"
   let longdirname = dirname . repeat('/' . repeat('d', 255), 4)
   try
-    call mkdir(longdirname, 'p')
+    call mkdir(longdirname, 'pR')
   catch /E739:/
     " Long directory name probably not supported.
     call delete(dirname, 'rf')
@@ -1564,7 +1660,6 @@ func Test_edit_complete_very_long_name()
 
   bwipe!
   exe 'bwipe! ' . longfilename
-  call delete(dirname, 'rf')
   let &columns = save_columns
   if winposx >= 0 && winposy >= 0
     exe 'winpos ' . winposx . ' ' . winposy
@@ -1671,7 +1766,7 @@ func Test_edit_special_chars()
   exe "normal " . t
   call assert_equal("ABC !a\<C-O>g\<C-G>8", getline(2))
 
-  close!
+  bw!
 endfunc
 
 func Test_edit_startinsert()
@@ -1685,7 +1780,61 @@ func Test_edit_startinsert()
   call feedkeys(":startinsert!\<CR>\<C-U>\<Esc>", 'xt')
   call assert_equal('', getline(1))
 
+  call setline(1, 'foobar')
+  setl nomodifiable
+  call assert_fails('startinsert', 'E21:')
+
+  call cursor(1, 1)
+  call assert_fails('startinsert!', 'E21:')
+  call assert_equal(1, col('.'))
+
   set backspace&
+  bwipe!
+endfunc
+
+" ":startinsert" is ineffective in a terminal window: it must not give an
+" error and with "!" it must not move the cursor.
+func Test_edit_startinsert_in_terminal()
+  CheckFeature terminal
+
+  let buf = Run_shell_in_terminal({})
+
+  " Fill the terminal with text.
+  if has('win32')
+    call feedkeys("dir\<CR>", 'xt')
+  else
+    call feedkeys("ls\<CR>", 'xt')
+  endif
+  call WaitForAssert({-> assert_notequal('', term_getline(buf, 1))})
+
+  " Go to Terminal-Normal mode and put the cursor on a line with text.
+  call feedkeys("\<C-W>N", 'xt')
+  call assert_notequal(0, search('\S', 'w'))
+  call cursor(line('.'), 1)
+
+  startinsert
+  startinsert!
+  call assert_equal(1, col('.'))
+
+  " Clear "restart_edit" in case the commands were not ignored.
+  stopinsert
+
+  call feedkeys("i", 'xt')
+  call StopShellInTerminal(buf)
+  bwipe!
+endfunc
+
+" Backspacing in Virtual Replace mode over a wide character that replaced
+" several narrower ones must not eat the padding that follows.
+func Test_edit_vreplace_bs_multibyte()
+  new
+  call setline(1, 'aé    xyz')
+  call feedkeys("gR\u4e00\<BS>\e", 'xt')
+  call assert_equal('aé    xyz', getline(1))
+
+  call setline(1, 'a€  xyz')
+  call feedkeys("gR\u4e00\<BS>\e", 'xt')
+  call assert_equal('a€  xyz', getline(1))
   bwipe!
 endfunc
 
@@ -1702,7 +1851,20 @@ func Test_edit_startreplace()
   call assert_equal("axyz\tb", getline(1))
   call feedkeys("0i\<C-R>=execute('startreplace')\<CR>12\e", 'xt')
   call assert_equal("12axyz\tb", getline(1))
-  close!
+
+  call setline(1, 'abc')
+  setl nomodifiable
+  call assert_fails('startreplace', 'E21:')
+  call assert_fails('startgreplace', 'E21:')
+
+  call cursor(1, 1)
+  call assert_fails('startreplace!', 'E21:')
+  call assert_equal(1, col('.'))
+  call cursor(1, 1)
+  call assert_fails('startgreplace!', 'E21:')
+  call assert_equal(1, col('.'))
+
+  bw!
 endfunc
 
 func Test_edit_noesckeys()
@@ -1741,7 +1903,7 @@ func Test_edit_ctrl_o_invalid_cmd()
   call assert_equal('abc', getline(1))
   set showmode& showcmd&
   " call test_override('ui_delay', 0)
-  close!
+  bw!
 endfunc
 
 " Test for editing a file with a very long name
@@ -1783,19 +1945,18 @@ endfunc
 " Test for editing a file using invalid file encoding
 func Test_edit_invalid_encoding()
   CheckEnglish
-  call writefile([], 'Xinvfile')
+  call writefile([], 'Xinvfile', 'D')
   redir => msg
   new ++enc=axbyc Xinvfile
   redir END
   call assert_match('\[NOT converted\]', msg)
-  call delete('Xinvfile')
   close!
 endfunc
 
 " Test for the "charconvert" option
 func Test_edit_charconvert()
   CheckEnglish
-  call writefile(['one', 'two'], 'Xccfile')
+  call writefile(['one', 'two'], 'Xccfile', 'D')
 
   " set 'charconvert' to a non-existing function
   set charconvert=NonExitingFunc()
@@ -1855,8 +2016,6 @@ func Test_edit_charconvert()
   close!
   delfunc Cconv3
   set charconvert&
-
-  call delete('Xccfile')
 endfunc
 
 " Test for editing a file without read permission
@@ -1864,7 +2023,7 @@ func Test_edit_file_no_read_perm()
   CheckUnix
   CheckNotRoot
 
-  call writefile(['one', 'two'], 'Xnrpfile')
+  call writefile(['one', 'two'], 'Xnrpfile', 'D')
   call setfperm('Xnrpfile', '-w-------')
   new
   redir => msg
@@ -1874,7 +2033,6 @@ func Test_edit_file_no_read_perm()
   call assert_equal([''], getline(1, '$'))
   call assert_match('\[Permission Denied\]', msg)
   close!
-  call delete('Xnrpfile')
 endfunc
 
 " Using :edit without leaving 'insertmode' should not cause Insert mode to be
@@ -1886,19 +2044,24 @@ func Test_edit_insertmode_ex_edit()
     set insertmode noruler
     inoremap <C-B> <Cmd>edit Xfoo<CR>
   END
-  call writefile(lines, 'Xtest_edit_insertmode_ex_edit')
+  call writefile(lines, 'Xtest_edit_insertmode_ex_edit', 'D')
 
-  let buf = RunVimInTerminal('-S Xtest_edit_insertmode_ex_edit', #{rows: 6})
-  " Somehow this can be very slow with valgrind. A separate TermWait() works
-  " better than a longer time with WaitForAssert() (why?)
-  call TermWait(buf, 1000)
+  let buf = RunVimInTerminal('-S Xtest_edit_insertmode_ex_edit', #{rows: 6, wait_for_ruler: 0})
+  " Somehow when using valgrind "INSERT" does not show up unless we send
+  " something to the terminal.
+  for i in range(30)
+    if term_getline(buf, 6) =~ 'INSERT'
+      break
+    endif
+    call term_sendkeys(buf, "-")
+    sleep 100m
+  endfor
   call WaitForAssert({-> assert_match('^-- INSERT --\s*$', term_getline(buf, 6))})
   call term_sendkeys(buf, "\<C-B>\<C-L>")
   call WaitForAssert({-> assert_notmatch('^-- INSERT --\s*$', term_getline(buf, 6))})
 
   " clean up
   call StopVimInTerminal(buf)
-  call delete('Xtest_edit_insertmode_ex_edit')
 endfunc
 
 " Pressing escape in 'insertmode' should beep
@@ -1944,7 +2107,7 @@ func Test_edit_hkmap()
   call assert_equal(expected, getline(1))
 
   set revins& hkmap& hkmapp&
-  close!
+  bw!
 endfunc
 
 " Test for 'allowrevins' and using CTRL-_ in insert mode
@@ -1955,7 +2118,7 @@ func Test_edit_allowrevins()
   call feedkeys("iABC\<C-_>DEF\<C-_>GHI", 'xt')
   call assert_equal('ABCFEDGHI', getline(1))
   set allowrevins&
-  close!
+  bw!
 endfunc
 
 " Test for inserting a register in insert mode using CTRL-R
@@ -1973,18 +2136,25 @@ func Test_edit_insert_reg()
   let @r = 'sample'
   call feedkeys("a\<C-R>=SaveFirstLine()\<CR>", "xt")
   call assert_equal('"', g:Line)
+
+  " Test for inserting an null and an empty list
+  call feedkeys("a\<C-R>=test_null_list()\<CR>", "xt")
+  call feedkeys("a\<C-R>=[]\<CR>", "xt")
+  call assert_equal(['r'], getbufline('', 1, '$'))
   call test_override('ALL', 0)
-  close!
+  bw!
 endfunc
 
 " Test for positioning cursor after CTRL-R expression failed
 func Test_edit_ctrl_r_failed()
+  CheckScreendump
   CheckRunVimInTerminal
 
   let buf = RunVimInTerminal('', #{rows: 6, cols: 60})
 
   " trying to insert a blob produces an error
   call term_sendkeys(buf, "i\<C-R>=0z\<CR>")
+  call WaitForAssert({-> assert_match('^E976:', term_getline(buf, 5))}, 1000)
 
   " ending Insert mode should put the cursor back on the ':'
   call term_sendkeys(buf, ":\<Esc>")
@@ -1997,6 +2167,10 @@ endfunc
 " window, the window contents should be scrolled one line up. If the top line
 " is part of a fold, then the entire fold should be scrolled up.
 func Test_edit_lastline_scroll()
+  if has('linux')
+    " TODO: For unknown reasons, this test fails on CI when run in Gui mode
+    CheckNotGui
+  endif
   new
   let h = winheight(0)
   let lines = ['one', 'two', 'three']
@@ -2017,7 +2191,7 @@ func Test_edit_lastline_scroll()
   call assert_equal(h - 1, winline())
   call assert_equal(3, line('w0'))
 
-  close!
+  bw!
 endfunc
 
 func Test_edit_browse()
@@ -2030,7 +2204,7 @@ func Test_edit_browse()
     au!
   augroup END
 
-  " When the USE_FNAME_CASE is defined this used to cause a crash.
+  " When the CASE_INSENSITIVE_FILENAME is defined this used to cause a crash.
   browse enew
   bwipe!
 
@@ -2041,7 +2215,7 @@ endfunc
 func Test_read_invalid()
   " set encoding=latin1
   " This was not properly checking for going past the end.
-  call assert_fails('r`=', 'E484')
+  call assert_fails('r`=', 'E484:')
   set encoding=utf-8
 endfunc
 
@@ -2112,11 +2286,37 @@ func Test_edit_overlong_file_name()
   file %%%%%%%%%%%%%%%%%%%%%%%%%%
   file %%%%%%
   set readonly
-  set ls=2 
+  set ls=2
 
   redraw!
   set noreadonly ls&
   bwipe!
+endfunc
+
+func Test_edit_shift_bs()
+  CheckMSWindows
+
+  " FIXME: this works interactively, but the test fails
+  throw 'Skipped: Shift-Backspace Test not working correctly :('
+
+  " Need to run this in Win32 Terminal, do not use CheckRunVimInTerminal
+  if !has("terminal")
+    return
+  endif
+
+  " Shift Backspace should work like Backspace in insert mode
+  let lines =<< trim END
+    call setline(1, ['abc'])
+  END
+  call writefile(lines, 'Xtest_edit_shift_bs', 'D')
+
+  let buf = RunVimInTerminal('-S Xtest_edit_shift_bs', #{rows: 3})
+  call term_sendkeys(buf, "A\<S-BS>-\<esc>")
+  call TermWait(buf, 50)
+  call assert_equal('ab-', term_getline(buf, 1))
+
+  " clean up
+  call StopVimInTerminal(buf)
 endfunc
 
 func Test_edit_Ctrl_RSB()
@@ -2281,6 +2481,121 @@ func Test_edit_backspace_smarttab_virtual_text()
   call CloseWindow()
   call prop_type_delete('theprop')
   set smarttab&
+endfunc
+
+func Test_edit_CAR_with_completion()
+  new
+
+  " With "noselect", behavior is the same with and without "noinsert":
+  " Enter inserts a new line when no selection is done or after selecting with
+  " Ctrl-N/P, but does not insert a new line when selecting with cursor keys.
+  for cot in ['menu,menuone,noselect', 'menu,menuone,noselect,noinsert']
+    let &cot = cot
+    %delete
+    call feedkeys("Shello hero\<CR>h\<C-X>\<C-N>e\<CR>", 'tx')
+    call assert_equal(['hello hero', 'he', ''], getline(1, '$'))
+    %delete
+    call feedkeys("Shello hero\<CR>h\<C-X>\<C-N>\<CR>", 'tx')
+    call assert_equal(['hello hero', 'h', ''], getline(1, '$'))
+    %delete
+    call feedkeys("Shello hero\<CR>h\<C-X>\<C-N>\<C-N>\<CR>", 'tx')
+    call assert_equal(['hello hero', 'hello', ''], getline(1, '$'))
+    %delete
+    call feedkeys("Shello hero\<CR>h\<C-X>\<C-N>\<C-N>\<C-N>\<CR>", 'tx')
+    call assert_equal(['hello hero', 'hero', ''], getline(1, '$'))
+    %delete
+    call feedkeys("Shello hero\<CR>h\<C-X>\<C-N>\<C-N>\<C-P>\<CR>", 'tx')
+    call assert_equal(['hello hero', 'h', ''], getline(1, '$'))
+    %delete
+    call feedkeys("Shello hero\<CR>h\<C-X>\<C-N>\<Down>\<CR>", 'tx')
+    call assert_equal(['hello hero', 'hello'], getline(1, '$'))
+    %delete
+    call feedkeys("Shello hero\<CR>h\<C-X>\<C-N>\<Down>\<Down>\<CR>", 'tx')
+    call assert_equal(['hello hero', 'hero'], getline(1, '$'))
+    %delete
+    call feedkeys("Shello hero\<CR>h\<C-X>\<C-N>\<Down>\<Up>\<CR>", 'tx')
+    call assert_equal(['hello hero', 'h'], getline(1, '$'))
+  endfor
+
+  " With "noinsert" but not "noselect": like pressing <Down> after "noselect".
+  set cot=menu,menuone,noinsert
+  %delete
+  call feedkeys("Shello hero\<CR>h\<C-X>\<C-N>e\<CR>", 'tx')
+  call assert_equal(['hello hero', 'hello'], getline(1, '$'))
+  %delete
+  call feedkeys("Shello hero\<CR>h\<C-X>\<C-N>\<CR>", 'tx')
+  call assert_equal(['hello hero', 'hello'], getline(1, '$'))
+  %delete
+  call feedkeys("Shello hero\<CR>h\<C-X>\<C-N>\<Down>\<CR>", 'tx')
+  call assert_equal(['hello hero', 'hero'], getline(1, '$'))
+  %delete
+  call feedkeys("Shello hero\<CR>h\<C-X>\<C-N>\<Up>\<CR>", 'tx')
+  call assert_equal(['hello hero', 'h'], getline(1, '$'))
+  %delete
+  call feedkeys("Shello hero\<CR>h\<C-X>\<C-N>\<C-N>\<CR>", 'tx')
+  call assert_equal(['hello hero', 'hero', ''], getline(1, '$'))
+  %delete
+  call feedkeys("Shello hero\<CR>h\<C-X>\<C-N>\<C-P>\<CR>", 'tx')
+  call assert_equal(['hello hero', 'h', ''], getline(1, '$'))
+
+  set cot&
+  bw!
+endfunc
+
+func Test_autoindent_no_strip_after_cmd_setline()
+  new
+  setlocal autoindent
+  inoremap <buffer> <F2> <Cmd>call setline('.', 'v  v')<CR><Cmd>call cursor(line('.'), 2)<CR>
+  call feedkeys("Go\<F2>\<Esc>", 'tx')
+  call assert_equal('v  v', getline(2))
+  bwipe!
+endfunc
+
+func Test_autoindent_no_strip_after_cursorholdi()
+  CheckFeature timers
+  new
+  setlocal autoindent
+  set updatetime=50
+  au CursorHoldI <buffer> call setline('.', 'v v')
+  call setline(1, ' x')
+  call cursor(1, 2)
+  call timer_start(120, {-> feedkeys("\<Esc>", 't')})
+  call feedkeys("o", 'tx!')
+  call assert_equal('v v', getline(2))
+  set updatetime&
+  bwipe!
+endfunc
+
+" Issue #20130: '[ must mark the start of the paste after CTRL-R CTRL-P + edit.
+func Test_open_square_mark_after_ctrl_r_ctrl_p_paste()
+  new
+  call setline(1, ['a', 'b', 'c', 'd'])
+  call cursor(4, 1)
+
+  call feedkeys("Vggyjo\<C-r>\<C-p>\"\<BS>\<Esc>", 'xt')
+
+  call assert_equal(['a', 'b', 'a', 'b', 'c', 'd', 'c', 'd'],
+        \ getline(1, '$'))
+  call assert_equal([0, 3, 1, 0], getpos("'["))
+  bwipe!
+endfunc
+
+func Test_autoindent_no_strip_cross_line()
+  new
+  setlocal autoindent
+  inoremap <buffer> <F3> {}<Left><CR><Cmd>normal! ==<CR><Up><End><CR>
+
+  call setline(1, '')
+  call feedkeys("i\<F3>\<Esc>", 'tx')
+
+  call assert_equal('{', getline(1))
+  call assert_equal('', getline(2))
+  call assert_equal('}', getline(3))
+  call assert_equal([0, 2, 1, 0], getpos('.'))
+
+  " Overwrite @. register with simple content to avoid affecting later tests.
+  call feedkeys("Go\<Esc>", 'tnix')
+  bwipe!
 endfunc
 
 " vim: shiftwidth=2 sts=2 expandtab

@@ -1,9 +1,10 @@
 *digraph.txt*   Nvim
 
 
-		  VIM REFERENCE MANUAL    by Bram Moolenaar
+		  VIM REFERENCE MANUAL	  by Bram Moolenaar
 
 
+==============================================================================
 Digraphs					*digraph* *digraphs* *Digraphs*
 
 Digraphs are used to enter characters that normally cannot be entered by
@@ -19,12 +20,11 @@ An alternative is using the 'keymap' option.
 ==============================================================================
 1. Defining digraphs					*digraphs-define*
 
-						*:dig* *:digraphs*
-:dig[raphs][!]		Show currently defined digraphs.
+:dig[raphs][!]						*:dig* *:digraphs*
+			Show currently defined digraphs.
 			With [!] headers are used to make it a bit easier to
 			find a specific character.
-							*E104* *E39*
-:dig[raphs] {char1}{char2} {number} ...
+:dig[raphs] {char1}{char2} {number} ...			*E104* *E39*
 			Add digraph {char1}{char2} to the list.  {number} is
 			the decimal representation of the character.  Normally
 			it is the Unicode character, see |digraph-encoding|.
@@ -65,8 +65,9 @@ This defines the "oe" digraph for a character that is number 339 in Unicode.
 2. Using digraphs					*digraphs-use*
 
 There are two methods to enter digraphs:			*i_digraph*
-	CTRL-K {char1} {char2}		or
-	{char1} <BS> {char2}
+- CTRL-K {char1} {char2}
+- {char1} <BS> {char2}
+
 The first is always available; the second only when the 'digraph' option is
 set.
 
@@ -106,7 +107,7 @@ mode.  After leaving the Insert mode everything is fine.  On some Unix systems
 this means you have to define the environment-variable LC_CTYPE.  If you are
 using csh, then put the following line in your .cshrc: >
 	setenv LC_CTYPE en_US.utf8
-(or similar for a different language or country). The value must be a valid
+(or similar for a different language or country).  The value must be a valid
 locale on your system, i.e. on Unix-like systems it must be present in the
 output of >
 	locale -a
@@ -119,8 +120,8 @@ see them.
 
 On most systems Vim uses the same digraphs.  They work for the Unicode and
 ISO-8859-1 character sets.  These default digraphs are taken from the RFC1345
-mnemonics.  To make it easy to remember the mnemonic, the second character has
-a standard meaning:
+mnemonics (with some additions).  To make it easy to remember the mnemonic,
+the second character has a standard meaning:
 
 	char name		char	meaning ~
 	Exclamation mark	!	Grave
@@ -140,7 +141,7 @@ a standard meaning:
 	Zero			0	Ring above
 	Two			2	Hook
 	Nine			9	Horn
-
+	----------------------------------------------------------------------
 	Equals			=	Cyrillic (= used as second char)
 	Asterisk		*	Greek
 	Percent sign		%	Greek/Cyrillic special
@@ -1064,6 +1065,7 @@ the 1', 2' and 3' digraphs.
   ≅	?=	2245	8773	APPROXIMATELY EQUAL TO
   ≈	?2	2248	8776	ALMOST EQUAL TO
   ≌	=?	224C	8780	ALL EQUAL TO
+  ≐	.=	2250	8784	APPROACHES THE LIMIT
   ≓	HI	2253	8787	IMAGE OF OR APPROXIMATELY EQUAL TO
   ≠	!=	2260	8800	NOT EQUAL TO
   ≡	=3	2261	8801	IDENTICAL TO
@@ -1093,8 +1095,8 @@ the 1', 2' and 3' digraphs.
   ⌕	TR	2315	8981	TELEPHONE RECORDER
   ⌠	Iu	2320	8992	TOP HALF INTEGRAL
   ⌡	Il	2321	8993	BOTTOM HALF INTEGRAL
-  〈	</	2329	9001	LEFT-POINTING ANGLE BRACKET
-  〉	/>	232A	9002	RIGHT-POINTING ANGLE BRACKET
+  ⟨	<[	27E8	10040	LEFT MATHEMATICAL ANGLE BRACKET
+  ⟩	]>	27E9	10041	RIGHT MATHEMATICAL ANGLE BRACKET
   ␣	Vs	2423	9251	OPEN BOX
   ⑀	1h	2440	9280	OCR HOOK
   ⑁	3h	2441	9281	OCR CHAIR

@@ -12,17 +12,17 @@
 #include "nvim/charset.h"
 #include "nvim/digraph.h"
 #include "nvim/drawscreen.h"
+#include "nvim/errors.h"
 #include "nvim/eval.h"
 #include "nvim/eval/typval.h"
 #include "nvim/ex_cmds_defs.h"
 #include "nvim/ex_docmd.h"
 #include "nvim/ex_getln.h"
 #include "nvim/garray.h"
-#include "nvim/getchar.h"
 #include "nvim/gettext_defs.h"
 #include "nvim/globals.h"
-#include "nvim/highlight.h"
 #include "nvim/highlight_defs.h"
+#include "nvim/input.h"
 #include "nvim/keycodes.h"
 #include "nvim/mapping.h"
 #include "nvim/mbyte.h"
@@ -53,9 +53,7 @@ static const char e_digraph_argument_must_be_one_character_str[]
 static const char e_digraph_setlist_argument_must_be_list_of_lists_with_two_items[]
   = N_("E1216: digraph_setlist() argument must be a list of lists with two items");
 
-#ifdef INCLUDE_GENERATED_DECLARATIONS
-# include "digraph.c.generated.h"
-#endif
+#include "digraph.c.generated.h"
 // digraphs added by the user
 static garray_T user_digraphs = { 0, 0, (int)sizeof(digr_T), 10, NULL };
 
@@ -1023,6 +1021,7 @@ static digr_T digraphdefault[] =
   { '?', '=', 0x2245 },
   { '?', '2', 0x2248 },
   { '=', '?', 0x224c },
+  { '.', '=', 0x2250 },
   { 'H', 'I', 0x2253 },
   { '!', '=', 0x2260 },
   { '=', '3', 0x2261 },
@@ -1053,8 +1052,8 @@ static digr_T digraphdefault[] =
   { 'T', 'R', 0x2315 },
   { 'I', 'u', 0x2320 },
   { 'I', 'l', 0x2321 },
-  { '<', '/', 0x2329 },
-  { '/', '>', 0x232a },
+  { '<', '[', 0x27e8 },
+  { ']', '>', 0x27e9 },
 #define DG_START_OTHER2 0x2423
   { 'V', 's', 0x2423 },
   { '1', 'h', 0x2440 },
@@ -1201,6 +1200,8 @@ static digr_T digraphdefault[] =
   { '*', '_', 0x3005 },
   { ';', '_', 0x3006 },
   { '0', '_', 0x3007 },
+  { '<', '/', 0x3008 },
+  { '/', '>', 0x3009 },
   { '<', '+', 0x300a },
   { '>', '+', 0x300b },
   { '<', '\'', 0x300c },
@@ -1706,7 +1707,7 @@ static void digraph_header(const char *msg)
   if (msg_col > 0) {
     msg_putchar('\n');
   }
-  msg_outtrans(msg, HL_ATTR(HLF_CM));
+  msg_outtrans(msg, HLF_CM, false);
   msg_putchar('\n');
 }
 
@@ -1714,6 +1715,7 @@ void listdigraphs(bool use_headers)
 {
   result_T previous = 0;
 
+  msg_ext_set_kind("list_cmd");
   msg_putchar('\n');
 
   const digr_T *dp = digraphdefault;
@@ -1789,7 +1791,7 @@ void digraph_getlist_common(bool list_all, typval_T *rettv)
   }
 }
 
-struct dg_header_entry {
+static struct dg_header_entry {
   int dg_start;
   const char *dg_header;
 } header_table[] = {
@@ -1849,10 +1851,7 @@ static void printdigraph(const digr_T *dp, result_T *previous)
 
   // Make msg_col a multiple of list_width by using spaces.
   if (msg_col % list_width != 0) {
-    int spaces = (msg_col / list_width + 1) * list_width - msg_col;
-    while (spaces--) {
-      msg_putchar(' ');
-    }
+    msg_advance((msg_col / list_width + 1) * list_width);
   }
 
   char *p = &buf[0];
@@ -1860,24 +1859,24 @@ static void printdigraph(const digr_T *dp, result_T *previous)
   *p++ = (char)dp->char2;
   *p++ = ' ';
   *p = NUL;
-  msg_outtrans(buf, 0);
+  msg_outtrans(buf, 0, false);
   p = buf;
 
   // add a space to draw a composing char on
-  if (utf_iscomposing(dp->result)) {
+  if (utf_iscomposing_first(dp->result)) {
     *p++ = ' ';
   }
   p += utf_char2bytes(dp->result, p);
 
   *p = NUL;
-  msg_outtrans(buf, HL_ATTR(HLF_8));
+  msg_outtrans(buf, HLF_8, false);
   p = buf;
   if (char2cells(dp->result) == 1) {
     *p++ = ' ';
   }
   assert(p >= buf);
   vim_snprintf(p, sizeof(buf) - (size_t)(p - buf), " %3d", dp->result);
-  msg_outtrans(buf, 0);
+  msg_outtrans(buf, 0, false);
 }
 
 /// Get the two digraph characters from a typval.
@@ -1953,16 +1952,16 @@ void f_digraph_get(typval_T *argvars, typval_T *rettv, EvalFuncData fptr)
 /// "digraph_getlist()" function
 void f_digraph_getlist(typval_T *argvars, typval_T *rettv, EvalFuncData fptr)
 {
+  if (tv_check_for_opt_bool_arg(argvars, 0) == FAIL) {
+    return;
+  }
+
   bool flag_list_all;
 
   if (argvars[0].v_type == VAR_UNKNOWN) {
     flag_list_all = false;
   } else {
-    bool error = false;
-    varnumber_T flag = tv_get_number_chk(&argvars[0], &error);
-    if (error) {
-      return;
-    }
+    varnumber_T flag = tv_get_bool(&argvars[0]);
     flag_list_all = flag != 0;
   }
 
@@ -2083,6 +2082,15 @@ void ex_loadkeymap(exarg_T *eap)
     return;
   }
 
+  if (eap->skip) {
+    char *line;
+    // The rest of the script is the keymap, read it and throw it away.
+    while ((line = eap->ea_getline(0, eap->cookie, 0, true)) != NULL) {
+      xfree(line);
+    }
+    return;
+  }
+
   // Stop any active keymap and clear the table.
   keymap_unload();
 
@@ -2182,22 +2190,22 @@ static void keymap_unload(void)
 /// @param fmt  format string containing one %s item
 /// @param buf  buffer for the result
 /// @param len  length of buffer
-bool get_keymap_str(win_T *wp, char *fmt, char *buf, int len)
+int get_keymap_str(win_T *wp, char *fmt, char *buf, int len)
 {
   char *p;
 
   if (wp->w_buffer->b_p_iminsert != B_IMODE_LMAP) {
-    return false;
+    return 0;
   }
 
   buf_T *old_curbuf = curbuf;
   win_T *old_curwin = curwin;
+  char to_evaluate[] = "b:keymap_name";
 
   curbuf = wp->w_buffer;
   curwin = wp;
-  STRCPY(buf, "b:keymap_name");       // must be writable
   emsg_skip++;
-  char *s = p = eval_to_string(buf, false);
+  char *s = p = eval_to_string(to_evaluate, false, false);
   emsg_skip--;
   curbuf = old_curbuf;
   curwin = old_curwin;
@@ -2208,9 +2216,12 @@ bool get_keymap_str(win_T *wp, char *fmt, char *buf, int len)
       p = "lang";
     }
   }
-  if (vim_snprintf(buf, (size_t)len, fmt, p) > len - 1) {
-    buf[0] = NUL;
-  }
+  int plen = vim_snprintf(buf, (size_t)len, fmt, p);
   xfree(s);
-  return buf[0] != NUL;
+  if (plen < 0 || plen > len - 1) {
+    buf[0] = NUL;
+    plen = 0;
+  }
+
+  return plen;
 }

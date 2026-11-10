@@ -1,11 +1,11 @@
 local t = require('test.testutil')
 local n = require('test.functional.testnvim')()
 
-local tt = require('test.functional.terminal.testutil')
+local tt = require('test.functional.testterm')
+local describe, it, before_each = t.describe, t.it, t.before_each
 local assert_alive = n.assert_alive
 local clear = n.clear
 local feed = n.feed
-local feed_command = n.feed_command
 local command = n.command
 local eq = t.eq
 local eval = n.eval
@@ -22,14 +22,12 @@ describe(':terminal', function()
     -- set the statusline to a constant value because of variables like pid
     -- and current directory and to improve visibility of splits
     api.nvim_set_option_value('statusline', '==========', {})
-    command('highlight StatusLine cterm=NONE')
-    command('highlight StatusLineNC cterm=NONE')
-    command('highlight VertSplit cterm=NONE')
-    screen = tt.screen_setup(3)
-  end)
-
-  after_each(function()
-    screen:detach()
+    screen = tt.setup_screen(3)
+    command('highlight StatusLine NONE')
+    command('highlight StatusLineNC NONE')
+    command('highlight StatusLineTerm NONE')
+    command('highlight StatusLineTermNC NONE')
+    command('highlight VertSplit NONE')
   end)
 
   it('next to a closing window', function()
@@ -44,29 +42,27 @@ describe(':terminal', function()
   it('does not change size on WinEnter', function()
     feed('<c-\\><c-n>')
     feed('k')
-    feed_command('2split')
+    command('2split')
     screen:expect([[
       ^tty ready                                         |
       rows: 5, cols: 50                                 |
       ==========                                        |
       tty ready                                         |
       rows: 5, cols: 50                                 |
-      {2: }                                                 |
-                                                        |*2
+                                                        |*3
       ==========                                        |
-      :2split                                           |
+                                                        |
     ]])
-    feed_command('wincmd p')
+    command('wincmd p')
     screen:expect([[
       tty ready                                         |
       rows: 5, cols: 50                                 |
       ==========                                        |
       ^tty ready                                         |
       rows: 5, cols: 50                                 |
-      {2: }                                                 |
-                                                        |*2
+                                                        |*3
       ==========                                        |
-      :wincmd p                                         |
+                                                        |
     ]])
   end)
 
@@ -79,7 +75,7 @@ describe(':terminal', function()
     command('bprevious')
     screen:expect([[
       tty ready                                         |
-      ^foo{2: }                                              |
+      ^foo                                               |
                                                         |*8
     ]])
   end)
@@ -104,8 +100,7 @@ describe(':terminal', function()
     screen:expect([[
       tty ready                                      |
       rows: 7, cols: 47                              |
-      {2: }                                              |
-                                                     |*3
+                                                     |*4
       ^                                               |
                                                      |
     ]])
@@ -114,7 +109,7 @@ describe(':terminal', function()
       tty ready                                |
       rows: 7, cols: 47                        |
       rows: 4, cols: 41                        |
-      {2:^ }                                        |
+      ^                                         |
                                                |
     ]])
   end)
@@ -126,5 +121,33 @@ describe(':terminal', function()
     feed('a<Cmd>wincmd j<CR>')
     eq(2, eval('winnr()'))
     eq('t', eval('mode(1)'))
+  end)
+
+  it("non-terminal opened in Terminal mode applies 'scrolloff' #34447", function()
+    api.nvim_set_option_value('scrolloff', 5, {})
+    api.nvim_set_option_value('showtabline', 0, {})
+    screen:try_resize(78, 10)
+    eq({ mode = 't', blocking = false }, api.nvim_get_mode())
+    n.exec_lua([[
+      vim.api.nvim_create_autocmd({ 'BufEnter' }, {
+        callback = function()
+          vim.schedule(function() vim.fn.line('w0') end)
+        end,
+      })
+    ]])
+    n.add_builddir_to_rtp()
+    n.exec('tab help api-types')
+    screen:expect([[
+                                                                                    |
+      ==============================================================================|
+      API Definitions                                         *api-definitions*     |
+                                                                                    |
+                                                              ^*api-types*           |
+      The Nvim C API defines custom types for all function parameters. Some are just|
+      typedefs around C99 standard types, others are Nvim-defined data structures.  |
+                                                                                    |
+      Basic types ~                                                                 |
+                                                                                    |
+    ]])
   end)
 end)

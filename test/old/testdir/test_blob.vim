@@ -75,6 +75,13 @@ func Test_blob_assign()
       VAR l = [0z12]
       VAR m = deepcopy(l)
       LET m[0] = 0z34	#" E742 or E741 should not occur.
+
+      VAR blob1 = 0z10
+      LET blob1 += v:_null_blob
+      call assert_equal(0z10, blob1)
+      LET blob1 = v:_null_blob
+      LET blob1 += 0z20
+      call assert_equal(0z20, blob1)
   END
   call CheckLegacyAndVim9Success(lines)
 
@@ -222,13 +229,13 @@ func Test_blob_compare()
       VAR b1 = 0z0011
       echo b1 == 9
   END
-  call CheckLegacyAndVim9Failure(lines, ['E977:', 'E1072', 'E1072'])
+  call CheckLegacyAndVim9Failure(lines, ['E977:', 'E1072:', 'E1072:'])
 
   let lines =<< trim END
       VAR b1 = 0z0011
       echo b1 != 9
   END
-  call CheckLegacyAndVim9Failure(lines, ['E977:', 'E1072', 'E1072'])
+  call CheckLegacyAndVim9Failure(lines, ['E977:', 'E1072:', 'E1072:'])
 
   let lines =<< trim END
       VAR b1 = 0z0011
@@ -330,6 +337,17 @@ func Test_blob_for_loop()
         LET i += 1
       endfor
       call assert_equal(5, i)
+  END
+  call CheckLegacyAndVim9Success(lines)
+
+  " Test for skipping the loop var assignment in a for loop
+  let lines =<< trim END
+    VAR blob = 0z998877
+    VAR c = 0
+    for _ in blob
+      LET c += 1
+    endfor
+    call assert_equal(3, c)
   END
   call CheckLegacyAndVim9Success(lines)
 endfunc
@@ -776,6 +794,21 @@ func Test_list2blob()
   call assert_equal(0z, list2blob(v:_null_list))
 endfunc
 
+func Test_list2blob_large()
+  let values = repeat(range(256), 32)
+  let b = list2blob(values)
+  call assert_equal(values, blob2list(b))
+  call add(b, 42)
+  call assert_equal(42, remove(b, -1))
+  call assert_equal(values, blob2list(b))
+  call assert_equal(range(255, 0, -1), blob2list(list2blob(range(255, 0, -1))))
+
+  call add(values, 256)
+  call assert_fails('call list2blob(values)', 'E1239:')
+  let values[-1] = []
+  call assert_fails('call list2blob(values)', 'E745:')
+endfunc
+
 " The following used to cause an out-of-bounds memory access
 func Test_blob2string()
   let v = '0z' .. repeat('01010101.', 444)
@@ -794,6 +827,10 @@ func Test_blob_repeat()
   call assert_equal(0z, repeat(0z1234, 0))
   call assert_equal(0z1234, repeat(0z1234, 1))
   call assert_equal(0z12341234, repeat(0z1234, 2))
+
+  " Overflow test
+  call assert_fails('call repeat(0z010203040506, 715827883)', 'E1510:')
+  call assert_fails('call repeat(0z12, 4294967297)', 'E1510:')
 endfunc
 
 " Test for blob allocation failure
@@ -850,7 +887,8 @@ func Test_indexof()
   call assert_equal(-1, indexof(v:_null_blob, "v:val == 0xde"))
   call assert_equal(-1, indexof(b, v:_null_string))
   " Nvim doesn't have null functions
-  " call assert_equal(-1, indexof(b, test_null_function())) 
+  " call assert_equal(-1, indexof(b, test_null_function()))
+  call assert_equal(-1, indexof(b, ""))
 
   let b = 0z01020102
   call assert_equal(1, indexof(b, "v:val == 0x02", #{startidx: 0}))
@@ -862,6 +900,53 @@ func Test_indexof()
   " failure cases
   call assert_fails('let i = indexof(b, "val == 0xde")', 'E121:')
   call assert_fails('let i = indexof(b, {})', 'E1256:')
+  call assert_fails('let i = indexof(b, " ")', 'E15:')
+endfunc
+
+" Test for using the items() function with a blob
+func Test_blob_items()
+  let lines =<< trim END
+    call assert_equal([[0, 0xAA], [1, 0xBB], [2, 0xCC]], 0zAABBCC->items())
+    call assert_equal([[0, 0]], 0z00->items())
+    call assert_equal([], 0z->items())
+    call assert_equal([], v:_null_blob->items())
+  END
+  call CheckSourceLegacyAndVim9Success(lines)
+endfunc
+
+" Test for setting a byte in a blob with invalid value
+func Test_blob_byte_set_invalid_value()
+  let lines =<< trim END
+    VAR b = 0zD0C3E4E18E1B
+    LET b[0] = 229539777187355
+  END
+  call CheckSourceLegacyAndVim9Failure(lines, 'E1239: Invalid value for blob:')
+endfunc
+
+func Test_blob_utf16be_encoding()
+  CheckFeature iconv
+
+  " Write utf-16be
+  new
+  setl nobomb
+  call setline(1, "A\u3042")
+  write ++enc=utf-16be ++ff=unix Xutf16be
+  defer delete('Xutf16be')
+  bwipe!
+
+  let bytes = readblob('Xutf16be')
+  " 'A' = U+0041 -> 00 41 (BE), U+3042 -> 30 42 (BE)
+  call assert_equal(0z0041.3042, bytes[0:3])
+
+  " iconv
+  let s = "A\u3042Z"
+  let be = iconv(s, 'utf-8', 'utf-16be')
+  if be == s
+    " iconv lacks utf-16be support
+    return
+  endif
+  call assert_equal(s, iconv(be, 'utf-16be', 'utf-8'))
+  call assert_notequal(be, iconv(s, 'utf-8', 'utf-16le'))
 endfunc
 
 " vim: shiftwidth=2 sts=2 expandtab

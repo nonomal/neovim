@@ -2,10 +2,11 @@ local t = require('test.testutil')
 local n = require('test.functional.testnvim')()
 local Screen = require('test.functional.ui.screen')
 
+local describe, it, before_each = t.describe, t.it, t.before_each
 local clear = n.clear
 local curbuf_contents = n.curbuf_contents
 local command = n.command
-local eq, neq, matches = t.eq, t.neq, t.matches
+local eq, matches = t.eq, t.matches
 local getcompletion = n.fn.getcompletion
 local insert = n.insert
 local exec_lua = n.exec_lua
@@ -13,6 +14,7 @@ local source = n.source
 local assert_alive = n.assert_alive
 local fn = n.fn
 local api = n.api
+local retry = t.retry
 
 describe(':checkhealth', function()
   it('detects invalid $VIMRUNTIME', function()
@@ -32,20 +34,49 @@ describe(':checkhealth', function()
     eq("Invalid 'runtimepath'", string.match(err, 'Invalid.*'))
   end)
 
-  it('detects invalid $VIM', function()
-    clear()
-    -- Do this after startup, otherwise it just breaks $VIMRUNTIME.
+  it('vim.health report', function()
+    -- Invalid $TERM.
+    clear({ env = { TERM = 'a&b+c' } })
+    exec_lua([[require('vim.health.health')._skip_update_check = true]])
+    -- Invalid $VIM. Do this after startup, otherwise it just breaks $VIMRUNTIME.
     command("let $VIM='zub'")
-    command('checkhealth nvim')
-    matches('ERROR $VIM .* zub', curbuf_contents())
+    command('checkhealth vim.health')
+    retry(nil, 10000, function()
+      eq('function', exec_lua('return type(_G.nvim_health_bugreport_open)'))
+      matches('ERROR $VIM .* zub', curbuf_contents())
+    end)
+    -- All sections ran.
+    eq(nil, curbuf_contents():match('Failed to run healthcheck.*'))
+
+    -- Bug-report URL-encodes the report.
+    local query = exec_lua(function()
+      local url --- @type string
+      vim.ui.open = function(u)
+        url = u
+      end
+      _G.nvim_health_bugreport_open()
+      return assert(vim.uri.parse(url)).query
+    end)
+    eq('Bug', query.type)
+    matches('%$TERM environment variable: `a&b%+c`', query.body)
   end)
 
-  it('completions can be listed via getcompletion()', function()
-    clear()
-    eq('nvim', getcompletion('nvim', 'checkhealth')[1])
-    eq('provider.clipboard', getcompletion('prov', 'checkhealth')[1])
+  it('getcompletion()', function()
+    clear { args = { '-u', 'NORC', '+set runtimepath+=test/functional/fixtures' } }
+
+    eq('nvim.zip', getcompletion('vim', 'checkhealth')[1])
+    eq('vim.provider', getcompletion('vim.prov', 'checkhealth')[1])
     eq('vim.lsp', getcompletion('vim.ls', 'checkhealth')[1])
-    neq('vim', getcompletion('^vim', 'checkhealth')[1]) -- should not complete vim.health
+
+    -- "test_plug/health/init.lua" should complete as "test_plug", not "test_plug.health". #30342
+    eq({
+      'test_plug',
+      'test_plug.full_render',
+      'test_plug.submodule',
+      'test_plug.submodule_empty',
+      'test_plug.success1',
+      'test_plug.success2',
+    }, getcompletion('test_plug', 'checkhealth'))
   end)
 
   it('completion checks for vim.health._complete() return type #28456', function()
@@ -56,22 +87,213 @@ describe(':checkhealth', function()
     eq({}, getcompletion('', 'checkhealth'))
     assert_alive()
   end)
+
+  it('cmdline completion works with multiple args #35054', function()
+    clear()
+    n.feed(':checkhealth vim.ls<Tab>')
+    eq('checkhealth vim.lsp', fn.getcmdline())
+    n.feed(' vim.prov<Tab>')
+    eq('checkhealth vim.lsp vim.provider', fn.getcmdline())
+  end)
+
+  it('vim.g.health', function()
+    clear {
+      args_rm = { '-u' },
+      args = { '--clean', '+set runtimepath+=test/functional/fixtures' },
+    }
+    command("let g:health = {'style':'float'}")
+    command('checkhealth lsp')
+    eq(
+      'editor',
+      exec_lua([[
+      return vim.api.nvim_win_get_config(0).relative
+    ]])
+    )
+    matches('health%.lua:%d+>$', fn.maparg('q', 'n', false, false))
+
+    -- gO should not close the :checkhealth floating window. #34784
+    command('checkhealth full_render')
+    local win = api.nvim_get_current_win()
+    api.nvim_win_set_cursor(win, { 5, 1 })
+    n.feed('gO')
+    eq(true, api.nvim_win_is_valid(win))
+    eq('qf', api.nvim_get_option_value('filetype', { buf = 0 }))
+  end)
+
+  it("vim.provider works with a misconfigured 'shell'", function()
+    clear()
+    command([[set shell=echo\ WRONG!!!]])
+    command('let g:loaded_perl_provider = 0')
+    command('let g:loaded_python3_provider = 0')
+    command('checkhealth vim.provider')
+    eq(nil, string.match(curbuf_contents(), 'WRONG!!!'))
+  end)
+
+  it('runs provider healthcheck probes once and captures their output', function()
+    clear()
+    exec_lua(function()
+      vim.g.loaded_node_provider = 0
+      vim.g.loaded_perl_provider = 0
+      vim.g.loaded_ruby_provider = 0
+      vim.env.VIRTUAL_ENV = nil
+      vim.env.PYENV_ROOT = vim.uv.cwd()
+      vim.fn['provider#clipboard#Executable'] = function()
+        return 'test'
+      end
+      vim.provider.python.detect_by_module = function(module)
+        return module == 'neovim' and 'python3' or nil
+      end
+      vim.fn.exepath = function()
+        return vim.v.progpath
+      end
+
+      _G.healthcheck_commands = 0
+      local function probe_command()
+        _G.healthcheck_commands = _G.healthcheck_commands + 1
+        return {
+          vim.v.progpath,
+          '-u',
+          'NONE',
+          '-i',
+          'NONE',
+          '--headless',
+          '-c',
+          [[lua io.stdout:write('first\nsecond\n'); io.stdout:flush(); io.stderr:write('probe stderr\n')]],
+          '-c',
+          'qa!',
+        }
+      end
+      local jobstart, system = vim.fn.jobstart, vim.fn.system
+      vim.fn.jobstart = function(_, opts)
+        return jobstart(probe_command(), opts)
+      end
+      vim.fn.system = function()
+        return system(probe_command())
+      end
+      local report_error = vim.health.error
+      vim.health.error = function(msg, ...)
+        _G.healthcheck_error = msg
+        report_error(msg, ...)
+      end
+    end)
+
+    command('checkhealth vim.provider')
+    retry(nil, 5000, function()
+      eq('checkhealth', api.nvim_get_option_value('filetype', { buf = 0 }))
+    end)
+    eq(1, exec_lua('return _G.healthcheck_commands'))
+    local output = exec_lua('return _G.healthcheck_error')
+    matches('first\r?\nsecond', output)
+    matches('probe stderr', output)
+  end)
+
+  it('vim.lsp warns about unknown filetypes', function()
+    clear()
+    exec_lua(function()
+      vim.filetype.add({ extension = { mdx = 'mdx' } })
+      vim.lsp.config('builtin_registry_ft', {
+        cmd = { 'true' },
+        filetypes = { 'beancount' },
+      })
+      vim.lsp.config('custom_ft', {
+        cmd = { 'true' },
+        filetypes = { 'mdx' },
+      })
+      vim.lsp.config('bad_ft', {
+        cmd = { 'true' },
+        filetypes = { 'hbs' },
+      })
+      vim.lsp.enable('builtin_registry_ft')
+      vim.lsp.enable('custom_ft')
+      vim.lsp.enable('bad_ft')
+    end)
+    command('checkhealth vim.lsp')
+    local report = curbuf_contents()
+    eq(nil, report:find("Unknown filetype 'beancount'", 1, true))
+    eq(nil, report:find("Unknown filetype 'mdx'", 1, true))
+    eq(
+      true,
+      report:find("Unknown filetype 'hbs' (Hint: filename extension != filetype).", 1, true) ~= nil
+    )
+    eq(true, report:find('- builtin_registry_ft:', 1, true) ~= nil)
+    eq(true, report:find('- custom_ft:', 1, true) ~= nil)
+    eq(true, report:find('- bad_ft:', 1, true) ~= nil)
+  end)
+
+  it('renders report when Nvim starts with -M', function()
+    clear { args = { '-M' } }
+    command('checkhealth lsp')
+    eq(true, curbuf_contents() ~= '')
+  end)
 end)
 
-describe('health.vim', function()
+describe('vim.health', function()
   before_each(function()
-    clear { args = { '-u', 'NORC' } }
-    -- Provides healthcheck functions
-    command('set runtimepath+=test/functional/fixtures')
+    clear { args = { '-u', 'NORC', '+set runtimepath+=test/functional/fixtures' } }
   end)
 
   describe(':checkhealth', function()
-    it('functions report_*() render correctly', function()
+    it('does not block on vim.health subprocesses', function()
+      exec_lua(function()
+        local system = vim.system
+        vim.system = function(cmd, opts, on_exit)
+          if cmd[1] == 'git' and cmd[2] == 'ls-remote' then
+            _G.resolve_health_system = function()
+              vim.system = system
+              on_exit({ code = 1, signal = 0, stdout = '', stderr = 'failed' })
+            end
+            return
+          end
+          return system(cmd, opts, on_exit)
+        end
+      end)
+
+      command('checkhealth vim.health')
+      eq('function', exec_lua('return type(_G.resolve_health_system)'))
+      eq(true, api.nvim_get_option_value('modifiable', { buf = 0 }))
+
+      command('let g:healthcheck_responsive = v:true')
+      eq(true, exec_lua('return vim.g.healthcheck_responsive'))
+      exec_lua('_G.resolve_health_system()')
+
+      retry(nil, 30000, function()
+        eq(false, api.nvim_get_option_value('modifiable', { buf = 0 }))
+      end)
+      eq('checkhealth', api.nvim_get_option_value('filetype', { buf = 0 }))
+      matches('vim%.health:', curbuf_contents())
+    end)
+
+    it('report_xx() renders correctly', function()
       command('checkhealth full_render')
       n.expect([[
-
       ==============================================================================
-      test_plug.full_render: require("test_plug.full_render.health").check()
+      test_plug.full_render:                                              1 ⚠️  1 ❌
+
+      report 1 ~
+      - ✅ OK life is fine
+      - ⚠️ WARNING no what installed
+        - ADVICE:
+          - pip what
+          - make what
+
+      report 2 ~
+      - stuff is stable
+      - ❌ ERROR why no hardcopy
+        - ADVICE:
+          - :help |:hardcopy|
+          - :help |:TOhtml|
+      ]])
+    end)
+
+    it('user FileType handler can modify report', function()
+      -- Define a FileType autocmd that removes emoji chars.
+      source [[
+        autocmd FileType checkhealth :set modifiable | silent! %s/\v( ?[^\x00-\x7F])//g
+        checkhealth full_render
+      ]]
+      n.expect([[
+      ==============================================================================
+      test_plug.full_render:                                              1  1
 
       report 1 ~
       - OK life is fine
@@ -91,85 +313,89 @@ describe('health.vim', function()
 
     it('concatenates multiple reports', function()
       command('checkhealth success1 success2 test_plug')
+      retry(nil, 5000, function()
+        eq(false, api.nvim_get_option_value('modifiable', { buf = 0 }))
+      end)
       n.expect([[
-
         ==============================================================================
-        test_plug: require("test_plug.health").check()
+        test_plug:                                                                  ✅
 
         report 1 ~
-        - OK everything is fine
+        - ✅ OK everything is fine
 
         report 2 ~
-        - OK nothing to see here
+        - ✅ OK nothing to see here
 
         ==============================================================================
-        test_plug.success1: require("test_plug.success1.health").check()
+        test_plug.success1:                                                         ✅
 
         report 1 ~
-        - OK everything is fine
+        - ✅ OK everything is fine
 
         report 2 ~
-        - OK nothing to see here
+        - ✅ OK nothing to see here
 
         ==============================================================================
-        test_plug.success2: require("test_plug.success2.health").check()
+        test_plug.success2:                                                         ✅
 
         another 1 ~
-        - OK ok
+        - ✅ OK ok
         ]])
     end)
 
     it('lua plugins submodules', function()
       command('checkhealth test_plug.submodule')
       n.expect([[
-
         ==============================================================================
-        test_plug.submodule: require("test_plug.submodule.health").check()
+        test_plug.submodule:                                                        ✅
 
         report 1 ~
-        - OK everything is fine
+        - ✅ OK everything is fine
 
         report 2 ~
-        - OK nothing to see here
+        - ✅ OK nothing to see here
         ]])
     end)
 
     it('... including empty reports', function()
       command('checkhealth test_plug.submodule_empty')
       n.expect([[
-
       ==============================================================================
-      test_plug.submodule_empty: require("test_plug.submodule_empty.health").check()
+      test_plug.submodule_empty:                                                1 ❌
 
-      - ERROR The healthcheck report for "test_plug.submodule_empty" plugin is empty.
+      - ❌ ERROR The healthcheck report for "test_plug.submodule_empty" plugin is empty.
       ]])
     end)
 
     it('highlights OK, ERROR', function()
-      local screen = Screen.new(50, 12)
-      screen:attach()
+      local screen = Screen.new(50, 11)
       screen:set_default_attr_ids({
+        h1 = { reverse = true },
+        h2 = { foreground = tonumber('0x6a0dad') },
         Ok = { foreground = Screen.colors.LightGreen },
         Error = { foreground = Screen.colors.Red },
-        Heading = { foreground = tonumber('0x6a0dad') },
+        Done = { foreground = Screen.colors.NvimDarkGreen },
         Bar = { foreground = Screen.colors.LightGrey, background = Screen.colors.DarkGrey },
       })
       command('checkhealth foo success1')
+      -- Wait for the filetype plugin before changing window options.
+      retry(nil, 5000, function()
+        eq('checkhealth', api.nvim_get_option_value('filetype', { buf = 0 }))
+      end)
       command('set nofoldenable nowrap laststatus=0')
       screen:expect {
         grid = [[
-        ^                                                  |
-        {Bar:──────────────────────────────────────────────────}|
-        {Heading:foo: }                                             |
+        {Bar:^                                                  }|
+        {h1:foo:                                              }|
                                                           |
-        - {Error:ERROR} No healthcheck found for "foo" plugin.    |
+        - ❌ {Error:ERROR} No healthcheck found for "foo" plugin. |
                                                           |
-        {Bar:──────────────────────────────────────────────────}|
-        {Heading:test_plug.success1: require("test_plug.success1.he}|
+        {Bar:                                                  }|
+        {h1:test_plug.success1:                               }|
                                                           |
-        {Heading:report 1}                                          |
-        - {Ok:OK} everything is fine                           |
-                                                          |
+        {h2:report 1}                                          |
+        - ✅ {Ok:OK} everything is fine                        |
+        {Done:checkhealth}: checks done                          |
       ]],
       }
     end)
@@ -178,84 +404,99 @@ describe('health.vim', function()
       command('checkhealth non_existent_healthcheck')
       -- luacheck: ignore 613
       n.expect([[
-
         ==============================================================================
-        non_existent_healthcheck: 
+        non_existent_healthcheck:                                                 1 ❌
 
-        - ERROR No healthcheck found for "non_existent_healthcheck" plugin.
+        - ❌ ERROR No healthcheck found for "non_existent_healthcheck" plugin.
         ]])
     end)
 
-    it('does not use vim.health as a healtcheck', function()
+    it('does not use vim.health as a healthcheck', function()
       -- vim.health is not a healthcheck
       command('checkhealth vim')
       n.expect([[
       ERROR: No healthchecks found.]])
     end)
-  end)
-end)
 
-describe(':checkhealth provider', function()
-  it("works correctly with a wrongly configured 'shell'", function()
-    clear()
-    command([[set shell=echo\ WRONG!!!]])
-    command('let g:loaded_perl_provider = 0')
-    command('let g:loaded_python3_provider = 0')
-    command('checkhealth provider')
-    eq(nil, string.match(curbuf_contents(), 'WRONG!!!'))
+    it('nested lua/ directory', function()
+      command('checkhealth lua')
+      n.expect([[
+      ==============================================================================
+      test_plug.lua:                                                              ✅
+
+      nested lua/ directory ~
+      - ✅ OK everything is ok
+      ]])
+    end)
+
+    it('&rtp can contain nested path (by packadd)', function()
+      -- re-add to ensure this appears before new nested rtp
+      command([[set runtimepath-=test/functional/fixtures]])
+      command([[set runtimepath+=test/functional/fixtures]])
+      command('set packpath+=test/functional/fixtures')
+      -- set rtp+=test/functional/fixtures/pack/foo/opt/healthy
+      command('packadd healthy')
+      command('checkhealth nest')
+      n.expect([[
+      ==============================================================================
+      nest:                                                                       ✅
+
+      healthy pack ~
+      - ✅ OK healthy ok
+      ]])
+    end)
   end)
 end)
 
 describe(':checkhealth window', function()
   before_each(function()
-    clear { args = { '-u', 'NORC' } }
-    -- Provides healthcheck functions
-    command('set runtimepath+=test/functional/fixtures')
+    clear { args = { '-u', 'NORC', '+set runtimepath+=test/functional/fixtures' } }
     command('set nofoldenable nowrap laststatus=0')
   end)
 
   it('opens directly if no buffer created', function()
-    local screen = Screen.new(50, 12)
+    local screen = Screen.new(50, 11, { ext_multigrid = true })
     screen:set_default_attr_ids {
+      h1 = { reverse = true },
+      h2 = { foreground = tonumber('0x6a0dad') },
+      Done = { foreground = Screen.colors.NvimDarkGreen },
       [1] = { foreground = Screen.colors.Blue, bold = true },
       [14] = { foreground = Screen.colors.LightGrey, background = Screen.colors.DarkGray },
-      [31] = { foreground = tonumber('0x6a0dad') },
       [32] = { foreground = Screen.colors.PaleGreen2 },
     }
-    screen:attach({ ext_multigrid = true })
     command('checkhealth success1')
     screen:expect {
       grid = [[
     ## grid 1
-      [2:--------------------------------------------------]|*11
+      [2:--------------------------------------------------]|*10
       [3:--------------------------------------------------]|
     ## grid 2
-      ^                                                  |
-      {14:──────────────────────────────────────────────────}|
-      {14:────────────────────────────}                      |
-      {31:test_plug.success1: require("test_plug.success1.  }|
-      {31:health").check()}                                  |
+      {14:^                                                  }|
+      {14:                            }                      |
+      {h1:test_plug.                                        }|
+      {h1:success1:                                         }|
+      {h1:                ✅}                                |
                                                         |
-      {31:report 1}                                          |
-      - {32:OK} everything is fine                           |
+      {h2:report 1}                                          |
+      - ✅ {32:OK} everything is fine                        |
                                                         |
-      {31:report 2}                                          |
-      - {32:OK} nothing to see here                          |
+      {h2:report 2}                                          |
     ## grid 3
-                                                        |
+      {Done:checkhealth}: checks done                          |
     ]],
     }
   end)
 
   local function test_health_vsplit(left, emptybuf, mods)
-    local screen = Screen.new(50, 20)
+    local screen = Screen.new(50, 19, { ext_multigrid = true })
     screen:set_default_attr_ids {
+      h1 = { reverse = true },
+      h2 = { foreground = tonumber('0x6a0dad') },
+      Done = { foreground = Screen.colors.NvimDarkGreen },
       [1] = { foreground = Screen.colors.Blue, bold = true },
       [14] = { foreground = Screen.colors.LightGrey, background = Screen.colors.DarkGray },
-      [31] = { foreground = tonumber('0x6a0dad') },
       [32] = { foreground = Screen.colors.PaleGreen2 },
     }
-    screen:attach({ ext_multigrid = true })
     if not emptybuf then
       insert('hello')
     end
@@ -267,27 +508,30 @@ describe(':checkhealth window', function()
       [3:--------------------------------------------------]|
     ## grid 2
       %s                   |
-      {1:~                       }|*18
+      {1:~                       }|*17
     ## grid 3
-                                                        |
+      {Done:checkhealth}: checks done                          |
     ## grid 4
-      ^                         |
-      {14:─────────────────────────}|*3
-      {14:───}                      |
-      {31:test_plug.success1:      }|
-      {31:require("test_plug.      }|
-      {31:success1.health").check()}|
+      {14:^                         }|
+      {14:                         }|*2
+      {14:   }                      |
+      {h1:test_plug.               }|
+      {h1:success1:                }|
+      {h1:                         }|
+      {h1:                ✅}       |
                                |
-      {31:report 1}                 |
-      - {32:OK} everything is fine  |
+      {h2:report 1}                 |
+      - ✅ {32:OK} everything is    |
+      fine                     |
                                |
-      {31:report 2}                 |
-      - {32:OK} nothing to see here |
+      {h2:report 2}                 |
+      - ✅ {32:OK} nothing to see   |
+      here                     |
                                |
-      {1:~                        }|*4
+      {1:~                        }|
     ]]):format(
-        left and '[4:-------------------------]│[2:------------------------]|*19'
-          or '[2:------------------------]│[4:-------------------------]|*19',
+        left and '[4:-------------------------]│[2:------------------------]|*18'
+          or '[2:------------------------]│[4:-------------------------]|*18',
         emptybuf and '     ' or 'hello'
       )
     )
@@ -312,8 +556,7 @@ describe(':checkhealth window', function()
   end
 
   local function test_health_split(top, emptybuf, mods)
-    local screen = Screen.new(50, 25)
-    screen:attach({ ext_multigrid = true })
+    local screen = Screen.new(50, 25, { ext_multigrid = true })
     screen._default_attr_ids = nil
     if not emptybuf then
       insert('hello')
@@ -328,25 +571,25 @@ describe(':checkhealth window', function()
       %s                                             |
       ~                                                 |*10
     ## grid 3
-                                                        |
+      checkhealth: checks done                          |
     ## grid 4
       ^                                                  |
-      ──────────────────────────────────────────────────|
-      ────────────────────────────                      |
-      test_plug.success1: require("test_plug.success1.  |
-      health").check()                                  |
+                                                        |
+      test_plug.                                        |
+      success1:                                         |
+                      ✅                                |
                                                         |
       report 1                                          |
-      - OK everything is fine                           |
+      - ✅ OK everything is fine                        |
                                                         |
       report 2                                          |
-      - OK nothing to see here                          |
+      - ✅ OK nothing to see here                       |
                                                         |
     ]]):format(
         top
             and [[
       [4:--------------------------------------------------]|*12
-      health://                                         |
+      health:// [-]                                     |
       [2:--------------------------------------------------]|*11]]
           or ([[
       [2:--------------------------------------------------]|*11
@@ -377,13 +620,13 @@ describe(':checkhealth window', function()
     end)
   end
 
-  it('opens in tab', function()
+  it('opens in new tabpage after the current one', function()
     -- create an empty buffer called "my_buff"
     api.nvim_create_buf(false, true)
     command('file my_buff')
     command('checkhealth success1')
     -- define a function that collects all buffers in each tab
-    -- returns a dictionary like {tab1 = ["buf1", "buf2"], tab2 = ["buf3"]}
+    -- returns a dict like {tab1 = ["buf1", "buf2"], tab2 = ["buf3"]}
     source([[
         function CollectBuffersPerTab()
                 let buffs = {}
@@ -400,5 +643,16 @@ describe(':checkhealth window', function()
     ]])
     local buffers_per_tab = fn.CollectBuffersPerTab()
     eq(buffers_per_tab, { tab1 = { 'my_buff' }, tab2 = { 'health://' } })
+    command('bwipe')
+    command('tab split | tab split | tab split | tabprevious')
+    command('checkhealth success1')
+    buffers_per_tab = fn.CollectBuffersPerTab()
+    eq(buffers_per_tab, {
+      tab1 = { 'my_buff' },
+      tab2 = { 'my_buff' },
+      tab3 = { 'my_buff' },
+      tab4 = { 'health://' },
+      tab5 = { 'my_buff' },
+    })
   end)
 end)

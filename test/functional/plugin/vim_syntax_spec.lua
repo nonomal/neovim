@@ -1,6 +1,8 @@
 local n = require('test.functional.testnvim')()
+local t = require('test.testutil')
 local Screen = require('test.functional.ui.screen')
 
+local describe, it, before_each = t.describe, t.it, t.before_each
 local clear = n.clear
 local exec = n.exec
 local api = n.api
@@ -21,7 +23,6 @@ describe('Vimscript syntax highlighting', function()
       [1] = { foreground = Screen.colors.Brown, bold = true },
       [2] = { foreground = tonumber('0x6a0dad') },
     })
-    screen:attach()
   end)
 
   it('prefixed boolean options are highlighted properly', function()

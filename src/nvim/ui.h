@@ -11,10 +11,12 @@
 #include "nvim/ui_defs.h"  // IWYU pragma: keep
 
 // uncrustify:off
-#ifdef INCLUDE_GENERATED_DECLARATIONS
-# include "ui.h.generated.h"
-# include "ui_events_call.h.generated.h"
-#endif
+#include "ui.h.generated.h"
+#include "ui_events_call.h.generated.h"
+EXTERN Array noargs INIT(= ARRAY_DICT_INIT);
 // uncrustify:on
 
-EXTERN MultiQueue *resize_events;
+// vim.ui_attach() namespace of currently executed callback.
+EXTERN uint32_t ui_event_ns_id INIT( = 0);
+EXTERN MultiQueue *resize_events INIT( = NULL);
+EXTERN bool ui_refresh_cmdheight INIT( = true);

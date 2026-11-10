@@ -3,7 +3,10 @@
 " Maintainer:	Nikolai Pavlov <zyx.vim@gmail.com>
 " Last Updates:	Lukas Reineke, "lacygoill"
 " Last Change:	2022 Jun 17
-"      2024 Feb 29 disable mulitline indent by default (The Vim project)
+" 2024 Feb 29 by Vim project: disable mulitline indent by default
+" 2024 Aug 14 by Vim project: fix re-indenting when commenting out lines
+" 2026 Jan 08 by Vim project: fix object indentation in array
+" 2026 Jan 15 by Vim project: fix double shiftwidth from previous change
 
 " Only load this indent file when no other was loaded.
 if exists('b:did_indent')
@@ -13,7 +16,7 @@ endif
 let b:did_indent = 1
 
 setlocal indentexpr=GetYAMLIndent(v:lnum)
-setlocal indentkeys=!^F,o,O,0#,0},0],<:>,0-
+setlocal indentkeys=!^F,o,O,0},0],<:>,0-
 setlocal nosmartindent
 
 let b:undo_indent = 'setlocal indentexpr< indentkeys< smartindent<'
@@ -113,7 +116,13 @@ function GetYAMLIndent(lnum)
         "
         " - |-
         "     Block scalar without indentation indicator
-        return previndent+shiftwidth()
+        if prevline =~# '^\s*-\s.*:$'
+            " Special case: list item with mapping key (- key:)
+            " Need to account for the "- " prefix
+            return previndent + 2 + shiftwidth()
+        else
+            return previndent+shiftwidth()
+        endif
     elseif prevline =~# '\v[:-]\ [|>]%(\d+[+\-]?|[+\-]?\d+)%(\#.*|\s*)$'
         " - |+2
         "   block scalar with indentation indicator
@@ -135,6 +144,9 @@ function GetYAMLIndent(lnum)
         let prevmapline = s:FindPrevLEIndentedLineMatchingRegex(a:lnum,
                     \                                           s:mapkeyregex)
         if getline(prevmapline) =~# '^\s*- '
+            " Previous mapping key is in a list item (- key:)
+            " The key effectively starts at indent + 2 (after "- ")
+            " Content under it should be indented relative to the key position
             return indent(prevmapline) + 2
         else
             return indent(prevmapline)

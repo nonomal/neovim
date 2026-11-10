@@ -3,8 +3,11 @@ set(GENERATED_RUNTIME_DIR ${PROJECT_BINARY_DIR}/runtime)
 set(GENERATED_HELP_TAGS ${GENERATED_RUNTIME_DIR}/doc/tags)
 set(GENERATED_PACKAGE_DIR ${GENERATED_RUNTIME_DIR}/pack/dist/opt)
 set(GENERATED_SYN_VIM ${GENERATED_RUNTIME_DIR}/syntax/vim/generated.vim)
-set(SYN_VIM_GENERATOR ${PROJECT_SOURCE_DIR}/src/nvim/generators/gen_vimvim.lua)
+set(SYN_VIM_GENERATOR ${PROJECT_SOURCE_DIR}/src/gen/gen_vimvim.lua)
 
+if(NOT NVIM_HOST_PRG)
+  set(NVIM_HOST_PRG $<TARGET_FILE:nvim_bin>)
+endif()
 file(MAKE_DIRECTORY ${GENERATED_RUNTIME_DIR}/syntax/vim)
 
 get_directory_property(LUA_GEN DIRECTORY ${PROJECT_SOURCE_DIR}/src/nvim DEFINITION LUA_GEN)
@@ -12,12 +15,17 @@ get_directory_property(LUA_GEN_DEPS DIRECTORY ${PROJECT_SOURCE_DIR}/src/nvim DEF
 
 add_custom_command(OUTPUT ${GENERATED_SYN_VIM}
   COMMAND ${LUA_GEN} ${SYN_VIM_GENERATOR} ${GENERATED_SYN_VIM} ${FUNCS_DATA}
+    ${PROJECT_SOURCE_DIR}/src/nvim/options.lua
+    ${PROJECT_SOURCE_DIR}/src/nvim/auevents.lua
+    ${PROJECT_SOURCE_DIR}/src/nvim/ex_cmds.lua
+    ${PROJECT_SOURCE_DIR}/src/nvim/vvars.lua
   DEPENDS
     ${LUA_GEN_DEPS}
     ${SYN_VIM_GENERATOR}
     ${PROJECT_SOURCE_DIR}/src/nvim/ex_cmds.lua
     ${PROJECT_SOURCE_DIR}/src/nvim/auevents.lua
     ${PROJECT_SOURCE_DIR}/src/nvim/options.lua
+    ${PROJECT_SOURCE_DIR}/src/nvim/vvars.lua
     ${PROJECT_SOURCE_DIR}/src/nvim/eval.c
     ${FUNCS_DATA}
 )
@@ -33,11 +41,12 @@ foreach(PACKAGE ${PACKAGES})
     add_custom_command(OUTPUT "${GENERATED_PACKAGE_DIR}/${PACKNAME}/doc/tags"
       COMMAND ${CMAKE_COMMAND} -E copy_directory
         ${PACKAGE} ${GENERATED_PACKAGE_DIR}/${PACKNAME}
-      COMMAND $<TARGET_FILE:nvim_bin>
-        -u NONE -i NONE -e --headless -c "helptags doc" -c quit
+      COMMAND ${NVIM_HOST_PRG}
+        -u NONE -l ${PROJECT_SOURCE_DIR}/src/gen/gen_helptags.lua doc/tags doc
       DEPENDS
         nvim_bin
         nvim_runtime_deps
+        ${PROJECT_SOURCE_DIR}/src/gen/gen_helptags.lua
       WORKING_DIRECTORY "${GENERATED_PACKAGE_DIR}/${PACKNAME}"
     )
 
@@ -65,11 +74,12 @@ add_custom_command(OUTPUT ${GENERATED_HELP_TAGS}
   COMMAND ${CMAKE_COMMAND} -E remove_directory doc
   COMMAND ${CMAKE_COMMAND} -E copy_directory
     ${PROJECT_SOURCE_DIR}/runtime/doc doc
-  COMMAND $<TARGET_FILE:nvim_bin>
-    -u NONE -i NONE -e --headless -c "helptags ++t doc" -c quit
+  COMMAND ${NVIM_HOST_PRG}
+    -u NONE -l ${PROJECT_SOURCE_DIR}/src/gen/gen_helptags.lua doc/tags doc ++t
   DEPENDS
     nvim_bin
     nvim_runtime_deps
+    ${PROJECT_SOURCE_DIR}/src/gen/gen_helptags.lua
   WORKING_DIRECTORY "${GENERATED_RUNTIME_DIR}"
 )
 
@@ -97,7 +107,7 @@ install_helper(
 
 if(NOT APPLE)
   install_helper(
-    FILES ${CMAKE_CURRENT_SOURCE_DIR}/nvim.desktop
+    FILES ${CMAKE_CURRENT_SOURCE_DIR}/org.neovim.nvim.desktop
     DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/applications)
 endif()
 
@@ -117,5 +127,5 @@ foreach(D ${RUNTIME_DIRS})
   endif()
 endforeach()
 
-# only foo.sh script in runtime/
-install_helper(PROGRAMS ${CMAKE_CURRENT_SOURCE_DIR}/macros/less.sh DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/nvim/runtime/macros/)
+# Only runtime/ script installed as executable.
+install_helper(PROGRAMS ${CMAKE_CURRENT_SOURCE_DIR}/scripts/less.sh DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/nvim/runtime/scripts/)

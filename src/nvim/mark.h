@@ -5,19 +5,16 @@
 #include "nvim/ascii_defs.h"
 #include "nvim/ex_cmds_defs.h"  // IWYU pragma: keep
 #include "nvim/extmark_defs.h"  // IWYU pragma: keep
-#include "nvim/func_attr.h"
 #include "nvim/macros_defs.h"
 #include "nvim/mark_defs.h"  // IWYU pragma: keep
 #include "nvim/os/time.h"
 
-#ifdef INCLUDE_GENERATED_DECLARATIONS
-# include "mark.h.generated.h"
-#endif
+#include "mark.h.generated.h"
+#include "mark.h.inline.generated.h"
 
-static inline int mark_global_index(char name)
-  REAL_FATTR_CONST;
 /// Convert mark name to the offset
 static inline int mark_global_index(const char name)
+  FUNC_ATTR_CONST
 {
   return (ASCII_ISUPPER(name)
           ? (name - 'A')
@@ -26,10 +23,9 @@ static inline int mark_global_index(const char name)
              : -1));
 }
 
-static inline int mark_local_index(char name)
-  REAL_FATTR_CONST;
 /// Convert local mark name to the offset
 static inline int mark_local_index(const char name)
+  FUNC_ATTR_CONST
 {
   return (ASCII_ISLOWER(name)
           ? (name - 'a')

@@ -2,14 +2,16 @@
 local t = require('test.testutil')
 local n = require('test.functional.testnvim')()
 local t_shada = require('test.functional.shada.testutil')
+local describe, it, before_each, after_each = t.describe, t.it, t.before_each, t.after_each
 local uv = vim.uv
 local paths = t.paths
+local pcall_err = t.pcall_err
 
 local api, nvim_command, fn, eq = n.api, n.command, n.fn, t.eq
-local write_file, spawn, set_session, nvim_prog, exc_exec =
-  t.write_file, n.spawn, n.set_session, n.nvim_prog, n.exc_exec
+local write_file, set_session = t.write_file, n.set_session
 local is_os = t.is_os
 local skip = t.skip
+local feed = n.feed
 
 local reset, clear, get_shada_rw = t_shada.reset, t_shada.clear, t_shada.get_shada_rw
 local read_shada_file = t_shada.read_shada_file
@@ -34,7 +36,7 @@ describe('ShaDa support code', function()
         .. '\100\000\207\000\000\000\000\000\000\004\001\218\003\254'
         .. ('-'):rep(1025 - 3)
     )
-    eq(0, exc_exec('wshada ' .. shada_fname))
+    n.command('wshada ' .. shada_fname)
     local found = 0
     for _, v in ipairs(read_shada_file(shada_fname)) do
       if v.type == 100 then
@@ -42,8 +44,8 @@ describe('ShaDa support code', function()
       end
     end
     eq(2, found)
-    eq(0, exc_exec('set shada-=s10 shada+=s1'))
-    eq(0, exc_exec('wshada ' .. shada_fname))
+    n.command('set shada-=s10 shada+=s1')
+    n.command('wshada ' .. shada_fname)
     found = 0
     for _, v in ipairs(read_shada_file(shada_fname)) do
       if v.type == 100 then
@@ -59,7 +61,7 @@ describe('ShaDa support code', function()
     nvim_command('set shada-=s10 shada+=s1')
     fn.histadd(':', hist1)
     fn.histadd(':', hist2)
-    eq(0, exc_exec('wshada ' .. shada_fname))
+    n.command('wshada ' .. shada_fname)
     local found = 0
     for _, v in ipairs(read_shada_file(shada_fname)) do
       if v.type == 4 then
@@ -74,7 +76,7 @@ describe('ShaDa support code', function()
     wshada('Some text file')
     eq(
       'Vim(wshada):E576: Error while reading ShaDa file: last entry specified that it occupies 109 bytes, but file ended earlier',
-      exc_exec('wshada ' .. shada_fname)
+      t.pcall_err(n.command, 'wshada ' .. shada_fname)
     )
     eq(1, read_shada_file(shada_fname .. '.tmp.a')[1].type)
   end)
@@ -83,7 +85,7 @@ describe('ShaDa support code', function()
     'does not leave .tmp.a in-place when there is error in original ShaDa, but writing with bang',
     function()
       wshada('Some text file')
-      eq(0, exc_exec('wshada! ' .. shada_fname))
+      n.command('wshada! ' .. shada_fname)
       eq(1, read_shada_file(shada_fname)[1].type)
       eq(nil, uv.fs_stat(shada_fname .. '.tmp.a'))
     end
@@ -93,11 +95,11 @@ describe('ShaDa support code', function()
     wshada('Some text file')
     eq(
       'Vim(wshada):E576: Error while reading ShaDa file: last entry specified that it occupies 109 bytes, but file ended earlier',
-      exc_exec('wshada ' .. shada_fname)
+      t.pcall_err(n.command, 'wshada ' .. shada_fname)
     )
     eq(
       'Vim(wshada):E576: Error while reading ShaDa file: last entry specified that it occupies 109 bytes, but file ended earlier',
-      exc_exec('wshada ' .. shada_fname)
+      t.pcall_err(n.command, 'wshada ' .. shada_fname)
     )
     eq(1, read_shada_file(shada_fname .. '.tmp.a')[1].type)
     eq(1, read_shada_file(shada_fname .. '.tmp.b')[1].type)
@@ -114,23 +116,24 @@ describe('ShaDa support code', function()
       end
       eq(
         'Vim(wshada):E576: Error while reading ShaDa file: last entry specified that it occupies 109 bytes, but file ended earlier',
-        exc_exec('wshada ' .. shada_fname)
+        t.pcall_err(n.command, 'wshada ' .. shada_fname)
       )
       eq(1, read_shada_file(shada_fname .. '.tmp.z')[1].type)
     end
   )
 
-  it('errors out when there are .tmp.a … .tmp.z ShaDa files', function()
+  it('reuses the oldest of .tmp.a … .tmp.z ShaDa files', function()
     wshada('')
     local i = ('a'):byte()
     while i <= ('z'):byte() do
       write_file(shada_fname .. ('.tmp.%c'):format(i), '', true)
       i = i + 1
     end
-    eq(
-      'Vim(wshada):E138: All Xtest-functional-shada-shada.shada.tmp.X files exist, cannot write ShaDa file!',
-      exc_exec('wshada ' .. shada_fname)
-    )
+    uv.fs_utime(shada_fname .. '.tmp.m', 1, 1)
+    n.command('wshada ' .. shada_fname)
+    eq(1, read_shada_file(shada_fname)[1].type)
+    eq(nil, uv.fs_stat(shada_fname .. '.tmp.m'))
+    eq(25, #fn.glob(shada_fname .. '.tmp.*', false, true))
   end)
 
   it('reads correctly various timestamps', function()
@@ -144,7 +147,7 @@ describe('ShaDa support code', function()
     local s = '\100'
     local e = '\001\192'
     wshada(s .. table.concat(msgpack, e .. s) .. e)
-    eq(0, exc_exec('wshada ' .. shada_fname))
+    n.command('wshada ' .. shada_fname)
     local found = 0
     local typ = vim.mpack.decode(s)
     for _, v in ipairs(read_shada_file(shada_fname)) do
@@ -214,6 +217,20 @@ describe('ShaDa support code', function()
     eq({}, find_file(fname))
   end)
 
+  it("does not store 'nobuflisted' buffer", function()
+    nvim_command('set shellslash')
+    local fname = fn.getcwd() .. '/file'
+    api.nvim_set_var('__fname', fname)
+    nvim_command('edit `=__fname`')
+    api.nvim_set_option_value('buflisted', false, {})
+    nvim_command('wshada! ' .. shada_fname)
+    eq({}, find_file(fname))
+    -- Set 'buflisted', then check again.
+    api.nvim_set_option_value('buflisted', true, {})
+    nvim_command('wshada! ' .. shada_fname)
+    eq({ [7] = 1, [8] = 1, [10] = 1 }, find_file(fname))
+  end)
+
   it('is able to set &shada after &viminfo', function()
     api.nvim_set_option_value('viminfo', "'10", {})
     eq("'10", api.nvim_get_option_value('viminfo', {}))
@@ -228,8 +245,8 @@ describe('ShaDa support code', function()
     eq("'10", api.nvim_get_option_value('viminfo', {}))
     eq("'10", api.nvim_get_option_value('shada', {}))
     nvim_command('set all&')
-    eq("!,'100,<50,s10,h", api.nvim_get_option_value('viminfo', {}))
-    eq("!,'100,<50,s10,h", api.nvim_get_option_value('shada', {}))
+    eq("!,'100,<50,s10,h,r/tmp/,r/private/", api.nvim_get_option_value('viminfo', {}))
+    eq("!,'100,<50,s10,h,r/tmp/,r/private/", api.nvim_get_option_value('shada', {}))
   end)
 
   it('is able to set &shada after &viminfo using :set', function()
@@ -242,19 +259,40 @@ describe('ShaDa support code', function()
   end)
 
   it('setting &shada gives proper error message on missing number', function()
-    eq([[Vim(set):E526: Missing number after <">: shada="]], exc_exec([[set shada=\"]]))
+    eq(
+      [[Vim(set):E526: Missing number after <">: shada="]],
+      t.pcall_err(n.command, [[set shada=\"]])
+    )
     for _, c in ipairs({ "'", '/', ':', '<', '@', 's' }) do
       eq(
         ([[Vim(set):E526: Missing number after <%s>: shada=%s]]):format(c, c),
-        exc_exec(([[set shada=%s]]):format(c))
+        t.pcall_err(n.command, ([[set shada=%s]]):format(c))
       )
     end
+  end)
+
+  it('":wshada/:rshada [filename]" works when shadafile=NONE', function()
+    nvim_command('set shadafile=NONE')
+    nvim_command('wshada ' .. shada_fname)
+    eq(1, read_shada_file(shada_fname)[1].type)
+
+    wshada('Some text file')
+    eq(
+      'Vim(rshada):E576: Error while reading ShaDa file: last entry specified that it occupies 109 bytes, but file ended earlier',
+      t.pcall_err(n.command, 'rshada ' .. shada_fname)
+    )
+  end)
+
+  it(':wshada/:rshada without arguments is no-op when shadafile=NONE', function()
+    nvim_command('set shadafile=NONE')
+    nvim_command('wshada')
+    nvim_command('rshada')
   end)
 
   it('does not crash when ShaDa file directory is not writable', function()
     skip(is_os('win'))
 
-    fn.mkdir(dirname, '', 0)
+    fn.mkdir(dirname, '', '0')
     eq(0, fn.filewritable(dirname))
     reset { shadafile = dirshada, args = { '--cmd', 'set shada=' } }
     api.nvim_set_option_value('shada', "'10", {})
@@ -262,18 +300,52 @@ describe('ShaDa support code', function()
       'Vim(wshada):E886: System error while opening ShaDa file '
         .. 'Xtest-functional-shada-shada.d/main.shada for reading to merge '
         .. 'before writing it: permission denied',
-      exc_exec('wshada')
+      t.pcall_err(n.command, 'wshada')
     )
     api.nvim_set_option_value('shada', '', {})
+  end)
+
+  it('deduplicates items on case-insensitive systems', function()
+    local file = ('%s/nonexistent/héllo'):format(dirname)
+    nvim_command(('edit %s'):format(file))
+    file = api.nvim_buf_get_name(0)
+
+    local file_upper = fn.toupper(file)
+    if t.is_os('win') then
+      file_upper = file_upper:sub(3) -- drop drive letter
+    end
+
+    nvim_command(('edit %s'):format(file_upper))
+    feed('i1<Esc>')
+    nvim_command(('wshada! %s'):format(dirshada))
+    nvim_command('bw!')
+
+    -- path_cmp() ignores a single trailing slash
+    local file_slash = ('%s/'):format(file)
+    nvim_command(('edit %s'):format(file_slash))
+    feed('i123<Esc>')
+    nvim_command('mark a')
+    nvim_command(('wshada %s'):format(dirshada))
+    nvim_command('bw!')
+    nvim_command(('rshada! %s'):format(dirshada))
+    local oldfiles = api.nvim_get_vvar('oldfiles')
+    -- Both filenames appear in shada file, but iteration order is unspecified.
+    if t.is_os('win') or t.is_os('mac') then
+      eq(1, #oldfiles)
+      t.ok(oldfiles[1] == file or oldfiles[1] == file_slash)
+    else
+      eq(2, #oldfiles)
+      t.ok(oldfiles[1] == file or oldfiles[1] == file_upper)
+    end
   end)
 end)
 
 describe('ShaDa support code', function()
   it('does not write NONE file', function()
-    local session = spawn(
-      { nvim_prog, '-u', 'NONE', '-i', 'NONE', '--embed', '--headless', '--cmd', 'qall' },
-      true
-    )
+    local session = n.new_session(false, {
+      merge = false,
+      args = { '-u', 'NONE', '-i', 'NONE', '--embed', '--headless', '--cmd', 'qall' },
+    })
     session:close()
     eq(nil, uv.fs_stat('NONE'))
     eq(nil, uv.fs_stat('NONE.tmp.a'))
@@ -281,7 +353,10 @@ describe('ShaDa support code', function()
 
   it('does not read NONE file', function()
     write_file('NONE', '\005\001\015\131\161na\162rX\194\162rc\145\196\001-')
-    local session = spawn({ nvim_prog, '-u', 'NONE', '-i', 'NONE', '--embed', '--headless' }, true)
+    local session = n.new_session(
+      false,
+      { merge = false, args = { '-u', 'NONE', '-i', 'NONE', '--embed', '--headless' } }
+    )
     set_session(session)
     eq('', fn.getreg('a'))
     session:close()

@@ -1,12 +1,13 @@
 local t = require('test.testutil')
 local n = require('test.functional.testnvim')()
 local Screen = require('test.functional.ui.screen')
-local tt = require('test.functional.terminal.testutil')
+local tt = require('test.functional.testterm')
 
+local describe, it, before_each, pending, finally =
+  t.describe, t.it, t.before_each, t.pending, t.finally
 local clear = n.clear
 local eq = t.eq
 local eval = n.eval
-local exc_exec = n.exc_exec
 local feed_command = n.feed_command
 local feed = n.feed
 local insert = n.insert
@@ -21,7 +22,6 @@ local rmdir = n.rmdir
 local assert_alive = n.assert_alive
 local command = n.command
 local fn = n.fn
-local os_kill = n.os_kill
 local retry = t.retry
 local api = n.api
 local NIL = vim.NIL
@@ -49,12 +49,16 @@ describe('jobs', function()
     function! Normalize(data) abort
       " Windows: remove ^M and term escape sequences
       return type([]) == type(a:data)
-        \ ? map(a:data, 'substitute(substitute(v:val, "\r", "", "g"), "\x1b\\%(\\]\\d\\+;.\\{-}\x07\\|\\[.\\{-}[\x40-\x7E]\\)", "", "g")')
+        \ ? mapnew(a:data, 'substitute(substitute(v:val, "\r", "", "g"), "\x1b\\%(\\]\\d\\+;.\\{-}\x07\\|\\[.\\{-}[\x40-\x7E]\\)", "", "g")')
         \ : a:data
     endfunction
     function! OnEvent(id, data, event) dict
       let userdata = get(self, 'user')
       let data     = Normalize(a:data)
+      " If Normalize() made non-empty data empty, doesn't send a notification.
+      if type([]) == type(data) && len(data) == 1 && !empty(a:data[0]) && empty(data[0])
+        return
+      endif
       call rpcnotify(g:channel, a:event, userdata, data)
     endfunction
     let g:job_opts = {
@@ -63,6 +67,61 @@ describe('jobs', function()
     \ 'user': 0
     \ }
     ]])
+  end)
+
+  it('validation', function()
+    matches(
+      "E475: Invalid argument: job cannot have both 'pty' and 'rpc' options set",
+      pcall_err(command, "call jobstart(['cat', '-'], { 'pty': v:true, 'rpc': v:true })")
+    )
+    matches(
+      'E475: Invalid argument: expected valid directory',
+      pcall_err(command, "call jobstart(['cat', '-'], { 'cwd': 9313843 })")
+    )
+    matches(
+      'E475: Invalid argument: expected valid directory',
+      pcall_err(command, "call jobstart(['cat', '-'], { 'cwd': 'bogusssssss/bogus' })")
+    )
+    matches(
+      "E475: Invalid argument: 'term' must be Boolean",
+      pcall_err(command, "call jobstart(['cat', '-'], { 'term': 'bogus' })")
+    )
+    matches(
+      "E475: Invalid argument: 'term' must be Boolean",
+      pcall_err(command, "call jobstart(['cat', '-'], { 'term': 1 })")
+    )
+    command('set modified')
+    matches(
+      vim.pesc('jobstart(...,{term=true}) requires unmodified buffer'),
+      pcall_err(command, "call jobstart(['cat', '-'], { 'term': v:true })")
+    )
+
+    -- Non-failure cases:
+    command('set nomodified')
+    command("call jobstart(['cat', '-'], { 'term': v:true })")
+    command("call jobstart(['cat', '-'], { 'term': v:false })")
+  end)
+
+  it('jobstart(term=true) accepts width/height (#33904)', function()
+    local buf = api.nvim_create_buf(false, true)
+    exec_lua(function()
+      vim.api.nvim_buf_call(buf, function()
+        vim.fn.jobstart({
+          vim.v.progpath,
+          '--clean',
+          '--headless',
+          '+lua tty = vim.uv.new_tty(1, false) print(tty:get_winsize()) tty:close()',
+        }, {
+          term = true,
+          width = 11,
+          height = 12,
+          env = { VIMRUNTIME = os.getenv('VIMRUNTIME') },
+        })
+      end)
+    end)
+    retry(nil, nil, function()
+      eq({ '11 12' }, api.nvim_buf_get_lines(buf, 0, 1, false))
+    end)
   end)
 
   it('must specify env option as a dict', function()
@@ -192,9 +251,12 @@ describe('jobs', function()
     eq({ 'notification', 'exit', { 0, 0 } }, next_msg())
   end)
 
-  it('changes to given `cwd` directory', function()
+  local function test_job_cwd()
     local dir = eval('resolve(tempname())'):gsub('/', get_pathsep())
     mkdir(dir)
+    finally(function()
+      rmdir(dir)
+    end)
     command("let g:job_opts.cwd = '" .. dir .. "'")
     if is_os('win') then
       command("let j = jobstart('cd', g:job_opts)")
@@ -215,7 +277,15 @@ describe('jobs', function()
         { 'notification', 'exit', { 0, 0 } },
       }
     )
-    rmdir(dir)
+  end
+
+  it('changes to given `cwd` directory', function()
+    test_job_cwd()
+  end)
+
+  it('changes to given `cwd` directory with pty', function()
+    command('let g:job_opts.pty = v:true')
+    test_job_cwd()
   end)
 
   it('fails to change to invalid `cwd`', function()
@@ -232,16 +302,42 @@ describe('jobs', function()
   end)
 
   it('error on non-executable `cwd`', function()
-    skip(is_os('win'), 'Not applicable for Windows')
+    skip(is_os('win'), 'N/A for Windows')
 
     local dir = 'Xtest_not_executable_dir'
     mkdir(dir)
+    finally(function()
+      rmdir(dir)
+    end)
     fn.setfperm(dir, 'rw-------')
+
     matches(
       '^Vim%(call%):E903: Process failed to start: permission denied: .*',
-      pcall_err(command, "call jobstart(['pwd'], {'cwd': '" .. dir .. "'})")
+      pcall_err(command, ("call jobstart(['pwd'], {'cwd': '%s'})"):format(dir))
     )
-    rmdir(dir)
+  end)
+
+  it('error log and exit status 122 on non-executable `cwd`', function()
+    skip(is_os('win'), 'N/A for Windows')
+
+    local logfile = 'Xchdir_fail_log'
+    clear({ env = { NVIM_LOG_FILE = logfile } })
+
+    local dir = 'Xtest_not_executable_dir'
+    mkdir(dir)
+    finally(function()
+      rmdir(dir)
+      n.check_close()
+      os.remove(logfile)
+    end)
+    fn.setfperm(dir, 'rw-------')
+
+    n.exec(([[
+      let s:chan = jobstart(['pwd'], {'cwd': '%s', 'pty': v:true})
+      let g:status = jobwait([s:chan], 1000)[0]
+    ]]):format(dir))
+    eq(122, eval('g:status'))
+    t.assert_log(('chdir%%(%s%%) failed: permission denied'):format(dir), logfile, 100)
   end)
 
   it('returns 0 when it fails to start', function()
@@ -411,27 +507,23 @@ describe('jobs', function()
   end)
 
   it('disposed on Nvim exit', function()
-    -- use sleep, which doesn't die on stdin close
-    command(
-      "let g:j =  jobstart(has('win32') ? ['ping', '-n', '1001', '127.0.0.1'] : ['sleep', '1000'], g:job_opts)"
-    )
-    local pid = eval('jobpid(g:j)')
-    neq(NIL, api.nvim_get_proc(pid))
+    -- Start a child process which doesn't die on stdin close.
+    local j = n.fn.jobstart({ n.nvim_prog, '--clean', '--headless' })
+    local pid = n.fn.jobpid(j)
+    eq('number', type(api.nvim_get_proc(pid).pid))
     clear()
     eq(NIL, api.nvim_get_proc(pid))
   end)
 
-  it('can survive the exit of nvim with "detach"', function()
-    command('let g:job_opts.detach = 1')
-    command(
-      "let g:j = jobstart(has('win32') ? ['ping', '-n', '1001', '127.0.0.1'] : ['sleep', '1000'], g:job_opts)"
-    )
-    local pid = eval('jobpid(g:j)')
-    neq(NIL, api.nvim_get_proc(pid))
+  it('can survive Nvim exit with "detach"', function()
+    local j = n.fn.jobstart({ n.nvim_prog, '--clean', '--headless' }, { detach = true })
+    local pid = n.fn.jobpid(j)
+    eq('number', type(api.nvim_get_proc(pid).pid))
     clear()
-    neq(NIL, api.nvim_get_proc(pid))
-    -- clean up after ourselves
-    eq(0, os_kill(pid))
+    -- Still alive.
+    eq('number', type(api.nvim_get_proc(pid).pid))
+    -- Clean up after ourselves.
+    eq(0, vim.uv.kill(pid, 'sigkill'))
   end)
 
   it('can pass user data to the callback', function()
@@ -498,10 +590,6 @@ describe('jobs', function()
 
   it('can redefine callbacks being used by a job', function()
     local screen = Screen.new()
-    screen:attach()
-    screen:set_default_attr_ids({
-      [1] = { bold = true, foreground = Screen.colors.Blue },
-    })
     source([[
       function! g:JobHandler(job_id, data, event)
       endfunction
@@ -524,12 +612,6 @@ describe('jobs', function()
 
   it('requires funcrefs for script-local (s:) functions', function()
     local screen = Screen.new(60, 5)
-    screen:attach()
-    screen:set_default_attr_ids({
-      [1] = { bold = true, foreground = Screen.colors.Blue1 },
-      [2] = { foreground = Screen.colors.Grey100, background = Screen.colors.Red },
-      [3] = { bold = true, foreground = Screen.colors.SeaGreen4 },
-    })
 
     -- Pass job callback names _without_ `function(...)`.
     source([[
@@ -543,7 +625,7 @@ describe('jobs', function()
         \ })
     ]])
 
-    screen:expect { any = '{2:E120: Using <SID> not in a script context: s:OnEvent}' }
+    screen:expect { any = '{9:E120: Using <SID> not in a script context: s:OnEvent}' }
   end)
 
   it('does not repeat output with slow output handlers', function()
@@ -634,7 +716,7 @@ describe('jobs', function()
     source([[
     function PrintArgs(a1, a2, id, data, event)
       " Windows: remove ^M
-      let normalized = map(a:data, 'substitute(v:val, "\r", "", "g")')
+      let normalized = mapnew(a:data, 'substitute(v:val, "\r", "", "g")')
       call rpcnotify(g:channel, '1', a:a1,  a:a2, normalized, a:event)
     endfunction
     let Callback = function('PrintArgs', ["foo", "bar"])
@@ -686,8 +768,52 @@ describe('jobs', function()
     )
   end)
 
+  it('lists passed to callbacks are freed if not stored #25891', function()
+    if not exec_lua('return pcall(require, "ffi")') then
+      pending('N/A: missing LuaJIT FFI')
+    end
+
+    source([[
+      let g:stdout = ''
+      func AppendStrOnEvent(id, data, event)
+        let g:stdout ..= join(a:data, "\n")
+      endfunc
+      let g:job_opts = {'on_stdout': function('AppendStrOnEvent')}
+    ]])
+    local job = eval([[jobstart(['cat', '-'], g:job_opts)]])
+
+    exec_lua(function()
+      local ffi = require('ffi')
+      ffi.cdef([[
+        typedef struct listvar_S list_T;
+        list_T *gc_first_list;
+        list_T *tv_list_alloc(ptrdiff_t len);
+        void tv_list_free(list_T *const l);
+      ]])
+      _G.L = ffi.C.tv_list_alloc(1)
+      _G.L_val = ffi.cast('uintptr_t', _G.L)
+      assert(ffi.cast('uintptr_t', ffi.C.gc_first_list) == _G.L_val)
+    end)
+
+    local str_all = ''
+    for _, str in ipairs({ 'LINE1\nLINE2\nLINE3\n', 'LINE4\n', 'LINE5\nLINE6\n' }) do
+      str_all = str_all .. str
+      api.nvim_chan_send(job, str)
+      retry(nil, 1000, function()
+        eq(str_all, api.nvim_get_var('stdout'))
+      end)
+    end
+
+    exec_lua(function()
+      local ffi = require('ffi')
+      assert(ffi.cast('uintptr_t', ffi.C.gc_first_list) == _G.L_val)
+      ffi.C.tv_list_free(_G.L)
+      assert(ffi.cast('uintptr_t', ffi.C.gc_first_list) ~= _G.L_val)
+    end)
+  end)
+
   it('jobstart() environment: $NVIM, $NVIM_LISTEN_ADDRESS #11009', function()
-    local function get_env_in_child_job(envname, env)
+    local function get_child_env(envname, env)
       return exec_lua(
         [[
         local envname, env = ...
@@ -715,17 +841,17 @@ describe('jobs', function()
     -- $NVIM is _not_ defined in the top-level Nvim process.
     eq('', eval('$NVIM'))
     -- jobstart() shares its v:servername with the child via $NVIM.
-    eq('NVIM=' .. addr, get_env_in_child_job('NVIM'))
+    eq('NVIM=' .. addr, get_child_env('NVIM'))
     -- $NVIM_LISTEN_ADDRESS is unset by server_init in the child.
-    eq('NVIM_LISTEN_ADDRESS=v:null', get_env_in_child_job('NVIM_LISTEN_ADDRESS'))
+    eq('NVIM_LISTEN_ADDRESS=v:null', get_child_env('NVIM_LISTEN_ADDRESS'))
     eq(
       'NVIM_LISTEN_ADDRESS=v:null',
-      get_env_in_child_job('NVIM_LISTEN_ADDRESS', { NVIM_LISTEN_ADDRESS = 'Xtest_jobstart_env' })
+      get_child_env('NVIM_LISTEN_ADDRESS', { NVIM_LISTEN_ADDRESS = 'Xtest_jobstart_env' })
     )
     -- User can explicitly set $NVIM_LOG_FILE, $VIM, $VIMRUNTIME.
     eq(
       'NVIM_LOG_FILE=Xtest_jobstart_env',
-      get_env_in_child_job('NVIM_LOG_FILE', { NVIM_LOG_FILE = 'Xtest_jobstart_env' })
+      get_child_env('NVIM_LOG_FILE', { NVIM_LOG_FILE = 'Xtest_jobstart_env' })
     )
     os.remove('Xtest_jobstart_env')
   end)
@@ -896,26 +1022,25 @@ describe('jobs', function()
 
       it('can pass 0 to check if a job exists', function()
         source([[
-        call rpcnotify(g:channel, 'wait', jobwait(has('win32') ? [
+        let g:jobs = has('win32') ? [
         \  jobstart('Start-Sleep -Milliseconds 50; exit 4'),
         \  jobstart('Start-Sleep -Milliseconds 300; exit 5'),
         \  ] : [
         \  jobstart('sleep 0.05; exit 4'),
         \  jobstart('sleep 0.3; exit 5'),
-        \  ], 0))
+        \  ]
+        call rpcnotify(g:channel, 'wait', jobwait(g:jobs, 0))
         ]])
         eq({ 'notification', 'wait', { { -1, -1 } } }, next_msg())
+
+        -- With a timeout, keeps waiting for the second job after the first one exits.
+        command([[call rpcnotify(g:channel, 'wait', jobwait(g:jobs, 10000))]])
+        eq({ 'notification', 'wait', { { 4, 5 } } }, next_msg())
       end)
     end)
 
     it('hides cursor and flushes messages before blocking', function()
       local screen = Screen.new(50, 6)
-      screen:set_default_attr_ids({
-        [0] = { foreground = Screen.colors.Blue, bold = true }, -- NonText
-        [1] = { bold = true, reverse = true }, -- MsgSeparator
-        [2] = { bold = true, foreground = Screen.colors.SeaGreen }, -- MoreMsg
-      })
-      screen:attach()
       command([[let g:id = jobstart([v:progpath, '--clean', '--headless'])]])
       source([[
         func PrintAndWait()
@@ -924,29 +1049,64 @@ describe('jobs', function()
           echon "\nccc"
         endfunc
       ]])
-      feed_command('call PrintAndWait()')
+      feed(':call PrintAndWait()')
+      screen:expect([[
+                                                          |
+        {1:~                                                 }|*4
+        :call PrintAndWait()^                              |
+      ]])
+      feed('<CR>')
       screen:expect {
         grid = [[
                                                           |
-        {0:~                                                 }|*2
-        {1:                                                  }|
+        {1:~                                                 }|*2
+        {3:                                                  }|
         aaa                                               |
         bbb                                               |
       ]],
         timeout = 100,
       }
-      screen:expect {
-        grid = [[
+      screen:expect([[
                                                           |
-        {1:                                                  }|
+        {3:                                                  }|
         aaa                                               |
         bbb                                               |
         ccc                                               |
-        {2:Press ENTER or type command to continue}^           |
-      ]],
-      }
+        {6:Press ENTER or type command to continue}^           |
+      ]])
       feed('<CR>')
       fn.jobstop(api.nvim_get_var('id'))
+    end)
+
+    it('does not set UI busy with zero timeout #31712', function()
+      local screen = Screen.new(50, 6)
+      command([[let g:id = jobstart(['sleep', '0.3'])]])
+      local busy = 0
+      screen._handle_busy_start = (function(orig)
+        return function()
+          orig(screen)
+          busy = busy + 1
+        end
+      end)(screen._handle_busy_start)
+      source([[
+        func PrintAndPoll()
+          echon "aaa\nbbb"
+          call jobwait([g:id], 0)
+          echon "\nccc"
+        endfunc
+      ]])
+      feed_command('call PrintAndPoll()')
+      screen:expect([[
+                                                          |
+        {3:                                                  }|
+        aaa                                               |
+        bbb                                               |
+        ccc                                               |
+        {6:Press ENTER or type command to continue}^           |
+      ]])
+      feed('<CR>')
+      fn.jobstop(api.nvim_get_var('id'))
+      eq(0, busy)
     end)
   end)
 
@@ -975,13 +1135,6 @@ describe('jobs', function()
       }
     )
     eq({ 'notification', 'exit', { 0, 143 } }, next_msg())
-  end)
-
-  it('cannot have both rpc and pty options', function()
-    command('let g:job_opts.pty = v:true')
-    command('let g:job_opts.rpc = v:true')
-    local _, err = pcall(command, "let j = jobstart(['cat', '-'], g:job_opts)")
-    matches("E475: Invalid argument: job cannot have both 'pty' and 'rpc' options set", err)
   end)
 
   it('does not crash when repeatedly failing to start shell', function()
@@ -1093,6 +1246,30 @@ describe('jobs', function()
     end)
   end)
 
+  it('jobstop() kill timeout excludes prior event-loop blocking #42521', function()
+    skip(is_os('win'), 'N/A: no SIGTERM on Windows')
+    local rv = exec_lua(function()
+      local code --- @type integer?
+      -- Ignores SIGTERM, so only SIGKILL (after the kill timeout) stops it.
+      local job = vim.fn.jobstart({ 'sh', '-c', "trap '' TERM; sleep 10" }, {
+        on_exit = function(_, c)
+          code = c
+        end,
+      })
+      -- Ensure the cached loop time is stale/outdated relative to the jobstop() kill timeout.
+      vim.uv.sleep(500)
+      local start = vim.uv.hrtime()
+      vim.fn.jobstop(job)
+      -- Wake the loop often: a stale timer fires on the first wakeup.
+      vim.wait(5000, function()
+        return code ~= nil
+      end, 10)
+      return { code = code, elapsed = (vim.uv.hrtime() - start) / 1e6 }
+    end)
+    eq(137, rv.code)
+    ok(rv.elapsed >= 1900, '>= 1900 ms', rv.elapsed)
+  end)
+
   it('jobstop on same id before stopped', function()
     command('let j = jobstart(["cat", "-"], g:job_opts)')
     neq(0, eval('j'))
@@ -1101,9 +1278,6 @@ describe('jobs', function()
   end)
 
   describe('running tty-test program', function()
-    if skip(is_os('win')) then
-      return
-    end
     local function next_chunk()
       local rv
       while true do
@@ -1113,6 +1287,12 @@ describe('jobs', function()
           data[i] = data[i]:gsub('\n', '\000')
         end
         rv = table.concat(data, '\n')
+        if is_os('win') then
+          -- ConPTY injects its own terminal escapes (init/teardown CSI+OSC) and pads redraw rows
+          -- with trailing spaces around tty-test's plain output.
+          rv = rv:gsub('\27%[[%d;?]*[%a~]', ''):gsub('\27%][^\7]*\7', '')
+          rv = rv:gsub('[%s]+$', '')
+        end
         rv = rv:gsub('\r\n$', ''):gsub('^\r\n', '')
         if rv ~= '' then
           break
@@ -1149,12 +1329,14 @@ describe('jobs', function()
 
     it('resizing window', function()
       command('call jobresize(j, 40, 10)')
-      eq('rows: 10, cols: 40', next_chunk())
+      -- Windows: ConPTY emits a full screen redraw, so prior content ("tty ready") may prefix the new line.
+      matches('rows: 10, cols: 40$', next_chunk())
       command('call jobresize(j, 10, 40)')
-      eq('rows: 40, cols: 10', next_chunk())
+      matches('rows: 40, cols: 10$', next_chunk())
     end)
 
     it('jobclose() sends SIGHUP', function()
+      skip(is_os('win'), 'N/A: SIGHUP is a POSIX signal')
       command('call jobclose(j)')
       local msg = next_msg()
       msg = (msg[2] == 'stdout') and next_msg() or msg -- Skip stdout, if any.
@@ -1173,7 +1355,7 @@ describe('jobs', function()
       -- Can't wait for the next message in case this test fails, if it fails
       -- there won't be any more messages, and the test would hang.
       vim.uv.sleep(100)
-      local err = exc_exec('call jobpid(j)')
+      local err = pcall_err(command, 'call jobpid(j)')
       eq('Vim(call):E900: Invalid channel id', err)
 
       -- cleanup
@@ -1206,20 +1388,45 @@ describe('jobs', function()
     })
     -- Wait for startup to complete, so that all terminal responses are received.
     screen:expect([[
-      {1: }                                                 |
+      ^                                                  |
       ~                                                 |*3
-      {1:[No Name]                       0,0-1          All}|
+      {2:[No Name]                       0,0-1          All}|
                                                         |
-      {3:-- TERMINAL --}                                    |
+      {5:-- TERMINAL --}                                    |
     ]])
 
     feed(':q<CR>')
     screen:expect([[
-                                                        |
-      [Process exited 0]{1: }                               |
+      ^                                                  |
+      [Process exited 0]                                |
                                                         |*4
-      {3:-- TERMINAL --}                                    |
+      {5:-- TERMINAL --}                                    |
     ]])
+  end)
+
+  it('uses real pipes for stdin/stdout #35984', function()
+    if is_os('win') then
+      return -- Not applicable for Windows.
+    end
+
+    -- this fails on linux if we used socketpair() for stdin and stdout,
+    -- which libuv does if you ask to create stdio streams for you
+    local val = exec_lua(function()
+      local output
+      local job = vim.fn.jobstart('wc /dev/stdin > /dev/stdout', {
+        stdout_buffered = true,
+        on_stdout = function(_, data, _)
+          output = data
+        end,
+      })
+      vim.fn.chansend(job, 'foo\nbar baz\n')
+      vim.fn.chanclose(job, 'stdin')
+      vim.fn.jobwait({ job })
+      return output
+    end)
+    eq(2, #val, val)
+    eq({ '2', '3', '12', '/dev/stdin' }, vim.split(val[1], '%s+', { trimempty = true }))
+    eq('', val[2])
   end)
 end)
 
@@ -1228,7 +1435,6 @@ describe('pty process teardown', function()
   before_each(function()
     clear()
     screen = Screen.new(30, 6)
-    screen:attach()
     screen:expect([[
       ^                              |
       {1:~                             }|*4
@@ -1239,7 +1445,7 @@ describe('pty process teardown', function()
   it('does not prevent/delay exit. #4798 #4900', function()
     skip(fn.executable('sleep') == 0, 'missing "sleep" command')
     -- Use a nested nvim (in :term) to test without --headless.
-    fn.termopen({
+    fn.jobstart({
       n.nvim_prog,
       '-u',
       'NONE',
@@ -1252,7 +1458,10 @@ describe('pty process teardown', function()
       '+terminal',
       '+!(sleep 300 &)',
       '+qa',
-    }, { env = { VIMRUNTIME = os.getenv('VIMRUNTIME') } })
+    }, {
+      term = true,
+      env = { VIMRUNTIME = os.getenv('VIMRUNTIME') },
+    })
 
     -- Exiting should terminate all descendants (PTY, its children, ...).
     screen:expect([[

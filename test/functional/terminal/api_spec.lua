@@ -1,7 +1,8 @@
 local t = require('test.testutil')
 local n = require('test.functional.testnvim')()
 
-local tt = require('test.functional.terminal.testutil')
+local tt = require('test.functional.testterm')
+local describe, it, before_each, after_each = t.describe, t.it, t.before_each, t.after_each
 local ok = t.ok
 
 if t.skip(t.is_os('win')) then
@@ -31,24 +32,22 @@ describe('api', function()
   end)
 
   it('qa! RPC request during insert-mode', function()
-    screen:expect {
-      grid = [[
-      {1: }                                                 |
-      {4:~                                                 }|*4
+    screen:expect([[
+      ^                                                  |
+      {100:~                                                 }|*4
                                                         |
-      {3:-- TERMINAL --}                                    |
-    ]],
-    }
+      {5:-- TERMINAL --}                                    |
+    ]])
 
     -- Start the socket from the child nvim.
     tt.feed_data(":echo serverstart('" .. socket_name .. "')\n")
 
     -- Wait for socket creation.
     screen:expect([[
-      {1: }                                                 |
-      {4:~                                                 }|*4
+      ^                                                  |
+      {100:~                                                 }|*4
       ]] .. socket_name .. [[                       |
-      {3:-- TERMINAL --}                                    |
+      {5:-- TERMINAL --}                                    |
     ]])
 
     local socket_session1 = n.connect(socket_name)
@@ -57,10 +56,10 @@ describe('api', function()
     tt.feed_data('i[tui] insert-mode')
     -- Wait for stdin to be processed.
     screen:expect([[
-      [tui] insert-mode{1: }                                |
-      {4:~                                                 }|*4
-      {3:-- INSERT --}                                      |
-      {3:-- TERMINAL --}                                    |
+      [tui] insert-mode^                                 |
+      {100:~                                                 }|*4
+      {5:-- INSERT --}                                      |
+      {5:-- TERMINAL --}                                    |
     ]])
 
     ok((socket_session1:request('nvim_ui_attach', 42, 6, { rgb = true })))
@@ -73,10 +72,10 @@ describe('api', function()
       [tui] insert-mode                                 |
       [socket 1] this is more t                         |
       han 25 columns                                    |
-      [socket 2] input{1: }                                 |
-      {4:~                        }                         |
-      {3:-- INSERT --}                                      |
-      {3:-- TERMINAL --}                                    |
+      [socket 2] input^                                  |
+      {100:~                        }                         |
+      {5:-- INSERT --}                                      |
+      {5:-- TERMINAL --}                                    |
     ]])
 
     socket_session1:request('nvim_command', 'qa!')

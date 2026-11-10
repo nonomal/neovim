@@ -26,6 +26,7 @@
 #include "nvim/ascii_defs.h"
 #include "nvim/gettext_defs.h"
 #include "nvim/hashtab.h"
+#include "nvim/macros_defs.h"
 #include "nvim/memory.h"
 #include "nvim/message.h"
 #include "nvim/vim_defs.h"
@@ -33,9 +34,7 @@
 // Magic value for algorithm that walks through the array.
 #define PERTURB_SHIFT 5
 
-#ifdef INCLUDE_GENERATED_DECLARATIONS
-# include "hashtab.c.generated.h"
-#endif
+#include "hashtab.c.generated.h"
 
 char hash_removed;
 
@@ -316,12 +315,9 @@ static void hash_may_resize(hashtab_T *ht, size_t minitems)
     }
   } else {
     // Use specified size.
-    if (minitems < ht->ht_used) {
-      // just in case...
-      minitems = ht->ht_used;
-    }
+    minitems = MAX(minitems, ht->ht_used);
     // array is up to 2/3 full
-    minsize = minitems * 3 / 2;
+    minsize = (minitems * 3 + 1) / 2;
   }
 
   size_t newsize = HT_INIT_SIZE;

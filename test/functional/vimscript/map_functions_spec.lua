@@ -1,6 +1,7 @@
 local t = require('test.testutil')
 local n = require('test.functional.testnvim')()
 
+local describe, it, before_each = t.describe, t.it, t.before_each
 local clear = n.clear
 local eq = t.eq
 local eval = n.eval
@@ -25,6 +26,7 @@ describe('maparg()', function()
     silent = 0,
     rhs = 'bar',
     expr = 0,
+    replace_keycodes = 0,
     sid = 0,
     scriptversion = 1,
     buffer = 0,
@@ -36,7 +38,7 @@ describe('maparg()', function()
     lnum = 0,
   }
 
-  it('returns a dictionary', function()
+  it('returns a dict', function()
     command('nnoremap foo bar')
     eq('bar', fn.maparg('foo'))
     eq(foo_bar_map_table, fn.maparg('foo', 'n', false, true))
@@ -54,7 +56,7 @@ describe('maparg()', function()
     eq('', fn.maparg('not a mapping'))
   end)
 
-  it('returns an empty dictionary when no map is present and dict is requested', function()
+  it('returns an empty dict when no map is present and dict is requested', function()
     eq({}, fn.maparg('not a mapping', 'n', false, true))
   end)
 
@@ -157,6 +159,7 @@ describe('maparg()', function()
 
         buffer = 0,
         expr = 0,
+        replace_keycodes = 0,
         mode = 'n',
         mode_bits = 0x01,
         abbr = 0,

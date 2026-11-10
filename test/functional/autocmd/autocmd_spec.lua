@@ -2,12 +2,14 @@ local t = require('test.testutil')
 local n = require('test.functional.testnvim')()
 local Screen = require('test.functional.ui.screen')
 
+local describe, it, before_each = t.describe, t.it, t.before_each
 local assert_visible = n.assert_visible
 local assert_alive = n.assert_alive
 local dedent = t.dedent
 local eq = t.eq
 local neq = t.neq
 local eval = n.eval
+local exec = n.exec
 local feed = n.feed
 local clear = n.clear
 local matches = t.matches
@@ -16,10 +18,10 @@ local pcall_err = t.pcall_err
 local fn = n.fn
 local expect = n.expect
 local command = n.command
-local exc_exec = n.exc_exec
 local exec_lua = n.exec_lua
 local retry = t.retry
 local source = n.source
+local request = n.request
 
 describe('autocmd', function()
   before_each(clear)
@@ -150,7 +152,10 @@ describe('autocmd', function()
       })
 
       command('autocmd BufLeave * bwipeout yy')
-      eq('Vim(edit):E143: Autocommands unexpectedly deleted new buffer yy', exc_exec('edit yy'))
+      eq(
+        'Vim(edit):E143: Autocommands unexpectedly deleted new buffer yy',
+        pcall_err(command, 'edit yy')
+      )
 
       expect([[
         start of test file xx
@@ -160,7 +165,7 @@ describe('autocmd', function()
 
   it('++once', function() -- :help autocmd-once
     --
-    -- ":autocmd ... ++once" executes its handler once, then removes the handler.
+    -- ":autocmd … ++once" executes its handler once, then removes the handler.
     --
     local expected = {
       'Many1',
@@ -206,7 +211,7 @@ describe('autocmd', function()
     )
 
     --
-    -- ":autocmd ... ++once" handlers can be deleted.
+    -- ":autocmd … ++once" handlers can be deleted.
     --
     expected = {}
     command('let g:foo = []')
@@ -216,7 +221,7 @@ describe('autocmd', function()
     eq(expected, eval('g:foo'))
 
     --
-    -- ":autocmd ... <buffer> ++once ++nested"
+    -- ":autocmd … <buffer> ++once ++nested"
     --
     expected = {
       'OptionSet-Once',
@@ -250,24 +255,32 @@ describe('autocmd', function()
        --- Autocommands ---]]),
       fn.execute('autocmd Tabnew')
     )
+
+    --
+    -- :autocmd does not recursively call ++once Lua handlers.
+    --
+    exec_lua [[vim.g.count = 0]]
+    eq(0, eval('g:count'))
+    exec_lua [[
+      vim.api.nvim_create_autocmd('User', {
+        once = true,
+        pattern = nil,
+        callback = function()
+          vim.g.count = vim.g.count + 1
+          vim.api.nvim_exec_autocmds('User', { pattern = nil })
+        end,
+      })
+      vim.api.nvim_exec_autocmds('User', { pattern = nil })
+    ]]
+    eq(1, eval('g:count'))
   end)
 
   it('internal `aucmd_win` window', function()
     -- Nvim uses a special internal window `aucmd_win` to execute certain
     -- actions for an invisible buffer (:help E813).
-    -- Check redrawing and API accesses to this window.
+    -- Check redrawing (never shown) and API access to this window.
 
     local screen = Screen.new(50, 10)
-    screen:attach()
-    screen:set_default_attr_ids({
-      [1] = { bold = true, foreground = Screen.colors.Blue1 },
-      [2] = { background = Screen.colors.LightMagenta },
-      [3] = {
-        background = Screen.colors.LightMagenta,
-        bold = true,
-        foreground = Screen.colors.Blue1,
-      },
-    })
 
     source([[
       function! Doit()
@@ -292,10 +305,9 @@ describe('autocmd', function()
 
     feed(':enew | doautoall User<cr>')
     screen:expect([[
-      {2:bb                                                }|
-      {3:~                                                 }|*4
-      {1:~                                                 }|*4
-      ^:enew | doautoall User                            |
+                                                        |
+      {1:~                                                 }|*8
+      :enew | doautoall User                            |
     ]])
 
     feed('<cr>')
@@ -318,10 +330,9 @@ describe('autocmd', function()
     command('let g:had_value = v:null')
     feed(':doautoall User<cr>')
     screen:expect([[
-      {2:bb                                                }|
-      {3:~                                                 }|*4
-      {1:~                                                 }|*4
-      ^:doautoall User                                   |
+                                                        |
+      {1:~                                                 }|*8
+      :doautoall User                                   |
     ]])
 
     feed('<cr>')
@@ -342,19 +353,13 @@ describe('autocmd', function()
 
   it('`aucmd_win` cannot be changed into a normal window #13699', function()
     local screen = Screen.new(50, 10)
-    screen:attach()
-    screen:set_default_attr_ids {
-      [1] = { bold = true, foreground = Screen.colors.Blue1 },
-      [2] = { reverse = true },
-      [3] = { bold = true, reverse = true },
-    }
 
     -- Create specific layout and ensure it's left unchanged.
-    -- Use nvim_buf_call on a hidden buffer so aucmd_win is used.
+    -- Use vim._with on a hidden buffer so aucmd_win is used.
     exec_lua [[
       vim.cmd "wincmd s | wincmd _"
       _G.buf = vim.api.nvim_create_buf(true, true)
-      vim.api.nvim_buf_call(_G.buf, function() vim.cmd "wincmd J" end)
+      vim._with({buf = _G.buf}, function() vim.cmd "wincmd J" end)
     ]]
     screen:expect [[
       ^                                                  |
@@ -367,26 +372,26 @@ describe('autocmd', function()
     -- This used to crash after making aucmd_win a normal window via the above.
     exec_lua [[
       vim.cmd "tabnew | tabclose # | wincmd s | wincmd _"
-      vim.api.nvim_buf_call(_G.buf, function() vim.cmd "wincmd K" end)
+      vim._with({buf = _G.buf}, function() vim.cmd "wincmd K" end)
     ]]
     assert_alive()
     screen:expect_unchanged()
 
     -- Also check with win_splitmove().
     exec_lua [[
-      vim.api.nvim_buf_call(_G.buf, function()
-        vim.fn.win_splitmove(vim.fn.winnr(), vim.fn.win_getid(1))
+      vim._with({buf = _G.buf}, function()
+        vim.fn.win_splitmove(vim.fn.win_getid(), vim.fn.win_getid(1))
       end)
     ]]
     screen:expect_unchanged()
 
     -- Also check with nvim_win_set_config().
     matches(
-      ': Failed to move window %d+ into split$',
+      '^Failed to move window %d+ into split$',
       pcall_err(
         exec_lua,
         [[
-          vim.api.nvim_buf_call(_G.buf, function()
+          vim._with({buf = _G.buf}, function()
             vim.api.nvim_win_set_config(0, {
               vertical = true,
               win = vim.fn.win_getid(1)
@@ -398,7 +403,7 @@ describe('autocmd', function()
     screen:expect_unchanged()
 
     -- Ensure splitting still works from inside the aucmd_win.
-    exec_lua [[vim.api.nvim_buf_call(_G.buf, function() vim.cmd "split" end)]]
+    exec_lua [[vim._with({buf = _G.buf}, function() vim.cmd "split" end)]]
     screen:expect [[
       ^                                                  |
       {1:~                                                 }|
@@ -418,12 +423,29 @@ describe('autocmd', function()
       'editor',
       exec_lua [[
         vim.cmd "only"
-        vim.api.nvim_buf_call(_G.buf, function()
+        vim._with({buf = _G.buf}, function()
           _G.config = vim.api.nvim_win_get_config(0)
         end)
         return _G.config.relative
       ]]
     )
+  end)
+
+  it('cannot close `aucmd_win` in non-current tabpage', function()
+    exec([[
+      file Xa
+      tabnew Xb
+      call setline(1, 'foo')
+      tabfirst
+      autocmd BufWriteCmd Xb tablast | bwipe! Xa
+    ]])
+    eq(
+      'BufWriteCmd Autocommands for "Xb": Vim(bwipeout):E813: Cannot close autocmd window',
+      pcall_err(command, 'wall')
+    )
+    -- Sanity check: :bwipe failing to close all windows into Xa should keep it loaded.
+    -- (So there's no risk of it being left unloaded inside a window)
+    eq(1, eval('bufloaded("Xa")'))
   end)
 
   describe('closing last non-floating window in tab from `aucmd_win`', function()
@@ -463,7 +485,7 @@ describe('autocmd', function()
       pcall_err(
         exec_lua,
         [[
-          vim.api.nvim_buf_call(_G.buf, function()
+          vim._with({buf = _G.buf}, function()
             local win = vim.api.nvim_get_current_win()
             vim.api.nvim_win_close(win, true)
           end)
@@ -475,7 +497,7 @@ describe('autocmd', function()
       pcall_err(
         exec_lua,
         [[
-          vim.api.nvim_buf_call(_G.buf, function()
+          vim._with({buf = _G.buf}, function()
             local win = vim.api.nvim_get_current_win()
             vim.cmd('tabnext')
             vim.api.nvim_win_close(win, true)
@@ -488,7 +510,7 @@ describe('autocmd', function()
       pcall_err(
         exec_lua,
         [[
-          vim.api.nvim_buf_call(_G.buf, function()
+          vim._with({buf = _G.buf}, function()
             local win = vim.api.nvim_get_current_win()
             vim.api.nvim_win_hide(win)
           end)
@@ -500,7 +522,7 @@ describe('autocmd', function()
       pcall_err(
         exec_lua,
         [[
-          vim.api.nvim_buf_call(_G.buf, function()
+          vim._with({buf = _G.buf}, function()
             local win = vim.api.nvim_get_current_win()
             vim.cmd('tabnext')
             vim.api.nvim_win_hide(win)
@@ -512,10 +534,6 @@ describe('autocmd', function()
 
   it(':doautocmd does not warn "No matching autocommands" #10689', function()
     local screen = Screen.new(32, 3)
-    screen:attach()
-    screen:set_default_attr_ids({
-      [1] = { bold = true, foreground = Screen.colors.Blue1 },
-    })
 
     feed(':doautocmd User Foo<cr>')
     screen:expect {
@@ -696,5 +714,184 @@ describe('autocmd', function()
       })
       vim.cmd "tabnew"
     ]]
+  end)
+
+  it('no use-after-free when wiping buffer in Syntax autocommand', function()
+    exec([[
+      new
+      autocmd Syntax * ++once bwipe!
+      setlocal syntax=vim
+    ]])
+    assert_alive()
+  end)
+
+  it('no use-after-free from win_enter autocommands in win_move_after', function()
+    exec [[
+      split foo
+      split bar
+      lcd ..
+      wincmd b
+    ]]
+    eq(fn.winnr('$'), fn.winnr())
+    -- Using DirChanged as Enter/Leave autocmds are blocked by :ball here.
+    exec [[
+      autocmd DirChanged * ++once split flarb | only!
+      ball
+    ]]
+    eq('flarb', fn.bufname())
+  end)
+
+  it('no use-after-free when closing new curwin during CTRL-W_x #41373', function()
+    exec([[
+      tabnew
+      vsplit
+      autocmd WinLeave * ++once bwipe!
+    ]])
+    eq(2, #api.nvim_list_tabpages())
+    feed('<C-W>x')
+    eq(1, #api.nvim_list_tabpages())
+    assert_alive()
+  end)
+
+  it('does not ignore comma-separated patterns after a buffer-local pattern', function()
+    exec [[
+      edit baz  " reuses buffer 1
+      edit bazinga
+      edit bar
+      edit boop
+      edit foo
+      edit floob
+
+      let g:events1 = []
+      autocmd BufEnter <buffer>,<buffer=1>,boop,bar let g:events1 += [expand('<afile>')]
+      let g:events2 = []
+      augroup flobby
+        autocmd BufEnter <buffer=2>,foo let g:events2 += [expand('<afile>')]
+        autocmd BufEnter foo,<buffer=3> let g:events2 += ['flobby ' .. expand('<afile>')]
+      augroup END
+    ]]
+    eq(
+      dedent([=[
+
+      --- Autocommands ---
+      BufEnter
+          <buffer=6>
+                    let g:events1 += [expand('<afile>')]
+          <buffer=1>
+                    let g:events1 += [expand('<afile>')]
+          boop      let g:events1 += [expand('<afile>')]
+          bar       let g:events1 += [expand('<afile>')]
+      flobby  BufEnter
+          <buffer=2>
+                    let g:events2 += [expand('<afile>')]
+          foo       let g:events2 += [expand('<afile>')]
+                    let g:events2 += ['flobby ' .. expand('<afile>')]
+          <buffer=3>
+                    let g:events2 += ['flobby ' .. expand('<afile>')]]=]),
+      fn.execute('autocmd BufEnter')
+    )
+    command('bufdo "')
+    eq({ 'baz', 'bar', 'boop', 'floob' }, eval('g:events1'))
+    eq({ 'bazinga', 'flobby bar', 'foo', 'flobby foo' }, eval('g:events2'))
+
+    -- Also make sure it doesn't repeat the group/event name or pattern for each printed event.
+    -- Do however repeat the pattern if the user specified it multiple times to be printed.
+    -- These conditions aim to make the output consistent with Vim.
+    eq(
+      dedent([=[
+
+      --- Autocommands ---
+      BufEnter
+          <buffer=1>
+                    let g:events1 += [expand('<afile>')]
+          bar       let g:events1 += [expand('<afile>')]
+          bar       let g:events1 += [expand('<afile>')]
+      flobby  BufEnter
+          foo       let g:events2 += [expand('<afile>')]
+                    let g:events2 += ['flobby ' .. expand('<afile>')]
+          foo       let g:events2 += [expand('<afile>')]
+                    let g:events2 += ['flobby ' .. expand('<afile>')]
+      BufEnter
+          <buffer=6>
+                    let g:events1 += [expand('<afile>')]
+          <buffer=6>
+                    let g:events1 += [expand('<afile>')]
+          <buffer=6>
+                    let g:events1 += [expand('<afile>')]]=]),
+      fn.execute('autocmd BufEnter <buffer=1>,bar,bar,foo,foo,<buffer>,<buffer=6>,<buffer>')
+    )
+  end)
+
+  it('parses empty comma-delimited patterns correctly', function()
+    exec [[
+      autocmd User , "
+      autocmd User ,, "
+      autocmd User ,,according,to,,all,known,,,laws,, "
+    ]]
+    api.nvim_create_autocmd('User', { pattern = ',,of,,,aviation,,,,there,,', command = '' })
+    api.nvim_create_autocmd('User', {
+      pattern = { ',,,,is,,no', ',,way,,,', 'a,,bee{,should be, able to,},fly' },
+      command = '',
+    })
+    eq(
+      {
+        'according',
+        'to',
+        'all',
+        'known',
+        'laws',
+        'of',
+        'aviation',
+        'there',
+        'is',
+        'no',
+        'way',
+        'a',
+        'bee{,should be, able to,}',
+        'fly',
+      },
+      exec_lua(function()
+        return vim.tbl_map(function(v)
+          return v.pattern
+        end, vim.api.nvim_get_autocmds({ event = 'User' }))
+      end)
+    )
+    eq(
+      dedent([[
+
+      --- Autocommands ---
+      User
+          there
+          is
+          a
+          fly]]),
+      fn.execute('autocmd User ,,,there,is,,a,fly,,')
+    )
+  end)
+
+  it('normalizes path sep (slashes) in env var `pattern` #39382', function()
+    local path = t.is_os('win') and [[C:\foo\bar]] or 'C:/foo/bar'
+    fn.setenv('FOOBAR', path)
+    exec [[
+      autocmd User ~,$FOOBAR "
+    ]]
+    local cmds = exec_lua(function()
+      return vim.api.nvim_get_autocmds({ event = 'User' })
+    end)
+    eq(vim.fs.normalize('~'), cmds[1].pattern)
+    eq(vim.fs.normalize(path), cmds[2].pattern)
+  end)
+
+  it('exists() consults &fileignorecase', function()
+    command([[autocmd User foo/bar echo]])
+    eq(0, fn.exists([[#User#foo/bar/]]))
+    eq(1, fn.exists([[#User#foo/bar]]))
+    -- Even on Windows, `/` should be used as the path sep
+    eq(0, fn.exists([[#User#foo\bar]]))
+
+    command([[set fileignorecase]])
+    eq(1, fn.exists([[#User#Foo/Bar]]))
+    command([[set nofileignorecase]])
+    eq(0, fn.exists([[#User#Foo/Bar]]))
   end)
 end)

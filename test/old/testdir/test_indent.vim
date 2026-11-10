@@ -1,5 +1,8 @@
 " Test for various indent options
 
+source shared.vim
+source check.vim
+
 func Test_preserveindent()
   new
   " Test for autoindent copying indent from the previous line
@@ -29,7 +32,7 @@ func Test_preserveindent()
   call assert_equal("\t    \t    l", getline(1))
   set sw& et& pi&
 
-  close!
+  bw!
 endfunc
 
 " Test for indent()
@@ -42,7 +45,7 @@ func Test_indent_func()
   call assert_equal(4, indent(1))
   call setline(1, "    \t    abc")
   call assert_equal(12, indent(1))
-  close!
+  bw!
 endfunc
 
 " Test for reindenting a line using the '=' operator
@@ -56,7 +59,7 @@ func Test_reindent()
   call setline(1, ['foo', 'bar'])
   call feedkeys('ggVG=', 'xt')
   call assert_equal(['foo', 'bar'], getline(1, 2))
-  close!
+  bw!
 endfunc
 
 " Test indent operator creating one undo entry
@@ -103,7 +106,45 @@ func Test_preproc_indent()
   call assert_equal('#define FOO 1', getline(1))
   set cindent&
 
-  close!
+  bw!
+endfunc
+
+func Test_userlabel_indent()
+  new
+  call setline(1, ['{', 'label:'])
+  normal GV=
+  call assert_equal('label:', getline(2))
+
+  call setline(2, 'läbél:')
+  normal GV=
+  call assert_equal('läbél:', getline(2))
+
+  bw!
+endfunc
+
+" Test that struct members are aligned
+func Test_struct_indent()
+  new
+  call setline(1, ['struct a a = {', '1,', '1,'])
+  normal gg=G
+  call assert_equal(getline(2), getline(3))
+
+  call setline(1, 'a = (struct a) {')
+  normal gg=G
+  call assert_equal(getline(2), getline(3))
+
+  call setline(1, 'void *ptr = &(static struct a) {{')
+  normal gg=G
+  call assert_equal(getline(2), getline(3))
+
+  call setline(1, 'a = (macro(arg1, "str)))")) {')
+  normal gg=G
+  call assert_equal(getline(2), getline(3))
+
+  call setline(1, 'return (struct a) {')
+  normal gg=G
+  call assert_equal(getline(2), getline(3))
+  bw!
 endfunc
 
 " Test for 'copyindent'
@@ -118,7 +159,7 @@ func Test_copyindent()
   call feedkeys("ol", 'xt')
   call assert_equal("    \t    l", getline(2))
   set sw& ai& et& ci&
-  close!
+  bw!
 endfunc
 
 " Test for changing multiple lines with lisp indent
@@ -128,7 +169,7 @@ func Test_lisp_indent_change_multiline()
   call setline(1, ['(if a', '  (if b', '    (return 5)))'])
   normal! jc2j(return 4))
   call assert_equal('  (return 4))', getline(2))
-  close!
+  bw!
 endfunc
 
 func Test_lisp_indent()
@@ -141,7 +182,7 @@ func Test_lisp_indent()
   normal! jostr1"
   normal! jostr2"
   call assert_equal(['  ;; comment', '  ;; comment', '  \ abc', '  \ abc', '', '  ;; ret', '  " str1\', '  str1"', '  " st\b', '  str2"'], getline(2, 11))
-  close!
+  bw!
 endfunc
 
 func Test_lisp_indent_quoted()
@@ -161,9 +202,9 @@ func Test_modeline_indent_expr()
   func GetIndent()
     return line('.') * 2
   endfunc
-  call writefile(['# vim: indentexpr=GetIndent()'], 'Xfile.txt')
+  call writefile(['# vim: indentexpr=GetIndent()'], 'Xmlfile.txt', 'D')
   set modelineexpr
-  new Xfile.txt
+  new Xmlfile.txt
   call assert_equal('GetIndent()', &indentexpr)
   exe "normal Oa\nb\n"
   call assert_equal(['  a', '    b'], getline(1, 2))
@@ -171,12 +212,11 @@ func Test_modeline_indent_expr()
   set modelineexpr&
   delfunc GetIndent
   let &modeline = modeline
-  close!
-  call delete('Xfile.txt')
+  bw!
 endfunc
 
 func Test_indent_func_with_gq()
-  
+
   function GetTeXIndent()
     " Sample indent expression for TeX files
     let lnum = prevnonblank(v:lnum - 1)
@@ -187,7 +227,7 @@ func Test_indent_func_with_gq()
     let line = getline(lnum)
     let ind = indent(lnum)
     " Add a 'shiftwidth' after beginning of environments.
-    if line =~ '\\begin{center}' 
+    if line =~ '\\begin{center}'
       let ind = ind + shiftwidth()
     endif
     return ind
@@ -249,7 +289,7 @@ func Test_indent_func_with_gq()
 
   bwipe!
   delmark ab
-  delfunction GetTeXIndent 
+  delfunction GetTeXIndent
 endfu
 
 func Test_formatting_keeps_first_line_indent()
@@ -274,6 +314,79 @@ func Test_formatting_keeps_first_line_indent()
   END
   call assert_equal(expected, getline(1, '$'))
   bwipe!
+endfunc
+
+" Test for indenting with large amount, causes overflow
+func Test_indent_overflow_count()
+  throw 'skipped: TODO: '
+  new
+  setl sw=8
+  call setline(1, "abc")
+  norm! V2147483647>
+  " indents by INT_MAX
+  call assert_equal(2147483647, indent(1))
+  bw!
+endfunc
+
+func Test_indent_overflow_count2()
+  throw 'skipped: Nvim does not support 64-bit number options'
+  new
+  " this only works, when long is 64bits
+  try
+    setl sw=0x180000000
+  catch /^Vim\%((\a\+)\)\=:E487:/
+  throw 'Skipped: value negative on this platform'
+  endtry
+  call setline(1, "\tabc")
+  norm! <<
+  call assert_equal(0, indent(1))
+  close!
+endfunc
+
+" Test that mouse shape is restored to Normal mode after using "gq" when
+" 'indentexpr' executes :normal.
+func Test_mouse_shape_indent_norm_with_gq()
+  CheckFeature mouseshape
+  CheckCanRunGui
+
+  let lines =<< trim END
+    func Indent()
+      exe "normal! \<Ignore>"
+      return 0
+    endfunc
+
+    setlocal indentexpr=Indent()
+  END
+  call writefile(lines, 'Xindentexpr.vim', 'D')
+
+  let lines =<< trim END
+    vim9script
+    var mouse_shapes = []
+
+    setline(1, [repeat('a', 80), repeat('b', 80)])
+
+    feedkeys('ggVG')
+    timer_start(50, (_) => {
+      mouse_shapes += [getmouseshape()]
+      timer_start(50, (_) => {
+        feedkeys('gq')
+        timer_start(50, (_) => {
+          mouse_shapes += [getmouseshape()]
+          timer_start(50, (_) => {
+            writefile(mouse_shapes, 'Xmouseshapes')
+            quit!
+          })
+        })
+      })
+    })
+  END
+  call writefile(lines, 'Xmouseshape.vim', 'D')
+
+  call RunVim([], [], "-g -S Xindentexpr.vim -S Xmouseshape.vim")
+  call WaitForAssert({-> assert_equal(['rightup-arrow', 'arrow'],
+        \ readfile('Xmouseshapes'))}, 300)
+
+  call delete('Xmouseshapes')
 endfunc
 
 " vim: shiftwidth=2 sts=2 expandtab

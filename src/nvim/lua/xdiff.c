@@ -1,4 +1,5 @@
 #include <lauxlib.h>
+#include <limits.h>
 #include <lua.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -36,9 +37,7 @@ typedef struct {
   bool iwhite;
 } hunkpriv_t;
 
-#ifdef INCLUDE_GENERATED_DECLARATIONS
-# include "lua/xdiff.c.generated.h"
-#endif
+#include "lua/xdiff.c.generated.h"
 
 static void lua_pushhunk(lua_State *lstate, long start_a, long count_a, long start_b, long count_b)
 {
@@ -67,11 +66,11 @@ static void get_linematch_results(lua_State *lstate, mmfile_t *ma, mmfile_t *mb,
                                   int count_a, int start_b, int count_b, bool iwhite)
 {
   // get the pointer to char of the start of the diff to pass it to linematch algorithm
-  const char *diff_begin[2] = { ma->ptr, mb->ptr };
-  int diff_length[2] = { count_a, count_b };
+  mmfile_t ma0 = fastforward_buf_to_lnum(*ma, (linenr_T)start_a + 1);
+  mmfile_t mb0 = fastforward_buf_to_lnum(*mb, (linenr_T)start_b + 1);
 
-  fastforward_buf_to_lnum(&diff_begin[0], (linenr_T)start_a + 1);
-  fastforward_buf_to_lnum(&diff_begin[1], (linenr_T)start_b + 1);
+  const mmfile_t *diff_begin[2] = { &ma0, &mb0 };
+  int diff_length[2] = { count_a, count_b };
 
   int *decisions = NULL;
   size_t decisions_length = linematch_nbuffers(diff_begin, diff_length, 2, &decisions, iwhite);
@@ -163,9 +162,7 @@ static int call_on_hunk_cb(int start_a, int count_a, int start_b, int count_b, v
   lua_pushinteger(lstate, count_b);
 
   if (lua_pcall(lstate, 4, 1, 0) != 0) {
-    api_set_error(err, kErrorTypeException,
-                  "error running function on_hunk: %s",
-                  lua_tostring(lstate, -1));
+    api_set_error(err, kErrorTypeException, "on_hunk: %s", lua_tostring(lstate, -1));
     return -1;
   }
 
@@ -185,7 +182,12 @@ static mmfile_t get_string_arg(lua_State *lstate, int idx)
     luaL_argerror(lstate, idx, "expected string");
   }
   mmfile_t mf;
-  mf.ptr = (char *)lua_tolstring(lstate, idx, (size_t *)&mf.size);
+  size_t size;
+  mf.ptr = (char *)lua_tolstring(lstate, idx, &size);
+  if (size > INT_MAX) {
+    luaL_argerror(lstate, idx, "string too long");
+  }
+  mf.size = (int)size;
   return mf;
 }
 
@@ -194,7 +196,6 @@ static NluaXdiffMode process_xdl_diff_opts(lua_State *lstate, xdemitconf_t *cfg,
 {
   Dict(xdl_diff) opts = KEYDICT_INIT;
   char *err_param = NULL;
-  KeySetLink *KeyDict_xdl_diff_get_field(const char *str, size_t len);
   nlua_pop_keydict(lstate, &opts, KeyDict_xdl_diff_get_field, &err_param, NULL, err);
 
   NluaXdiffMode mode = kNluaXdiffModeUnified;
@@ -335,8 +336,7 @@ int nlua_xdl_diff(lua_State *lstate)
 
   if (xdl_diff(&ma, &mb, &params, &cfg, &ecb) == -1) {
     if (!ERROR_SET(&err)) {
-      api_set_error(&err, kErrorTypeException,
-                    "Error while performing diff operation");
+      api_set_error(&err, kErrorTypeException, "diff operation failed");
     }
   }
 

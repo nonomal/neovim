@@ -1,16 +1,16 @@
 local M = {}
-local min_version = '3.7'
+local min_version = '3.9'
 local s_err ---@type string?
-local s_host ---@type string?
+local s_host ---@type integer?
 
 local python_candidates = {
   'python3',
+  'python3.14',
+  'python3.13',
   'python3.12',
   'python3.11',
   'python3.10',
   'python3.9',
-  'python3.8',
-  'python3.7',
   'python',
 }
 
@@ -84,6 +84,10 @@ function M.detect_by_module(module)
     return vim.fn.exepath(vim.fn.expand(python_exe, true)), nil
   end
 
+  if vim.fn.executable('pynvim-python') == 1 then
+    return 'pynvim-python'
+  end
+
   local errors = {}
   for _, exe in ipairs(python_candidates) do
     local error = check_for_module(exe, module)
@@ -98,6 +102,8 @@ function M.detect_by_module(module)
   return nil, 'Could not load Python :\n' .. table.concat(errors, '\n')
 end
 
+--- @param host { name: string, orig_name: string }
+--- @return integer
 function M.require(host)
   -- Python host arguments
   local prog = M.detect_by_module('neovim')
@@ -122,6 +128,8 @@ function M.require(host)
   )
 end
 
+--- @param method string
+--- @param args any[]
 function M.call(method, args)
   if s_err then
     return
@@ -132,12 +140,15 @@ function M.call(method, args)
     local ok, result = pcall(vim.fn['remote#host#Require'], 'legacy-python3-provider') ---@type any, any
     if not ok then
       s_err = result
-      vim.api.nvim_echo({ { result, 'WarningMsg' } }, true, {})
+      vim.api.nvim_echo({ { result, 'WarningMsg' } }, true)
       return
     end
+    --- @cast result integer
     s_host = result
   end
 
+  -- Handles host requests in the caller's scope (see eval_call_provider()).
+  ---@diagnostic disable-next-line: deprecated
   return vim.fn.rpcrequest(s_host, 'python_' .. method, unpack(args))
 end
 

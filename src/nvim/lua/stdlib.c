@@ -8,6 +8,8 @@
 #include <string.h>
 #include <uv.h>
 
+#include "nvim/context.h"
+#include "nvim/log.h"
 #ifdef NVIM_VENDOR_BIT
 # include "bit.h"
 #endif
@@ -17,13 +19,19 @@
 #include "nvim/api/private/defs.h"
 #include "nvim/api/private/helpers.h"
 #include "nvim/ascii_defs.h"
+#include "nvim/autocmd.h"
+#include "nvim/autocmd_defs.h"
 #include "nvim/buffer_defs.h"
 #include "nvim/eval/typval.h"
 #include "nvim/eval/typval_defs.h"
 #include "nvim/eval/vars.h"
+#include "nvim/eval/window.h"
+#include "nvim/ex_cmds_defs.h"
+#include "nvim/ex_docmd.h"
 #include "nvim/ex_eval.h"
 #include "nvim/fold.h"
 #include "nvim/globals.h"
+#include "nvim/keycodes.h"
 #include "nvim/lua/base64.h"
 #include "nvim/lua/converter.h"
 #include "nvim/lua/spell.h"
@@ -34,16 +42,17 @@
 #include "nvim/mbyte_defs.h"
 #include "nvim/memline.h"
 #include "nvim/memory.h"
+#include "nvim/message.h"
+#include "nvim/path.h"
 #include "nvim/pos_defs.h"
 #include "nvim/regexp.h"
 #include "nvim/regexp_defs.h"
 #include "nvim/runtime.h"
 #include "nvim/strings.h"
 #include "nvim/types_defs.h"
+#include "nvim/window.h"
 
-#ifdef INCLUDE_GENERATED_DECLARATIONS
-# include "lua/stdlib.c.generated.h"
-#endif
+#include "lua/stdlib.c.generated.h"
 
 static int regex_match(lua_State *lstate, regprog_T **prog, char *str)
 {
@@ -177,7 +186,9 @@ int nlua_str_utfindex(lua_State *const lstate) FUNC_ATTR_NONNULL_ALL
   } else {
     idx = luaL_checkinteger(lstate, 2);
     if (idx < 0 || idx > (intptr_t)s1_len) {
-      return luaL_error(lstate, "index out of range");
+      lua_pushnil(lstate);
+      lua_pushnil(lstate);
+      return 2;
     }
   }
 
@@ -268,7 +279,8 @@ int nlua_str_byteindex(lua_State *const lstate) FUNC_ATTR_NONNULL_ALL
   const char *s1 = luaL_checklstring(lstate, 1, &s1_len);
   intptr_t idx = luaL_checkinteger(lstate, 2);
   if (idx < 0) {
-    return luaL_error(lstate, "index out of range");
+    lua_pushnil(lstate);
+    return 1;
   }
   bool use_utf16 = false;
   if (lua_gettop(lstate) >= 3) {
@@ -277,7 +289,8 @@ int nlua_str_byteindex(lua_State *const lstate) FUNC_ATTR_NONNULL_ALL
 
   ssize_t byteidx = mb_utf_index_to_bytes(s1, s1_len, (size_t)idx, use_utf16);
   if (byteidx == -1) {
-    return luaL_error(lstate, "index out of range");
+    lua_pushnil(lstate);
+    return 1;
   }
 
   lua_pushinteger(lstate, (lua_Integer)byteidx);
@@ -292,7 +305,8 @@ int nlua_regex(lua_State *lstate)
   regprog_T *prog = NULL;
 
   TRY_WRAP(&err, {
-    prog = vim_regcomp(text, RE_AUTO | RE_MAGIC | RE_STRICT);
+    // RE_NOBREAK: so vim.regex() works in api-fast context. #18111
+    prog = vim_regcomp(text, RE_AUTO | RE_MAGIC | RE_STRICT | RE_NOBREAK);
   });
 
   if (ERROR_SET(&err)) {
@@ -319,9 +333,9 @@ static dict_T *nlua_get_var_scope(lua_State *lstate)
   dict_T *dict = NULL;
   Error err = ERROR_INIT;
   if (strequal(scope, "g")) {
-    dict = &globvardict;
+    dict = get_globvar_dict();
   } else if (strequal(scope, "v")) {
-    dict = &vimvardict;
+    dict = get_vimvar_dict();
   } else if (strequal(scope, "b")) {
     buf_T *buf = find_buffer_by_handle(handle, &err);
     if (buf) {
@@ -402,7 +416,7 @@ int nlua_setvar(lua_State *lstate)
       tv_dict_add(dict, di);
     } else {
       bool type_error = false;
-      if (dict == &vimvardict
+      if (dict == get_vimvar_dict()
           && !before_set_vvar(key.data, di, &tv, true, watched, &type_error)) {
         tv_clear(&tv);
         if (type_error) {
@@ -440,7 +454,7 @@ int nlua_getvar(lua_State *lstate)
   const char *name = luaL_checklstring(lstate, 3, &len);
 
   dictitem_T *di = tv_dict_find(dict, name, (ptrdiff_t)len);
-  if (di == NULL && dict == &globvardict) {  // try to autoload script
+  if (di == NULL && dict == get_globvar_dict()) {  // try to autoload script
     if (!script_autoload(name, len, false) || aborting()) {
       return 0;  // nil
     }
@@ -450,6 +464,13 @@ int nlua_getvar(lua_State *lstate)
     return 0;  // nil
   }
   nlua_push_typval(lstate, &di->di_tv, 0);
+  return 1;
+}
+
+/// Checks if a path is a URL. See path_with_url().
+static int nlua_path_is_url(lua_State *const lstate) FUNC_ATTR_NONNULL_ALL
+{
+  lua_pushboolean(lstate, path_with_url(luaL_checkstring(lstate, 1)));
   return 1;
 }
 
@@ -466,8 +487,8 @@ static int nlua_stricmp(lua_State *const lstate) FUNC_ATTR_NONNULL_ALL
   size_t s2_len;
   const char *s1 = luaL_checklstring(lstate, 1, &s1_len);
   const char *s2 = luaL_checklstring(lstate, 2, &s2_len);
-  char *nul1;
-  char *nul2;
+  const char *nul1;
+  const char *nul2;
   int ret = 0;
   assert(s1[s1_len] == NUL);
   assert(s2[s2_len] == NUL);
@@ -549,21 +570,176 @@ static int nlua_iconv(lua_State *lstate)
 static int nlua_foldupdate(lua_State *lstate)
 {
   handle_T window = (handle_T)luaL_checkinteger(lstate, 1);
-  Error err = ERROR_INIT;
-  win_T *win = find_window_by_handle(window, &err);
-  if (ERROR_SET(&err)) {
-    nlua_push_errstr(lstate, err.msg);
-    api_clear_error(&err);
-    lua_error(lstate);
-    return 0;
+  win_T *win = handle_get_window(window);
+  if (!win) {
+    return luaL_error(lstate, "invalid window");
+  }
+  // input is zero-based end-exclusive range
+  linenr_T top = (linenr_T)luaL_checkinteger(lstate, 2) + 1;
+  if (top < 1) {
+    return luaL_error(lstate, "invalid top");
+  }
+  linenr_T bot = (linenr_T)luaL_checkinteger(lstate, 3);
+  if (top > bot) {
+    return luaL_error(lstate, "invalid bot");
   }
 
-  linenr_T start = (linenr_T)luaL_checkinteger(lstate, 2);
-  linenr_T end = (linenr_T)luaL_checkinteger(lstate, 3);
-
-  foldUpdate(win, start + 1, end);
+  foldUpdate(win, top, bot);
 
   return 0;
+}
+
+static int nlua_with(lua_State *L)
+{
+  int flags = 0;
+  buf_T *buf = NULL;
+  win_T *win = NULL;
+  bool keepcwd = false;
+  int log_level = -1;
+
+#define APPLY_FLAG(key, flag) \
+  if (strequal((key), k) && (v)) { \
+    flags |= (flag); \
+  }
+
+  luaL_argcheck(L, lua_istable(L, 1), 1, "table expected");
+  lua_pushnil(L);  // [dict, ..., nil]
+  while (lua_next(L, 1)) {
+    // [dict, ..., key, value]
+    if (lua_type(L, -2) == LUA_TSTRING) {
+      const char *k = lua_tostring(L, -2);
+      bool v = lua_toboolean(L, -1);
+      if (strequal("buf", k)) {
+        buf = handle_get_buffer((int)luaL_checkinteger(L, -1));
+      } else if (strequal("win", k)) {
+        win = handle_get_window((int)luaL_checkinteger(L, -1));
+      } else if (strequal("keepcwd", k)) {
+        keepcwd = v;
+      } else if (strequal("log_level", k)) {
+        log_level = (int)luaL_checkinteger(L, -1);
+      } else {
+        APPLY_FLAG("sandbox", CMOD_SANDBOX);
+        APPLY_FLAG("silent", CMOD_SILENT);
+        APPLY_FLAG("emsg_silent", CMOD_ERRSILENT);
+        APPLY_FLAG("unsilent", CMOD_UNSILENT);
+        APPLY_FLAG("noautocmd", CMOD_NOAUTOCMD);
+        APPLY_FLAG("hide", CMOD_HIDE);
+        APPLY_FLAG("keepalt", CMOD_KEEPALT);
+        APPLY_FLAG("keepmarks", CMOD_KEEPMARKS);
+        APPLY_FLAG("keepjumps", CMOD_KEEPJUMPS);
+        APPLY_FLAG("lockmarks", CMOD_LOCKMARKS);
+        APPLY_FLAG("keeppatterns", CMOD_KEEPPATTERNS);
+      }
+    }
+    // pop the value; lua_next will pop the key.
+    lua_pop(L, 1);  // [dict, ..., key]
+  }
+  int status = 0;
+  int rets = 0;
+
+  if (flags & CMOD_ERRSILENT) {
+    // CMOD_ERRSILENT must imply CMOD_SILENT, otherwise apply_cmdmod() and undo_cmdmod() won't
+    // work properly.
+    flags |= CMOD_SILENT;
+  }
+
+  const int save_min_log_level = g_min_log_level;
+  if (log_level >= 0) {
+    g_min_log_level = log_level;
+  }
+  cmdmod_T save_cmdmod = cmdmod;
+  CLEAR_FIELD(cmdmod);
+  cmdmod.cmod_flags = flags;
+  apply_cmdmod(&cmdmod);
+
+  Error err = ERROR_INIT;
+  TRY_WRAP(&err, {
+    CtxSwitch cs = { 0 };
+    bool switched = true;
+
+    if (win) {
+      buf = NULL;  // `win` implies its buffer (vim._with() checks that it is `buf`).
+    }
+
+    if (win || buf || keepcwd) {
+      CtxSwitchFlags dirs = keepcwd ? kCtxKeepDirs : kCtxKeepCwd;
+      tabpage_T *tab = win ? win_find_tabpage(win) : NULL;
+      switched = ctx_switch(&cs, win, tab, buf, kCtxNoDisplay | dirs | (win ? kCtxValidate : 0));
+    }
+
+    if (switched) {
+      int s = lua_gettop(L);
+      lua_pushvalue(L, 2);
+      status = lua_pcall(L, 0, LUA_MULTRET, 0);
+      rets = lua_gettop(L) - s;
+    }
+
+    // No-op if nothing was switched.  Restores even when ctx_switch() failed.
+    ctx_restore(&cs);
+  });
+
+  undo_cmdmod(&cmdmod);
+  cmdmod = save_cmdmod;
+  if (log_level >= 0) {
+    g_min_log_level = save_min_log_level;
+  }
+
+  if (status) {
+    return lua_error(L);
+  } else if (ERROR_SET(&err)) {
+    nlua_push_errstr(L, "%s", err.msg);
+    api_clear_error(&err);
+    return lua_error(L);
+  }
+
+  return rets;
+}
+
+/// Parses the internal representation of `keys` (as produced by nvim_replace_termcodes()) into
+/// a structured list of dicts representing one or more key-chords.
+static int nlua_keyparse(lua_State *L)
+{
+  luaL_argcheck(L, lua_isstring(L, 1), 1, "string expected");
+
+  char *escaped = vim_strsave_escape_ks((char *)lua_tostring(L, 1));
+  const char *p = escaped;
+
+  lua_newtable(L);
+
+  struct keychord data;
+
+  while (*p != NUL) {
+    // kTrue (same flags as keytrans()) so `keys` == keytrans(vim.keycode(…)).
+    const char *keys = str2special(&p, true, kTrue, &data);
+
+    lua_createtable(L, 0, 3);
+
+    lua_newtable(L);
+    for (int i = 0; mod_mask_table[i].name != 'A'; i++) {
+      if ((data.mods & mod_mask_table[i].mod_mask) == mod_mask_table[i].mod_flag) {
+        lua_pushlstring(L, &mod_mask_table[i].name, 1);
+        lua_rawseti(L, -2, (int)lua_objlen(L, -2) + 1);
+      }
+    }
+    lua_setfield(L, -2, "mod");
+
+    lua_pushlstring(L, data.key.data, data.key.size);
+    lua_setfield(L, -2, "key");
+
+    lua_pushstring(L, keys);
+    lua_setfield(L, -2, "keys");
+
+    if (data.key_alt.size != 0) {
+      lua_pushlstring(L, data.key_alt.data, data.key_alt.size);
+      lua_setfield(L, -2, "key_alt");
+    }
+
+    lua_rawseti(L, -2, (int)lua_objlen(L, -2) + 1);
+  }
+
+  xfree(escaped);
+
+  return 1;
 }
 
 // Access to internal functions. For use in runtime/
@@ -580,6 +756,15 @@ static void nlua_state_add_internal(lua_State *const lstate)
   // _updatefolds
   lua_pushcfunction(lstate, &nlua_foldupdate);
   lua_setfield(lstate, -2, "_foldupdate");
+
+  lua_pushcfunction(lstate, &nlua_with);
+  lua_setfield(lstate, -2, "_with_c");
+
+  // vim._core.keyparse
+  lua_getfield(lstate, -1, "_core");
+  lua_pushcfunction(lstate, &nlua_keyparse);
+  lua_setfield(lstate, -2, "keyparse");
+  lua_pop(lstate, 1);
 }
 
 void nlua_state_add_stdlib(lua_State *const lstate, bool is_thread)
@@ -593,10 +778,10 @@ void nlua_state_add_stdlib(lua_State *const lstate, bool is_thread)
     lua_setfield(lstate, -2, "stricmp");
     // str_utfindex
     lua_pushcfunction(lstate, &nlua_str_utfindex);
-    lua_setfield(lstate, -2, "str_utfindex");
+    lua_setfield(lstate, -2, "_str_utfindex");
     // str_byteindex
     lua_pushcfunction(lstate, &nlua_str_byteindex);
-    lua_setfield(lstate, -2, "str_byteindex");
+    lua_setfield(lstate, -2, "_str_byteindex");
     // str_utf_pos
     lua_pushcfunction(lstate, &nlua_str_utf_pos);
     lua_setfield(lstate, -2, "str_utf_pos");
@@ -658,13 +843,20 @@ void nlua_state_add_stdlib(lua_State *const lstate, bool is_thread)
   lua_setfield(lstate, -2, "lpeg");
   lua_pop(lstate, 4);
 
-  // vim.diff
+  // vim.text.diff
   lua_pushcfunction(lstate, &nlua_xdl_diff);
+  // TODO(justinmk): set vim.text.diff here, or rename this to "_diff". goddamnit.
   lua_setfield(lstate, -2, "diff");
 
   // vim.json
   lua_cjson_new(lstate);
   lua_setfield(lstate, -2, "json");
+
+  // vim._core.path_is_url
+  lua_getfield(lstate, -1, "_core");
+  lua_pushcfunction(lstate, &nlua_path_is_url);
+  lua_setfield(lstate, -2, "path_is_url");
+  lua_pop(lstate, 1);
 
 #ifdef NVIM_VENDOR_BIT
   // if building with puc lua, use internal fallback for require'bit'

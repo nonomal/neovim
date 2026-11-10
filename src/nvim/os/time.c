@@ -18,9 +18,7 @@
 #include "nvim/os/os.h"
 #include "nvim/os/time.h"
 
-#ifdef INCLUDE_GENERATED_DECLARATIONS
-# include "os/time.c.generated.h"
-#endif
+#include "os/time.c.generated.h"
 
 /// Gets a high-resolution (nanosecond), monotonically-increasing time relative
 /// to an arbitrary time in the past.
@@ -32,6 +30,25 @@ uint64_t os_hrtime(void)
   FUNC_ATTR_WARN_UNUSED_RESULT
 {
   return uv_hrtime();
+}
+
+/// Obtain the current system time from a high-resolution
+/// real-time clock source.
+///
+/// The real-time clock counts from the UNIX epoch (1970-01-01)
+/// and is subject to time adjustments; it can jump back in time.
+///
+/// @return Nanoseconds since epoch or 0
+int64_t os_realtime(void)
+  FUNC_ATTR_WARN_UNUSED_RESULT
+{
+  uv_timespec64_t ts = { 0 };
+  int error_number;
+  if ((error_number = uv_clock_gettime(UV_CLOCK_REALTIME, &ts)) != 0) {
+    ELOG("uv_clock_gettime failed: %d %s", error_number, uv_err_name(error_number));
+    return 0;
+  }
+  return ts.tv_sec * NS_PER_SEC + ts.tv_nsec;
 }
 
 /// Gets a millisecond-resolution, monotonically-increasing time relative to an
@@ -98,8 +115,8 @@ struct tm *os_localtime_r(const time_t *restrict clock,
   // Call tzset(3) to update the global timezone variables if it has.
   // POSIX standard doesn't require localtime_r() implementations to do that
   // as it does with localtime(), and we don't want to call tzset() every time.
-  const char *tz = os_getenv("TZ");
-  if (tz == NULL) {
+  const char *tz = os_getenv_noalloc("TZ");
+  if (!tz) {
     tz = "";
   }
   if (strncmp(tz_cache, tz, sizeof(tz_cache) - 1) != 0) {

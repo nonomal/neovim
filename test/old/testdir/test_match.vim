@@ -314,6 +314,28 @@ func Test_matchaddpos_error()
   call assert_fails("call matchaddpos('Error', [1], [], 1)", 'E745:')
 endfunc
 
+" setmatches() with more than one "posN" entry used to keep a reference to
+" every position list, so they were not released until the next garbage
+" collection.  A "posN" value that is not a List made it bail out early
+" without releasing the list at all.
+func Test_setmatches_pos_refcount()
+  throw 'Skipped: Nvim does not have test_refcount()'
+  let p1 = [1, 1, 1]
+  let p2 = [2, 1, 1]
+  call assert_equal(1, test_refcount(p1))
+  call assert_equal(1, test_refcount(p2))
+
+  call setmatches([#{group: 'Search', priority: 10, id: 4, pos1: p1, pos2: p2}])
+  call clearmatches()
+  call assert_equal(1, test_refcount(p1))
+  call assert_equal(1, test_refcount(p2))
+
+  let p3 = [3, 1, 1]
+  call assert_equal(-1, setmatches([#{group: 'Search', priority: 10, id: 4, pos1: p3, pos2: {}}]))
+  call clearmatches()
+  call assert_equal(1, test_refcount(p3))
+endfunc
+
 func OtherWindowCommon()
   let lines =<< trim END
     call setline(1, 'Hello Vim world')
@@ -344,6 +366,7 @@ func Test_matchdelete_error()
 endfunc
 
 func Test_matchclear_other_window()
+  CheckScreendump
   CheckRunVimInTerminal
   let buf = OtherWindowCommon()
   call term_sendkeys(buf, ":call clearmatches(winid)\<CR>")
@@ -354,6 +377,7 @@ func Test_matchclear_other_window()
 endfunc
 
 func Test_matchadd_other_window()
+  CheckScreendump
   CheckRunVimInTerminal
   let buf = OtherWindowCommon()
   call term_sendkeys(buf, ":call matchadd('Search', 'Hello', 1, -1, #{window: winid})\<CR>")
@@ -365,6 +389,7 @@ func Test_matchadd_other_window()
 endfunc
 
 func Test_match_in_linebreak()
+  CheckScreendump
   CheckRunVimInTerminal
 
   let lines =<< trim END
@@ -372,15 +397,15 @@ func Test_match_in_linebreak()
     call printf('%s]%s', repeat('x', 50), repeat('x', 70))->setline(1)
     call matchaddpos('ErrorMsg', [[1, 51]])
   END
-  call writefile(lines, 'XscriptMatchLinebreak')
+  call writefile(lines, 'XscriptMatchLinebreak', 'D')
   let buf = RunVimInTerminal('-S XscriptMatchLinebreak', #{rows: 10})
   call VerifyScreenDump(buf, 'Test_match_linebreak', {})
 
   call StopVimInTerminal(buf)
-  call delete('XscriptMatchLinebreak')
 endfunc
 
 func Test_match_with_incsearch()
+  CheckScreendump
   CheckRunVimInTerminal
 
   let lines =<< trim END
@@ -388,7 +413,7 @@ func Test_match_with_incsearch()
     call setline(1, range(20))
     call matchaddpos('ErrorMsg', [3])
   END
-  call writefile(lines, 'XmatchWithIncsearch')
+  call writefile(lines, 'XmatchWithIncsearch', 'D')
   let buf = RunVimInTerminal('-S XmatchWithIncsearch', #{rows: 6})
   call VerifyScreenDump(buf, 'Test_match_with_incsearch_1', {})
 
@@ -397,7 +422,6 @@ func Test_match_with_incsearch()
 
   call term_sendkeys(buf, "\<CR>")
   call StopVimInTerminal(buf)
-  call delete('XmatchWithIncsearch')
 endfunc
 
 " Test for deleting matches outside of the screen redraw top/bottom lines
@@ -421,6 +445,7 @@ func Test_matchdelete_redraw()
 endfunc
 
 func Test_match_tab_with_linebreak()
+  CheckScreendump
   CheckRunVimInTerminal
 
   let lines =<< trim END

@@ -2,6 +2,7 @@ local t = require('test.testutil')
 local n = require('test.functional.testnvim')()
 local Screen = require('test.functional.ui.screen')
 
+local describe, it, before_each = t.describe, t.it, t.before_each
 local api = n.api
 
 local function rand_utf8(count, seed)
@@ -80,7 +81,7 @@ local N = 10000
 local function benchmark(lines, expected_value)
   local lnum = #lines
 
-  local results = t.exec_lua(
+  local results = n.exec_lua(
     [==[
     local N, lnum = ...
 

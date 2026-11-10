@@ -1,8 +1,11 @@
 *usr_21.txt*	Nvim
 
-		     VIM USER MANUAL - by Bram Moolenaar
 
-			   Go away and come back
+		     VIM USER MANUAL	by Bram Moolenaar
+
+
+==============================================================================
+Go away and come back
 
 
 This chapter goes into mixing the use of other programs with Vim.  Either by
@@ -303,21 +306,21 @@ use, and save this in a session.  Then you can go back to this layout whenever
 you want.
    For example, this is a nice layout to use:
 >
-	+----------------------------------------+
-	|		   VIM - main help file  |
-	|					 |
-	|Move around:  Use the cursor keys, or "h|
-	|help.txt================================|
-	|explorer   |				 |
-	|dir	    |~				 |
-	|dir	    |~				 |
-	|file	    |~				 |
-	|file	    |~				 |
-	|file	    |~				 |
-	|file	    |~				 |
-	|~/=========|[No File]===================|
-	|					 |
-	+----------------------------------------+
+        +----------------------------------------+
+        |                  VIM - main help file  |
+        |                                        |
+        |Move around:  Use the cursor keys, or "h|
+        |help.txt================================|
+        |explorer   |                            |
+        |dir        |~                           |
+        |dir        |~                           |
+        |file       |~                           |
+        |file       |~                           |
+        |file       |~                           |
+        |file       |~                           |
+        |~/=========|[No File]===================|
+        |                                        |
+        +----------------------------------------+
 <
 This has a help window at the top, so that you can read this text.  The narrow
 vertical window on the left contains a file explorer.  This is a Vim plugin
@@ -448,9 +451,9 @@ trust the files you are editing: >
 
 	:set nomodeline
 
-Use this format for the modeline:
+Use this format for the modeline: >
 
-	any-text vim:set {option}={value} ... : any-text ~
+	any-text vim:set {option}={value} ... : any-text
 
 The "any-text" indicates that you can put any text before and after the part
 that Vim will use.  This allows making it look like a comment, like what was
@@ -462,9 +465,9 @@ using something like "gvim:" will not work.
 typing the ":set" command, except that you need to insert a backslash before a
 colon (otherwise it would be seen as the end of the modeline).
 
-Another example:
+Another example: >
 
-	// vim:set textwidth=72 dir=c\:\tmp:  use c:\tmp here ~
+	// vim:set textwidth=72 dir=c\:\tmp:  use c:\tmp here
 
 There is an extra backslash before the first colon, so that it's included in
 the ":set" command.  The text after the second colon is ignored, thus a remark
@@ -476,4 +479,6 @@ For more details see |modeline|.
 
 Next chapter: |usr_22.txt|  Finding the file to edit
 
-Copyright: see |manual-copyright|  vim:tw=78:ts=8:noet:ft=help:norl:
+Copyright: see |manual-copyright|
+
+vim:tw=78:ts=8:noet:ft=help:norl:

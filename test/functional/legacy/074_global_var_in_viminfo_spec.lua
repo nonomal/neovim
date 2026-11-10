@@ -3,6 +3,7 @@
 local t = require('test.testutil')
 local n = require('test.functional.testnvim')()
 
+local describe, it, setup, teardown = t.describe, t.it, t.setup, t.teardown
 local clear, command, eq, neq, eval, poke_eventloop =
   n.clear, n.command, t.eq, t.neq, n.eval, n.poke_eventloop
 
@@ -150,5 +151,7 @@ describe('storing global variables in ShaDa files', function()
 
   teardown(function()
     os.remove(tempname)
+    command('set shadafile=NONE')
+    os.remove('Xviminfo')
   end)
 end)

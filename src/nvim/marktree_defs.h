@@ -22,13 +22,13 @@ typedef struct {
 } MTPos;
 #define MTPos(r, c) ((MTPos){ .row = (r), .col = (c) })
 
-// Currently there are four counts, which makes for a uint32_t[4] per node
-// which makes for nice autovectorization into a single XMM or NEON register
 typedef enum {
   kMTMetaInline,
   kMTMetaLines,
   kMTMetaSignHL,
   kMTMetaSignText,
+  kMTMetaConceal,
+  kMTMetaConcealLines,
   kMTMetaCount,  // sentinel, must be last
 } MetaIndex;
 
@@ -36,8 +36,6 @@ typedef enum {
 
 // a filter should be set to kMTFilterSelect for the selected kinds, zero otherwise
 typedef const uint32_t *MetaFilter;
-
-typedef struct mtnode_s MTNode;
 
 typedef struct {
   MTPos pos;
@@ -66,7 +64,7 @@ typedef struct {
   MTPos pos;
   uint32_t ns;
   uint32_t id;
-  uint16_t flags;
+  uint32_t flags;
   DecorInlineData decor_data;  // "ext" tag in flags
 } MTKey;
 

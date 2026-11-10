@@ -4,6 +4,7 @@
 
 #include "nvim/api/private/defs.h"  // IWYU pragma: keep
 #include "nvim/highlight_defs.h"  // IWYU pragma: keep
+#include "nvim/macros_defs.h"
 #include "nvim/types_defs.h"  // IWYU pragma: keep
 #include "nvim/ui_defs.h"  // IWYU pragma: keep
 
@@ -21,7 +22,5 @@ EXTERN const char *ui_ext_names[] INIT( = {
   "_debug_float",
 });
 
-#ifdef INCLUDE_GENERATED_DECLARATIONS
-# include "api/ui.h.generated.h"
-# include "ui_events_remote.h.generated.h"
-#endif
+#include "api/ui.h.generated.h"
+#include "ui_events_remote.h.generated.h"

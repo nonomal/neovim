@@ -2,6 +2,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>  // IWYU pragma: keep
+#include <string.h>
 #include <time.h>  // IWYU pragma: keep
 
 #include "auto/config.h"
@@ -39,17 +40,17 @@ extern MemRealloc mem_realloc;
 extern bool entered_free_all_mem;
 #endif
 
+typedef void *(*MergeSortGetFunc)(void *);
+typedef void (*MergeSortSetFunc)(void *, void *);
+typedef int (*MergeSortCompareFunc)(const void *, const void *);
+
 EXTERN size_t arena_alloc_count INIT( = 0);
 
 #define kv_fixsize_arena(a, v, s) \
   ((v).capacity = (s), \
    (v).items = (void *)arena_alloc(a, sizeof((v).items[0]) * (v).capacity, true))
 
-#define ARENA_BLOCK_SIZE 4096
-
-#ifdef INCLUDE_GENERATED_DECLARATIONS
-# include "memory.h.generated.h"
-#endif
+#include "memory.h.generated.h"
 
 #define XFREE_CLEAR(ptr) \
   do { \
@@ -72,5 +73,3 @@ EXTERN size_t arena_alloc_count INIT( = 0);
 
 // Like strcpy() but allows overlapped source and destination.
 #define STRMOVE(d, s)       memmove((d), (s), strlen(s) + 1)
-
-#define STRCAT(d, s)        strcat((char *)(d), (char *)(s))  // NOLINT(runtime/printf)

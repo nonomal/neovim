@@ -2,6 +2,7 @@ local api = vim.api
 
 local M = {}
 
+--- @param filetype string
 local function get_ftplugin_runtime(filetype)
   local files = api.nvim__get_runtime({
     string.format('ftplugin/%s.vim', filetype),
@@ -15,7 +16,7 @@ local function get_ftplugin_runtime(filetype)
   local r = {} ---@type string[]
   for _, f in ipairs(files) do
     -- VIMRUNTIME should be static so shouldn't need to worry about it changing
-    if not vim.startswith(f, vim.env.VIMRUNTIME) then
+    if not vim.startswith(f, assert(vim.env.VIMRUNTIME)) then
       r[#r + 1] = f
     end
   end
@@ -34,7 +35,7 @@ local ft_option_cache = {} ---@type table<string,table<string,any>>
 --- @param path string
 --- @return integer
 local function hash(path)
-  local mtime0 = vim.uv.fs_stat(path).mtime
+  local mtime0 = assert(vim.uv.fs_stat(path)).mtime
   return mtime0.sec * 1000000000 + mtime0.nsec
 end
 
@@ -70,14 +71,14 @@ local function update_ft_option_cache(filetype)
   end
 end
 
---- @private
+--- @nodoc
 --- @param filetype string Filetype
 --- @param option string Option name
 --- @return string|integer|boolean
 function M.get_option(filetype, option)
   update_ft_option_cache(filetype)
 
-  if not ft_option_cache[filetype] or not ft_option_cache[filetype][option] then
+  if not ft_option_cache[filetype] or ft_option_cache[filetype][option] == nil then
     ft_option_cache[filetype] = ft_option_cache[filetype] or {}
     ft_option_cache[filetype][option] = api.nvim_get_option_value(option, { filetype = filetype })
   end

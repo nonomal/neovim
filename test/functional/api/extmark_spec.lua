@@ -2,6 +2,7 @@ local t = require('test.testutil')
 local n = require('test.functional.testnvim')()
 local Screen = require('test.functional.ui.screen')
 
+local describe, it, before_each = t.describe, t.it, t.before_each
 local request = n.request
 local eq = t.eq
 local ok = t.ok
@@ -11,7 +12,9 @@ local feed = n.feed
 local clear = n.clear
 local command = n.command
 local exec = n.exec
+local exec_lua = n.exec_lua
 local api = n.api
+local fn = n.fn
 local assert_alive = n.assert_alive
 
 local function expect(contents)
@@ -83,7 +86,7 @@ end
 describe('API/extmarks', function()
   local screen
   local marks, positions, init_text, row, col
-  local ns, ns2
+  local ns, ns2 ---@type integer, integer
 
   before_each(function()
     -- Initialize some namespaces and insert 12345 into a buffer
@@ -124,6 +127,10 @@ describe('API/extmarks', function()
     )
     eq("Invalid 'hl_mode': 'foo'", pcall_err(set_extmark, ns, marks[2], 0, 0, { hl_mode = 'foo' }))
     eq(
+      "Invalid 'virt_lines_overflow': 'foo'",
+      pcall_err(set_extmark, ns, marks[2], 0, 0, { virt_lines_overflow = 'foo' })
+    )
+    eq(
       "Invalid 'id': expected Integer, got Array",
       pcall_err(set_extmark, ns, {}, 0, 0, { end_col = 1, end_row = 1 })
     )
@@ -137,7 +144,7 @@ describe('API/extmarks', function()
     )
     -- No memory leak with virt_text, virt_lines, sign_text
     eq(
-      'right_gravity is not a boolean',
+      "Invalid 'right_gravity': expected boolean",
       pcall_err(set_extmark, ns, marks[2], 0, 0, {
         virt_text = { { 'foo', 'Normal' } },
         virt_lines = { { { 'bar', 'Normal' } } },
@@ -147,7 +154,7 @@ describe('API/extmarks', function()
     )
   end)
 
-  it('can end extranges past final newline using end_col = 0', function()
+  it('can end extranges past final newline using end_col=0', function()
     set_extmark(ns, marks[1], 0, 0, {
       end_col = 0,
       end_row = 1,
@@ -158,20 +165,39 @@ describe('API/extmarks', function()
     )
   end)
 
-  it('can end extranges past final newline when strict mode is false', function()
-    set_extmark(ns, marks[1], 0, 0, {
+  it('can end extranges past final newline when strict=false', function()
+    local id = set_extmark(ns, marks[1], 0, 0, {
       end_col = 1,
       end_row = 1,
       strict = false,
     })
+    ok(id > 0, 'id > 0', id)
   end)
 
-  it('can end extranges past final column when strict mode is false', function()
-    set_extmark(ns, marks[1], 0, 0, {
+  it('can end extranges past final column when strict=false', function()
+    local id = set_extmark(ns, marks[1], 0, 0, {
       end_col = 6,
       end_row = 0,
       strict = false,
     })
+    ok(id > 0, 'id > 0', id)
+  end)
+
+  it('end_col=-1 means "end of line" when strict=false', function()
+    local function _test(strict)
+      return set_extmark(ns, marks[1], 0, 0, {
+        end_col = -1,
+        end_row = 0,
+        strict = strict,
+      })
+    end
+
+    -- strict=false
+    local id = _test(false)
+    ok(id > 0, 'id > 0', id)
+
+    -- strict=true
+    eq("Invalid 'end_col': out of range", pcall_err(_test, true))
   end)
 
   it('adds, updates  and deletes marks', function()
@@ -249,7 +275,7 @@ describe('API/extmarks', function()
     set_extmark(ns, 2, 1, 0, { right_gravity = false })
     eq({ { 1, 0, 0 }, { 2, 1, 0 } }, get_extmarks(ns, { 0, 0 }, { -1, -1 }))
     feed('u')
-    eq({ { 1, 0, 0 }, { 2, 1, 0 } }, get_extmarks(ns, { 0, 0 }, { -1, -1 }))
+    eq({ { 1, 0, 0 }, { 2, 0, 0 } }, get_extmarks(ns, { 0, 0 }, { -1, -1 }))
     api.nvim_buf_clear_namespace(0, ns, 0, -1)
   end)
 
@@ -327,30 +353,30 @@ describe('API/extmarks', function()
     rv = get_extmarks(ns, lower, upper)
     eq({ { marks[3], positions[3][1], positions[3][2] } }, rv)
 
-    -- prev with mark id
+    -- reverse with mark id
     rv = get_extmarks(ns, marks[3], { 0, 0 }, { limit = 1 })
     eq({ { marks[3], positions[3][1], positions[3][2] } }, rv)
     rv = get_extmarks(ns, marks[2], { 0, 0 }, { limit = 1 })
     eq({ { marks[2], positions[2][1], positions[2][2] } }, rv)
-    -- prev with positional when mark exists at position
+    -- reverse with positional when mark exists at position
     rv = get_extmarks(ns, positions[3], { 0, 0 }, { limit = 1 })
     eq({ { marks[3], positions[3][1], positions[3][2] } }, rv)
-    -- prev with positional index (no mark at position)
+    -- reverse with positional index (no mark at position)
     rv = get_extmarks(ns, { positions[1][1], positions[1][2] + 1 }, { 0, 0 }, { limit = 1 })
     eq({ { marks[1], positions[1][1], positions[1][2] } }, rv)
-    -- prev with Extremity index
+    -- reverse with Extremity index
     rv = get_extmarks(ns, { -1, -1 }, { 0, 0 }, { limit = 1 })
     eq({ { marks[3], positions[3][1], positions[3][2] } }, rv)
 
-    -- prevrange with mark id
+    -- reverse with mark id
     rv = get_extmarks(ns, marks[3], marks[1])
     eq({ marks[3], positions[3][1], positions[3][2] }, rv[1])
     eq({ marks[2], positions[2][1], positions[2][2] }, rv[2])
     eq({ marks[1], positions[1][1], positions[1][2] }, rv[3])
-    -- prevrange with limit
+    -- reverse with limit
     rv = get_extmarks(ns, marks[3], marks[1], { limit = 2 })
     eq(2, #rv)
-    -- prevrange with positional when mark exists at position
+    -- reverse with positional when mark exists at position
     rv = get_extmarks(ns, positions[3], positions[1])
     eq({
       { marks[3], positions[3][1], positions[3][2] },
@@ -359,7 +385,7 @@ describe('API/extmarks', function()
     }, rv)
     rv = get_extmarks(ns, positions[2], positions[1])
     eq(2, #rv)
-    -- prevrange with positional index (no mark at position)
+    -- reverse with positional index (no mark at position)
     lower = { positions[2][1], positions[2][2] + 1 }
     upper = { positions[3][1], positions[3][2] + 1 }
     rv = get_extmarks(ns, upper, lower)
@@ -368,7 +394,7 @@ describe('API/extmarks', function()
     upper = { positions[3][1], positions[3][2] + 2 }
     rv = get_extmarks(ns, upper, lower)
     eq({}, rv)
-    -- prevrange with extremity index
+    -- reverse with extremity index
     lower = { 0, 0 }
     upper = { positions[2][1], positions[2][2] - 1 }
     rv = get_extmarks(ns, upper, lower)
@@ -424,6 +450,14 @@ describe('API/extmarks', function()
     set_extmark(ns, marks[3], 0, 2) -- check is inclusive
     local rv = get_extmarks(ns, { 2, 3 }, { 0, 2 })
     eq({ { marks[1], 2, 1 }, { marks[2], 1, 4 }, { marks[3], 0, 2 } }, rv)
+    -- doesn't include paired marks whose start pos > lower bound twice
+    -- and returns mark overlapping start pos but not end pos
+    local m1 = set_extmark(ns, nil, 0, 0, { end_row = 1, end_col = 4 })
+    local m2 = set_extmark(ns, nil, 0, 0, { end_row = 1, end_col = 2 })
+    local m3 = set_extmark(ns, nil, 1, 0, { end_row = 1, end_col = 4 })
+    local m4 = set_extmark(ns, nil, 1, 2, { end_row = 1, end_col = 4 })
+    rv = get_extmarks(ns, { 1, 3 }, { 1, 2 }, { overlap = true })
+    eq({ { m4, 1, 2 }, { m3, 1, 0 }, { m2, 0, 0 }, { m1, 0, 0 } }, rv)
   end)
 
   it('get_marks limit=0 returns nothing', function()
@@ -455,7 +489,6 @@ describe('API/extmarks', function()
 
   it('join works when no marks are present', function()
     screen = Screen.new(15, 10)
-    screen:attach()
     feed('a<cr>1<esc>')
     feed('kJ')
     -- This shouldn't seg fault
@@ -506,9 +539,8 @@ describe('API/extmarks', function()
   end)
 
   it('marks move with char inserts', function()
-    -- insertchar in edit.c (the ins_str branch)
+    -- insertchar in insert.c (the ins_str branch)
     screen = Screen.new(15, 10)
-    screen:attach()
     set_extmark(ns, marks[1], 0, 3)
     feed('0')
     insert('abc')
@@ -524,7 +556,7 @@ describe('API/extmarks', function()
 
   -- gravity right as definted in tk library
   it('marks have gravity right', function()
-    -- insertchar in edit.c (the ins_str branch)
+    -- insertchar in insert.c (the ins_str branch)
     set_extmark(ns, marks[1], 0, 2)
     feed('03l')
     insert('X')
@@ -537,7 +569,7 @@ describe('API/extmarks', function()
   end)
 
   it('we can insert multibyte chars', function()
-    -- insertchar in edit.c
+    -- insertchar in insert.c
     feed('a<cr>12345<esc>')
     set_extmark(ns, marks[1], 1, 2)
     -- Insert a fullwidth (two col) tilde, NICE
@@ -759,7 +791,7 @@ describe('API/extmarks', function()
         {
           Ïf (!nlua_is_deferred_safe(lstate)) {
         	// strictly not allowed
-            Яetörn luaL_error(lstate, e_luv_api_disabled, "rpcrequest");
+            Яetörn luaL_error(lstate, e_fast_api_disabled, "rpcrequest");
           }
           return nlua_rpc(lstate, true);
         }]])
@@ -807,6 +839,15 @@ describe('API/extmarks', function()
         get_extmarks(ns, { 2, 0 }, { 2, -1 }, { overlap = true })
       )
     end)
+
+    it('limits overlap results', function()
+      set_extmark(ns, 1, 0, 0, { end_row = 5, end_col = 0 })
+      set_extmark(ns, 2, 2, 5, { end_row = 2, end_col = 30 })
+      set_extmark(ns, 3, 0, 5, { end_row = 2, end_col = 10 })
+      set_extmark(ns, 4, 0, 0, { end_row = 1, end_col = 0 })
+      local rv = get_extmarks(ns, { 2, 0 }, { 2, -1 }, { overlap = true, limit = 1 })
+      eq(1, #rv)
+    end)
   end)
 
   it('replace works', function()
@@ -847,16 +888,17 @@ describe('API/extmarks', function()
     set_extmark(ns, marks[1], 1, 2)
     feed('0<c-v>k>')
     check_undo_redo(ns, marks[1], 1, 2, 1, 6)
-    feed('<c-v>j>')
+    -- "gg0": the cursor after undo/redo depends on |restore-undo-cursor|.
+    feed('gg0<c-v>j>')
     expect('\t12345\n\t12345')
     check_undo_redo(ns, marks[1], 1, 6, 1, 3)
 
-    feed('<c-v>j<LT>')
+    feed('gg0<c-v>j<LT>')
     check_undo_redo(ns, marks[1], 1, 3, 1, 6)
   end)
 
   it('tab works with expandtab', function()
-    -- ins_tab in edit.c
+    -- ins_tab in insert.c
     feed(':set expandtab<cr><esc>')
     feed(':set shiftwidth=2<cr><esc>')
     set_extmark(ns, marks[1], 0, 2)
@@ -865,7 +907,7 @@ describe('API/extmarks', function()
   end)
 
   it('tabs work', function()
-    -- ins_tab in edit.c
+    -- ins_tab in insert.c
     feed(':set noexpandtab<cr><esc>')
     feed(':set shiftwidth=2<cr><esc>')
     feed(':set softtabstop=2<cr><esc>')
@@ -942,6 +984,47 @@ describe('API/extmarks', function()
     eq(2, #rv)
   end)
 
+  it('undo and redo of a mark created during an edit #30331', function()
+    local function range(id)
+      local m = get_extmark_by_id(ns, id, { details = true })
+      return { m[1], m[2], m[3].end_row, m[3].end_col, m[3].invalid }
+    end
+    -- Create the marks over text the edit added, while the undo block is still open.
+    feed('ggdGifoobar')
+    set_extmark(ns, marks[1], 0, 3, { end_col = 6 })
+    set_extmark(ns, marks[2], 0, 3, { end_col = 6, invalidate = true })
+    feed('<esc>')
+    eq({ 0, 3, 0, 6 }, range(marks[1]))
+    feed('u')
+    -- The text is gone, so the range collapses; the invalidating mark also goes invalid.
+    eq({ 0, 0, 0, 0 }, range(marks[1]))
+    eq({ 0, 0, 0, 0, true }, range(marks[2]))
+    feed('<c-r>')
+    -- Redo re-applies the position each side of the range was set to, and revives the
+    -- invalidated mark; replaying the splices alone leaves the range collapsed.
+    eq({ 0, 3, 0, 6 }, range(marks[1]))
+    eq({ 0, 3, 0, 6 }, range(marks[2]))
+  end)
+
+  it('undo and redo of a mark explicitly moved during an edit', function()
+    feed('ggdGiabcdef<esc>')
+    set_extmark(ns, marks[1], 0, 4)
+    -- Insert at col 0; while the undo block is still open, explicitly
+    -- move the mark.
+    feed('0i!!')
+    set_extmark(ns, marks[1], 0, 1)
+    feed('<esc>')
+    eq({ 0, 1 }, get_extmark_by_id(ns, marks[1]))
+    feed('u')
+    -- Back where it was before the edit (the recorded set-time position,
+    -- shifted back by the splice reversal).
+    eq({ 0, 4 }, get_extmark_by_id(ns, marks[1]))
+    feed('<c-r>')
+    -- Redo restores the explicit position: splice adjustment alone would
+    -- leave the mark at col 6.
+    eq({ 0, 1 }, get_extmark_by_id(ns, marks[1]))
+  end)
+
   it('undo and redo of marks deleted during edits', function()
     -- test extmark_adjust
     feed('A<cr>12345<esc>')
@@ -971,7 +1054,7 @@ describe('API/extmarks', function()
     eq(1, #rv)
     rv = get_extmarks(ns2, { 0, 0 }, positions[2], { limit = 1 })
     eq(1, #rv)
-    -- get_prev (limit set)
+    -- reverse (limit set)
     rv = get_extmarks(ns, positions[1], { 0, 0 }, { limit = 1 })
     eq(1, #rv)
     rv = get_extmarks(ns2, positions[1], { 0, 0 }, { limit = 1 })
@@ -982,7 +1065,7 @@ describe('API/extmarks', function()
     eq(2, #rv)
     rv = get_extmarks(ns2, positions[1], positions[2])
     eq(2, #rv)
-    -- get_prev (no limit)
+    -- reverse (no limit)
     rv = get_extmarks(ns, positions[2], positions[1])
     eq(2, #rv)
     rv = get_extmarks(ns2, positions[2], positions[1])
@@ -1423,14 +1506,12 @@ describe('API/extmarks', function()
   end)
 
   it('throws consistent error codes', function()
-    local ns_invalid = ns2 + 1
-    eq(
-      "Invalid 'ns_id': 3",
-      pcall_err(set_extmark, ns_invalid, marks[1], positions[1][1], positions[1][2])
-    )
-    eq("Invalid 'ns_id': 3", pcall_err(api.nvim_buf_del_extmark, 0, ns_invalid, marks[1]))
-    eq("Invalid 'ns_id': 3", pcall_err(get_extmarks, ns_invalid, positions[1], positions[2]))
-    eq("Invalid 'ns_id': 3", pcall_err(get_extmark_by_id, ns_invalid, marks[1]))
+    local ns_invalid = ns2 + 1 ---@type integer
+    local err = string.format("Invalid 'ns_id': %d", ns_invalid)
+    eq(err, pcall_err(set_extmark, ns_invalid, marks[1], positions[1][1], positions[1][2]))
+    eq(err, pcall_err(api.nvim_buf_del_extmark, 0, ns_invalid, marks[1]))
+    eq(err, pcall_err(get_extmarks, ns_invalid, positions[1], positions[2]))
+    eq(err, pcall_err(get_extmark_by_id, ns_invalid, marks[1]))
   end)
 
   it('when col = line-length, set the mark on eol', function()
@@ -1533,7 +1614,7 @@ describe('API/extmarks', function()
         0,
         0,
         {
-          ns_id = 1,
+          ns_id = ns,
           end_col = 0,
           end_row = 1,
           right_gravity = true,
@@ -1545,15 +1626,60 @@ describe('API/extmarks', function()
 
   it('in prompt buffer', function()
     feed('dd')
-    local id = set_extmark(ns, marks[1], 0, 0, {})
+    set_extmark(ns, marks[1], 0, 0, {})
     api.nvim_set_option_value('buftype', 'prompt', {})
     feed('i<esc>')
-    eq({ { id, 0, 2 } }, get_extmarks(ns, 0, -1))
+    eq({ { marks[1], 0, 2 } }, get_extmarks(ns, 0, -1))
+    fn.prompt_setprompt('', 'foo > ')
+    eq({ { marks[1], 0, 6 } }, get_extmarks(ns, 0, -1))
+    feed('ihello')
+    eq({ { marks[1], 0, 11 } }, get_extmarks(ns, 0, -1))
+
+    local function get_extmark_range(id)
+      local rv = get_extmark_by_id(ns, id, { details = true })
+      return rv[3].invalid and 'invalid' or { rv[1], rv[2], rv[3].end_row, rv[3].end_col }
+    end
+
+    set_extmark(ns, marks[2], 0, 0, { invalidate = true, end_col = 6 })
+    set_extmark(ns, marks[3], 0, 6, { invalidate = true, end_col = 11 })
+    set_extmark(ns, marks[4], 0, 0, { invalidate = true, end_col = 11 })
+    set_extmark(ns, marks[5], 0, 0, { invalidate = true, end_row = 1 })
+    fn.prompt_setprompt('', 'floob > ')
+    eq({ 0, 13 }, get_extmark_range(marks[1]))
+    eq('invalid', get_extmark_range(marks[2])) -- extmark spanning old prompt invalidated
+    eq({ 0, 8, 0, 13 }, get_extmark_range(marks[3]))
+    eq({ 0, 8, 0, 13 }, get_extmark_range(marks[4]))
+    eq({ 0, 8, 1, 0 }, get_extmark_range(marks[5]))
+
+    set_extmark(ns, marks[2], 0, 0, { invalidate = true, end_col = 8 })
+    set_extmark(ns, marks[3], 0, 8, { invalidate = true, end_col = 13 })
+    set_extmark(ns, marks[4], 0, 0, { invalidate = true, end_col = 13 })
+    set_extmark(ns, marks[5], 0, 0, { invalidate = true, end_row = 1 })
+    -- Do this in the same event.
+    exec_lua(function()
+      vim.fn.setpos("':", { 0, 1, 999, 0 })
+      vim.fn.prompt_setprompt('', 'discard > ')
+    end)
+    eq({ 0, 10 }, get_extmark_range(marks[1]))
+    eq('invalid', get_extmark_range(marks[2])) -- all spans on line invalidated
+    eq('invalid', get_extmark_range(marks[3]))
+    eq('invalid', get_extmark_range(marks[4]))
+    eq({ 0, 10, 1, 0 }, get_extmark_range(marks[5]))
+
+    feed('hello')
+    eq({ 0, 15 }, get_extmark_range(marks[1]))
+    eq({ 0, 15, 1, 0 }, get_extmark_range(marks[5]))
+    -- init_prompt uses correct range for inserted_bytes when fixing empty prompt.
+    fn.setline('.', { '', 'last line' })
+    eq({ 'discard > ', 'last line' }, api.nvim_buf_get_lines(0, 0, -1, true))
+    eq({ 0, 10 }, get_extmark_range(marks[1]))
+    eq({ 0, 10, 1, 0 }, get_extmark_range(marks[5]))
   end)
 
   it('can get details', function()
     set_extmark(ns, marks[1], 0, 0, {
       conceal = 'c',
+      conceal_lines = '',
       cursorline_hl_group = 'Statement',
       end_col = 0,
       end_right_gravity = true,
@@ -1569,7 +1695,7 @@ describe('API/extmarks', function()
       sign_text = '>>',
       spell = true,
       virt_lines = {
-        { { 'lines', 'Macro' }, { '???' } },
+        { { 'lines', 'Macro' }, { '???' }, { ';;;', '' } },
         { { 'stack', { 'Type', 'Search' } }, { '!!!' } },
       },
       virt_lines_above = true,
@@ -1578,16 +1704,12 @@ describe('API/extmarks', function()
       virt_text_hide = true,
       virt_text_pos = 'right_align',
     })
-    set_extmark(ns, marks[2], 0, 0, {
-      priority = 0,
-      virt_text = { { '', 'Macro' }, { '', { 'Type', 'Search' } }, { '' } },
-      virt_text_win_col = 1,
-    })
     eq({
       0,
       0,
       {
         conceal = 'c',
+        conceal_lines = '',
         cursorline_hl_group = 'Statement',
         end_col = 0,
         end_right_gravity = true,
@@ -1596,7 +1718,7 @@ describe('API/extmarks', function()
         hl_group = 'String',
         hl_mode = 'blend',
         line_hl_group = 'Statement',
-        ns_id = 1,
+        ns_id = ns,
         number_hl_group = 'Statement',
         priority = 0,
         right_gravity = false,
@@ -1604,43 +1726,118 @@ describe('API/extmarks', function()
         sign_text = '>>',
         spell = true,
         virt_lines = {
-          { { 'lines', 'Macro' }, { '???' } },
+          { { 'lines', 'Macro' }, { '???' }, { ';;;', '' } },
           { { 'stack', { 'Type', 'Search' } }, { '!!!' } },
         },
         virt_lines_above = true,
         virt_lines_leftcol = true,
+        virt_lines_overflow = 'trunc',
         virt_text = { { 'text', 'Macro' }, { '???' }, { 'stack', { 'Type', 'Search' } } },
         virt_text_repeat_linebreak = false,
         virt_text_hide = true,
         virt_text_pos = 'right_align',
       },
     }, get_extmark_by_id(ns, marks[1], { details = true }))
+
+    set_extmark(ns, marks[2], 0, 0, {
+      priority = 0,
+      virt_text = { { '', 'Macro' }, { '', { 'Type', 'Search' } }, { '' } },
+      virt_text_repeat_linebreak = true,
+      virt_text_win_col = 1,
+    })
     eq({
       0,
       0,
       {
-        ns_id = 1,
+        ns_id = ns,
         right_gravity = true,
         priority = 0,
         virt_text = { { '', 'Macro' }, { '', { 'Type', 'Search' } }, { '' } },
-        virt_text_repeat_linebreak = false,
+        virt_text_repeat_linebreak = true,
         virt_text_hide = false,
         virt_text_pos = 'win_col',
         virt_text_win_col = 1,
       },
     }, get_extmark_by_id(ns, marks[2], { details = true }))
-    set_extmark(ns, marks[3], 0, 0, { cursorline_hl_group = 'Statement' })
+
+    set_extmark(ns, marks[3], 0, 0, {
+      priority = 0,
+      ui_watched = true,
+      virt_lines = { { { '', 'Macro' }, { '' }, { '', '' } } },
+      virt_lines_overflow = 'scroll',
+    })
     eq({
       0,
       0,
       {
-        ns_id = 1,
+        ns_id = ns,
+        right_gravity = true,
+        ui_watched = true,
+        priority = 0,
+        virt_lines = { { { '', 'Macro' }, { '' }, { '', '' } } },
+        virt_lines_above = false,
+        virt_lines_leftcol = false,
+        virt_lines_overflow = 'scroll',
+      },
+    }, get_extmark_by_id(ns, marks[3], { details = true }))
+
+    -- verify 'wrap' is returned through get_extmark_by_id to validate flag comparison
+    set_extmark(ns, marks[4], 0, 0, {
+      priority = 0,
+      ui_watched = true,
+      virt_lines = { { { '', 'Macro' }, { '' }, { '', '' } } },
+      virt_lines_overflow = 'wrap',
+    })
+    eq({
+      0,
+      0,
+      {
+        ns_id = ns,
+        right_gravity = true,
+        ui_watched = true,
+        priority = 0,
+        virt_lines = { { { '', 'Macro' }, { '' }, { '', '' } } },
+        virt_lines_above = false,
+        virt_lines_leftcol = false,
+        virt_lines_overflow = 'wrap',
+      },
+    }, get_extmark_by_id(ns, marks[4], { details = true }))
+
+    -- verify 'auto' is returned through get_extmark_by_id to validate flag comparison
+    set_extmark(ns, marks[5], 0, 0, {
+      priority = 0,
+      ui_watched = true,
+      virt_lines = { { { '', 'Macro' }, { '' }, { '', '' } } },
+      virt_lines_overflow = 'auto',
+    })
+    eq({
+      0,
+      0,
+      {
+        ns_id = ns,
+        right_gravity = true,
+        ui_watched = true,
+        priority = 0,
+        virt_lines = { { { '', 'Macro' }, { '' }, { '', '' } } },
+        virt_lines_above = false,
+        virt_lines_leftcol = false,
+        virt_lines_overflow = 'auto',
+      },
+    }, get_extmark_by_id(ns, marks[5], { details = true }))
+
+    set_extmark(ns, marks[4], 0, 0, { cursorline_hl_group = 'Statement' })
+    eq({
+      0,
+      0,
+      {
+        ns_id = ns,
         cursorline_hl_group = 'Statement',
         priority = 4096,
         right_gravity = true,
       },
-    }, get_extmark_by_id(ns, marks[3], { details = true }))
-    set_extmark(ns, marks[4], 0, 0, {
+    }, get_extmark_by_id(ns, marks[4], { details = true }))
+
+    set_extmark(ns, marks[5], 0, 0, {
       end_col = 1,
       conceal = 'a',
       spell = true,
@@ -1653,12 +1850,13 @@ describe('API/extmarks', function()
         end_col = 1,
         end_right_gravity = false,
         end_row = 0,
-        ns_id = 1,
+        ns_id = ns,
         right_gravity = true,
         spell = true,
       },
-    }, get_extmark_by_id(ns, marks[4], { details = true }))
-    set_extmark(ns, marks[5], 0, 0, {
+    }, get_extmark_by_id(ns, marks[5], { details = true }))
+
+    set_extmark(ns, marks[6], 0, 0, {
       end_col = 1,
       spell = false,
     })
@@ -1669,11 +1867,12 @@ describe('API/extmarks', function()
         end_col = 1,
         end_right_gravity = false,
         end_row = 0,
-        ns_id = 1,
+        ns_id = ns,
         right_gravity = true,
         spell = false,
       },
-    }, get_extmark_by_id(ns, marks[5], { details = true }))
+    }, get_extmark_by_id(ns, marks[6], { details = true }))
+
     api.nvim_buf_clear_namespace(0, ns, 0, -1)
     -- legacy sign mark includes sign name
     command('sign define sign1 text=s1 texthl=Title linehl=LineNR numhl=Normal culhl=CursorLine')
@@ -1726,15 +1925,15 @@ describe('API/extmarks', function()
 
   it('invalidated marks are deleted', function()
     screen = Screen.new(40, 6)
-    screen:attach()
     feed('dd6iaaa bbb ccc<CR><ESC>gg')
-    api.nvim_set_option_value('signcolumn', 'auto:2', {})
+    api.nvim_set_option_value('signcolumn', 'auto:3', {})
     set_extmark(ns, 1, 0, 0, { invalidate = true, sign_text = 'S1', end_row = 1 })
-    set_extmark(ns, 2, 1, 0, { invalidate = true, sign_text = 'S2', end_row = 2 })
+    set_extmark(ns, 2, 1, 0, { invalidate = true, sign_text = 'S2', end_row = 2, end_col = 0 })
+    set_extmark(ns, 3, 1, 0, { invalidate = true, sign_text = 'S3', end_row = 2, end_col = 1 })
     -- mark with invalidate is removed
     command('d2')
     screen:expect([[
-      S2^aaa bbb ccc                           |
+      {7:S3}^aaa bbb ccc                           |
       {7:  }aaa bbb ccc                           |*3
       {7:  }                                      |
                                               |
@@ -1742,15 +1941,16 @@ describe('API/extmarks', function()
     -- mark is restored with undo_restore == true
     command('silent undo')
     screen:expect([[
-      S1{7:  }^aaa bbb ccc                         |
-      S1S2aaa bbb ccc                         |
-      S2{7:  }aaa bbb ccc                         |
-      {7:    }aaa bbb ccc                         |*2
+      {7:S1    }^aaa bbb ccc                       |
+      {7:S3S2S1}aaa bbb ccc                       |
+      {7:S3S2  }aaa bbb ccc                       |
+      {7:      }aaa bbb ccc                       |*2
                                               |
     ]])
     -- decor is not removed twice
     command('d3')
     api.nvim_buf_del_extmark(0, ns, 1)
+    api.nvim_buf_del_extmark(0, ns, 3)
     command('silent undo')
     -- mark is deleted with undo_restore == false
     set_extmark(ns, 1, 0, 0, { invalidate = true, undo_restore = false, sign_text = 'S1' })
@@ -1758,13 +1958,12 @@ describe('API/extmarks', function()
     command('1d 2')
     eq(0, #get_extmarks(-1, 0, -1, {}))
     -- mark is not removed when deleting bytes before the range
-    set_extmark(
-      ns,
-      3,
-      0,
-      4,
-      { invalidate = true, undo_restore = false, hl_group = 'Error', end_col = 7 }
-    )
+    set_extmark(ns, 3, 0, 4, {
+      invalidate = true,
+      hl_group = 'Error',
+      end_col = 7,
+      right_gravity = false,
+    })
     feed('dw')
     eq(3, get_extmark_by_id(ns, 3, { details = true })[3].end_col)
     -- mark is not removed when deleting bytes at the start of the range
@@ -1778,15 +1977,18 @@ describe('API/extmarks', function()
     eq(1, get_extmark_by_id(ns, 3, { details = true })[3].end_col)
     -- mark is removed when all bytes in the range are deleted
     feed('hx')
-    eq({}, get_extmark_by_id(ns, 3, {}))
+    eq(true, get_extmark_by_id(ns, 3, { details = true })[3].invalid)
+    -- mark is restored with undo_restore == true if pos did not change
+    command('undo')
+    eq(nil, get_extmark_by_id(ns, 3, { details = true })[3].invalid)
     -- multiline mark is not removed when start of its range is deleted
-    set_extmark(
-      ns,
-      4,
-      1,
-      4,
-      { undo_restore = false, invalidate = true, hl_group = 'Error', end_col = 7, end_row = 3 }
-    )
+    set_extmark(ns, 4, 1, 4, {
+      undo_restore = false,
+      invalidate = true,
+      hl_group = 'Error',
+      end_col = 7,
+      end_row = 3,
+    })
     feed('ddDdd')
     eq({ 0, 0 }, get_extmark_by_id(ns, 4, {}))
     -- multiline mark is removed when entirety of its range is deleted
@@ -1794,16 +1996,30 @@ describe('API/extmarks', function()
     eq({}, get_extmark_by_id(ns, 4, {}))
   end)
 
+  it('no crash checking invalidated flag of sign pair end key #31856', function()
+    api.nvim_buf_set_lines(0, 0, 1, false, { '', '' })
+    api.nvim_set_option_value('signcolumn', 'auto:2', {})
+    set_extmark(ns, 1, 0, 0, { sign_text = 'S1', invalidate = true, end_row = 0 })
+    set_extmark(ns, 2, 1, 0, { sign_text = 'S2', end_row = 1 })
+    command('d')
+    api.nvim_buf_clear_namespace(0, ns, 0, -1)
+    n.assert_alive()
+  end)
+
   it('can set a URL', function()
-    set_extmark(ns, 1, 0, 0, { url = 'https://example.com', end_col = 3 })
+    local url1 = 'https://example.com'
+    local url2 = 'http://127.0.0.1'
+    set_extmark(ns, 1, 0, 0, { url = url1, end_col = 3 })
+    set_extmark(ns, 2, 0, 3, { url = url2, hl_group = 'Search', end_col = 5 })
     local extmarks = get_extmarks(ns, 0, -1, { details = true })
-    eq(1, #extmarks)
-    eq('https://example.com', extmarks[1][4].url)
+    eq(2, #extmarks)
+    eq(url1, extmarks[1][4].url)
+    eq(url2, extmarks[2][4].url)
+    eq('Search', extmarks[2][4].hl_group)
   end)
 
   it('respects priority', function()
     screen = Screen.new(15, 10)
-    screen:attach()
 
     set_extmark(ns, marks[1], 0, 0, {
       hl_group = 'Comment',
@@ -1829,6 +2045,16 @@ describe('API/extmarks', function()
         [2] = { foreground = Screen.colors.Blue1, bold = true },
       },
     }
+  end)
+
+  it('are invalidated when "nofile" buffer is unloaded', function()
+    local buf = api.nvim_create_buf(false, true)
+    api.nvim_buf_set_name(buf, 'foo')
+    api.nvim_buf_set_lines(buf, 0, 0, false, { 'foo', 'bar' })
+    local id = api.nvim_buf_set_extmark(buf, ns, 1, 0, { invalidate = true })
+    api.nvim_buf_delete(buf, { unload = true })
+    local mark = { 0, 0, { invalid = true, invalidate = true, ns_id = ns, right_gravity = true } }
+    eq(mark, api.nvim_buf_get_extmark_by_id(buf, ns, id, { details = true }))
   end)
 end)
 
@@ -1896,6 +2122,24 @@ describe('Extmarks buffer api with many marks', function()
     end
     eq(ns_marks[ns1], get_marks(ns1))
     eq(ns_marks[ns2], get_marks(ns2))
+
+    api.nvim_buf_clear_namespace(0, ns1, 0, 10)
+    for id, mark in pairs(ns_marks[ns1]) do
+      if mark[1] < 10 then
+        ns_marks[ns1][id] = nil
+      end
+    end
+    eq(ns_marks[ns1], get_marks(ns1))
+    eq(ns_marks[ns2], get_marks(ns2))
+
+    api.nvim_buf_clear_namespace(0, ns1, 20, -1)
+    for id, mark in pairs(ns_marks[ns1]) do
+      if mark[1] >= 20 then
+        ns_marks[ns1][id] = nil
+      end
+    end
+    eq(ns_marks[ns1], get_marks(ns1))
+    eq(ns_marks[ns2], get_marks(ns2))
   end)
 
   it('can delete line', function()
@@ -1957,7 +2201,6 @@ describe('API/win_extmark', function()
 
   it('sends and only sends ui-watched marks to ui', function()
     screen = Screen.new(20, 4)
-    screen:attach()
     -- should send this
     set_extmark(ns, marks[1], 1, 0, { ui_watched = true })
     -- should not send this
@@ -1980,7 +2223,6 @@ describe('API/win_extmark', function()
 
   it('sends multiple ui-watched marks to ui', function()
     screen = Screen.new(20, 4)
-    screen:attach()
     feed('15A!<Esc>')
     -- should send all of these
     set_extmark(ns, marks[1], 1, 0, { ui_watched = true, virt_text_pos = 'overlay' })
@@ -2026,7 +2268,6 @@ describe('API/win_extmark', function()
 
   it('updates ui-watched marks', function()
     screen = Screen.new(20, 4)
-    screen:attach()
     -- should send this
     set_extmark(ns, marks[1], 1, 0, { ui_watched = true })
     -- should not send this
@@ -2070,8 +2311,7 @@ describe('API/win_extmark', function()
   end)
 
   it('sends ui-watched to splits', function()
-    screen = Screen.new(20, 8)
-    screen:attach({ ext_multigrid = true })
+    screen = Screen.new(20, 8, { ext_multigrid = true })
     -- should send this
     set_extmark(ns, marks[1], 1, 0, { ui_watched = true })
     -- should not send this

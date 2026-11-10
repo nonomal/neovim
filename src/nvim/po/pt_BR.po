@@ -584,12 +584,8 @@ msgid "E325: ATTENTION"
 msgstr "E325: ATENÇÃO"
 
 #: ../memline.c:3181
-msgid ""
-"\n"
-"Found a swap file by the name \""
-msgstr ""
-"\n"
-"Foi encontrado um arquivo de troca de nome \""
+msgid "Found a swap file by the name \""
+msgstr "Foi encontrado um arquivo de troca de nome \""
 
 #: ../memline.c:3185
 msgid "While opening file \""
@@ -625,8 +621,8 @@ msgstr ""
 "(2) Ocorreu um travamento numa sessão de edição desse arquivo.\n"
 
 #: ../memline.c:3206
-msgid "    If this is the case, use \":recover\" or \"vim -r "
-msgstr "    Se esse for o caso, use \":recover\" ou \"vim -r "
+msgid "    If this is the case, use \":recover\" or \"nvim -r "
+msgstr "    Se esse for o caso, use \":recover\" ou \"nvim -r "
 
 #: ../memline.c:3208
 msgid ""
@@ -2388,10 +2384,6 @@ msgstr "E471: Argumento requerido"
 #: ../globals.h:997
 msgid "E10: \\ should be followed by /, ? or &"
 msgstr "E10: \\ deve ser seguido de /, ? ou &"
-
-#: ../globals.h:999
-msgid "E11: Invalid in command-line window; <CR> executes, CTRL-C quits"
-msgstr "E11: Inválido na janela da linha de comando; <CR> executa, CTRL-C sai"
 
 #: ../globals.h:1001
 msgid "E12: Command not allowed from exrc/vimrc in current dir or tag search"
@@ -4216,8 +4208,8 @@ msgstr "E146: Expressões regulares não podem ser delimitadas por letras"
 
 #: ../ex_cmds.c:3958
 #, c-format
-msgid "replace with %s (y/n/a/q/l/^E/^Y)?"
-msgstr "substituir por %s (y/n/a/q/l/^E/^Y)?"
+msgid "replace with %s? (y)es/(n)o/(a)ll/(q)uit/(l)ast/scroll up(^E)/down(^Y)"
+msgstr "substituir por %s? (y)es/(n)o/(a)ll/(q)uit/(l)ast/scroll up(^E)/down(^Y)"
 
 #: ../ex_cmds.c:4373
 msgid "(Interrupted) "
@@ -4283,18 +4275,18 @@ msgstr "E478: Não entre em pânico!"
 
 #: ../ex_cmds.c:4711
 #, c-format
-msgid "E661: Sorry, no '%s' help for %s"
-msgstr "E661: Desculpe, nenhuma ajuda para %s em '%s'"
+msgid "E661: No '%s' help for %s"
+msgstr "E661: Nenhuma ajuda para %s em '%s'"
 
 #: ../ex_cmds.c:4713
 #, c-format
-msgid "E149: Sorry, no help for %s"
-msgstr "E149: Desculpe, nenhuma ajuda para %s"
+msgid "E149: No help for %s"
+msgstr "E149: Nenhuma ajuda para %s"
 
 #: ../ex_cmds.c:4745
 #, c-format
-msgid "Sorry, help file \"%s\" not found"
-msgstr "Desculpe, arquivo de ajuda \"%s\" não encontrado"
+msgid "Help file \"%s\" not found"
+msgstr "Arquivo de ajuda \"%s\" não encontrado"
 
 #: ../ex_cmds.c:5315
 #, c-format
@@ -4784,12 +4776,8 @@ msgstr ""
 "Não foi possível executar o shell "
 
 #: ../os/shell.c:450
-msgid ""
-"\n"
-"shell returned "
-msgstr ""
-"\n"
-"o shell devolveu "
+msgid "shell returned "
+msgstr "o shell devolveu "
 
 #: ../mark.c:673
 msgid "No marks set"
@@ -5500,13 +5488,13 @@ msgid "E763: Word characters differ between spell files"
 msgstr "E763: Caracteres das palavras diferem entre os arquivos ortográficos"
 
 #: ../spell.c:8498
-msgid "Sorry, no suggestions"
-msgstr "Desculpe, não há sugestões"
+msgid "No suggestions"
+msgstr "Não há sugestões"
 
 #: ../spell.c:8501
 #, c-format
-msgid "Sorry, only %<PRId64> suggestions"
-msgstr "Desculpe, apenas %<PRId64> sugestões"
+msgid "Only %<PRId64> suggestions"
+msgstr "Apenas %<PRId64> sugestões"
 
 #. for when 'cmdheight' > 1
 #. avoid more prompt
@@ -5610,8 +5598,8 @@ msgid " Omni completion (^O^N^P)"
 msgstr " Completação inteligente (^O^N^P)"
 
 #: ../edit.c:97
-msgid " Spelling suggestion (s^N^P)"
-msgstr " Sugestão de ortografia (s^N^P)"
+msgid " Spelling suggestion (^S^N^P)"
+msgstr " Sugestão de ortografia (^S^N^P)"
 
 #: ../edit.c:98
 msgid " Keyword Local completion (^N^P)"

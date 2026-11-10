@@ -6502,16 +6502,22 @@ func Test_type()
     call assert_equal(2, type(function("tr", [8])))
     call assert_equal(3, type([]))
     call assert_equal(4, type({}))
-    call assert_equal(5, type(0.0))
+    if has('float')
+      call assert_equal(5, type(0.0))
+    endif
     call assert_equal(6, type(v:false))
     call assert_equal(6, type(v:true))
+    " call assert_equal(7, type(v:none))
     call assert_equal(7, type(v:null))
     call assert_equal(v:t_number, type(0))
     call assert_equal(v:t_string, type(""))
     call assert_equal(v:t_func, type(function("tr")))
+    call assert_equal(v:t_func, type(function("tr", [8])))
     call assert_equal(v:t_list, type([]))
     call assert_equal(v:t_dict, type({}))
-    call assert_equal(v:t_float, type(0.0))
+    if has('float')
+      call assert_equal(v:t_float, type(0.0))
+    endif
     call assert_equal(v:t_bool, type(v:false))
     call assert_equal(v:t_bool, type(v:true))
     " call assert_equal(v:t_none, type(v:none))
@@ -6563,6 +6569,9 @@ func Test_type()
     call assert_false(v:true is 1)
     call assert_false(v:true is v:false)
     " call assert_false(v:none is 0)
+    " call assert_false(v:none is [])
+    " call assert_false(v:none is {})
+    " call assert_false(v:none is 'text')
     call assert_false(v:null is 0)
     " call assert_false(v:null is v:none)
 
@@ -6807,6 +6816,52 @@ func Test_script_lines()
     catch
 	call assert_exception('Vim(function):E1145: Missing heredoc end marker: .')
     endtry
+
+    " More test for :append, :change, :insert
+    let cmds = ["append", "change", "insert"]
+    let suffixes = ["", "!", "|", "|xyz", " "]
+
+    for c in cmds
+      " Single character (with some accepted trailing characters)
+      for s in suffixes
+        let cmd = c[:0] .. s
+        let line = ["func LinesCheck()", cmd, "", "endfunc", "call LinesCheck()"]
+        call writefile(line, 'Xfunc', 'D')
+        call assert_fails('source Xfunc', 'E1145: Missing heredoc end marker: .', $'"{cmd}"')
+      endfor
+
+      " Unnecessary arguments
+      let cmd = c[:2] .. " end"
+      let line[1] = cmd
+      call writefile(line, 'Xfunc', 'D')
+      call assert_fails('source Xfunc', 'E488: Trailing characters: end:', $'"{cmd}"')
+
+      " Extra characters at the end (i.e., other commands)
+      let cmd = c .. "x"
+      let line[1] = cmd
+      call writefile(line, 'Xfunc', 'D')
+      call assert_fails('source Xfunc', 'E492: Not an editor command:', $'"{cmd}"')
+    endfor
+
+    let line =<< trim END
+    func AppendCheck()
+      apple
+    endfunc
+    call AppendCheck()
+    END
+    call writefile(line, 'Xfunc', 'D')
+    call assert_fails('source Xfunc', 'E492: Not an editor command:   apple')
+
+    let line =<< trim END
+    func AppendCheck()
+      command! apple :echo "hello apple"
+      apple
+    endfunc
+    call AppendCheck()
+    END
+    call writefile(line, 'Xfunc', 'D')
+    call assert_fails('source Xfunc', 'E183: User defined commands must start with an uppercase letter')
+
 endfunc
 
 "-------------------------------------------------------------------------------
@@ -6829,10 +6884,12 @@ func Test_bitwise_functions()
     call assert_equal(16, and(127, 16))
     eval 127->and(16)->assert_equal(16)
     call assert_equal(0, and(127, 128))
-    call assert_fails("call and(1.0, 1)", 'E805:')
     call assert_fails("call and([], 1)", 'E745:')
     call assert_fails("call and({}, 1)", 'E728:')
-    call assert_fails("call and(1, 1.0)", 'E805:')
+    if has('float')
+      call assert_fails("call and(1.0, 1)", 'E805:')
+      call assert_fails("call and(1, 1.0)", 'E805:')
+    endif
     call assert_fails("call and(1, [])", 'E745:')
     call assert_fails("call and(1, {})", 'E728:')
     " or
@@ -6840,10 +6897,12 @@ func Test_bitwise_functions()
     call assert_equal(15, or(8, 7))
     eval 8->or(7)->assert_equal(15)
     call assert_equal(123, or(0, 123))
-    call assert_fails("call or(1.0, 1)", 'E805:')
     call assert_fails("call or([], 1)", 'E745:')
     call assert_fails("call or({}, 1)", 'E728:')
-    call assert_fails("call or(1, 1.0)", 'E805:')
+    if has('float')
+      call assert_fails("call or(1.0, 1)", 'E805:')
+      call assert_fails("call or(1, 1.0)", 'E805:')
+    endif
     call assert_fails("call or(1, [])", 'E745:')
     call assert_fails("call or(1, {})", 'E728:')
     " xor
@@ -6851,10 +6910,12 @@ func Test_bitwise_functions()
     call assert_equal(111, xor(127, 16))
     eval 127->xor(16)->assert_equal(111)
     call assert_equal(255, xor(127, 128))
-    call assert_fails("call xor(1.0, 1)", 'E805:')
+    if has('float')
+      call assert_fails("call xor(1.0, 1)", 'E805:')
+      call assert_fails("call xor(1, 1.0)", 'E805:')
+    endif
     call assert_fails("call xor([], 1)", 'E745:')
     call assert_fails("call xor({}, 1)", 'E728:')
-    call assert_fails("call xor(1, 1.0)", 'E805:')
     call assert_fails("call xor(1, [])", 'E745:')
     call assert_fails("call xor(1, {})", 'E728:')
     " invert
@@ -6862,7 +6923,9 @@ func Test_bitwise_functions()
     eval 127->invert()->and(65535)->assert_equal(65408)
     call assert_equal(65519, and(invert(16), 65535))
     call assert_equal(65407, and(invert(128), 65535))
-    call assert_fails("call invert(1.0)", 'E805:')
+    if has('float')
+      call assert_fails("call invert(1.0)", 'E805:')
+    endif
     call assert_fails("call invert([])", 'E745:')
     call assert_fails("call invert({})", 'E728:')
 endfunc
@@ -6954,10 +7017,14 @@ func Test_compound_assignment_operators()
       call assert_equal(10.5, x)
       let x /= 2.5
       call assert_equal(4.2, x)
-      call assert_fails('let x %= 0.5', 'E734')
-      call assert_fails('let x .= "f"', 'E734')
+      call assert_fails('let x %= 0.5', 'E734:')
+      call assert_fails('let x .= "f"', 'E734:')
       let x = !3.14
-      call assert_equal(0.0, x)
+      call assert_equal(0, x)
+      call assert_equal(1, !!1.0)
+      let x = !0.0
+      call assert_equal(1, x)
+      call assert_equal(0, !!0.0)
 
       " integer and float operations
       let x = 1
@@ -7435,6 +7502,149 @@ func Test_for_over_string()
     let res ..= c .. '-'
   endfor
   call assert_equal('', res)
+
+  " Test for using "_" as the loop variable
+  let i = 0
+  let s = 'abc'
+  for _ in s
+    call assert_equal(s[i], _)
+    let i += 1
+  endfor
+endfunc
+
+" Test for deeply nested :source command  {{{1
+func Test_deeply_nested_source()
+  throw 'Skipped: Vim9 script is N/A'
+  let lines =<< trim END
+
+      so
+      sil 0scr
+      delete
+      so
+      0
+  END
+  call writefile(["vim9 silent! @0 \n/"] + lines, 'Xnested.vim', 'D')
+
+  " this must not crash
+  let cmd = GetVimCommand() .. " -e -s -S Xnested.vim -c qa!"
+  call system(cmd)
+endfunc
+
+" Test for impact of silent! on an exception  {{{1
+func Test_exception_silent()
+  XpathINIT
+  let lines =<< trim END
+  func Throw()
+    Xpath 'a'
+    throw "Uncaught"
+    " This line is not executed.
+    Xpath 'b'
+  endfunc
+  " The exception is suppressed due to the presence of silent!.
+  silent! call Throw()
+  try
+    call DoesNotExist()
+  catch /E117:/
+    Xpath 'c'
+  endtry
+  Xpath 'd'
+  END
+  let verify =<< trim END
+    call assert_equal('acd', g:Xpath)
+  END
+
+  call RunInNewVim(lines, verify)
+endfunc
+
+" Test for an error message starting with "Vim E123: " {{{1
+func Test_skip_prefix_in_exception()
+  let emsg = ''
+  try
+    echoerr "Vim E123:"
+  catch
+    let emsg = v:exception
+  endtry
+  call assert_equal('Vim(echoerr):Vim E123:', emsg)
+
+  let emsg = ''
+  try
+    echoerr "Vim E123: abc"
+  catch
+    let emsg = v:exception
+  endtry
+  call assert_equal('Vim(echoerr):E123: abc', emsg)
+endfunc
+
+" Test for try/except messages displayed with 'verbose' level set to 13 {{{1
+func Test_verbose_try_except_messages()
+  let msgs = ''
+  redir => msgs
+  set verbose=13
+  try
+    echoerr 'foo'
+  catch
+    echo v:exception
+  endtry
+  set verbose=0
+  redir END
+  let expected =<< trim END
+    Exception thrown: Vim(echoerr):foo
+
+    Exception caught: Vim(echoerr):foo
+
+    Vim(echoerr):foo
+    Exception finished: Vim(echoerr):foo
+  END
+  call assert_equal(expected, msgs->split("\n"))
+endfunc
+
+" Test for trailing characters after a catch pattern {{{1
+func Test_catch_pattern_trailing_chars()
+  let lines =<< trim END
+    try
+      echoerr 'foo'
+    catch /foo/xxx
+      echo 'caught foo'
+    endtry
+  END
+
+  new
+  call setline(1, lines)
+  let caught_exception = v:false
+  try
+    source
+  catch /E488: Trailing characters: \/xxx/
+    let caught_exception = v:true
+  endtry
+  call assert_true(caught_exception)
+  bw!
+endfunc
+
+" Test using fullcommand() {{{1
+func Test_builtin_fullcommand()
+  " :hor is the minimum abbreviation of :horizontal; :ho is invalid
+  call assert_equal('', fullcommand('ho'))
+  call assert_equal('horizontal', fullcommand('hor'))
+
+  " :k takes one {a-zA-Z'} mark argument and optional whitespace
+  call assert_equal('k', fullcommand('k'))
+  call assert_equal('k', fullcommand(':k'))
+  call assert_equal('k', fullcommand('karrrrrgh!'))
+
+  " :dl is "delete and list" in a legacy Vim script scope
+  call assert_equal('delete', fullcommand('dl'))
+
+  " :s two and three letter commands
+  call assert_equal('substitute', fullcommand('sIr'))
+  call assert_equal('substitute', fullcommand('sIrarrrrrgh!'))
+
+  " :finally
+  call assert_equal('finally', fullcommand('fina'))
+    " 'final' - returns 'final', a Vim9 script-exclusive keyword
+    "         - is a valid shortening of :finally in legacy Vim script
+    "call assert_equal('final', fullcommand('final'))
+  call assert_equal('finally', fullcommand('finall'))
+
 endfunc
 
 "-------------------------------------------------------------------------------

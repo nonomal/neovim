@@ -55,6 +55,26 @@ func Test_window_cmd_cmdwin_with_vsp()
   set ls&vim
 endfunc
 
+func Test_cmdheight_not_changed()
+  set cmdheight=2
+  set winminheight=0
+  augroup Maximize
+    autocmd WinEnter * wincmd _
+  augroup END
+  split
+  tabnew
+  tabfirst
+  call assert_equal(2, &cmdheight)
+
+  tabonly!
+  only
+  set winminheight& cmdheight&
+  augroup Maximize
+    au!
+  augroup END
+  augroup! Maximize
+endfunc
+
 " Test for jumping to windows
 func Test_window_jump()
   new
@@ -67,8 +87,8 @@ endfunc
 func Test_window_cmd_wincmd_gf()
   let fname = 'test_gf.txt'
   let swp_fname = '.' . fname . '.swp'
-  call writefile([], fname)
-  call writefile([], swp_fname)
+  call writefile([], fname, 'D')
+  call writefile([], swp_fname, 'D')
   function s:swap_exists()
     let v:swapchoice = s:swap_choice
   endfunc
@@ -94,9 +114,40 @@ func Test_window_cmd_wincmd_gf()
   call assert_notequal(fname, bufname("%"))
   new | only!
 
-  call delete(fname)
-  call delete(swp_fname)
+  au! test_window_cmd_wincmd_gf
   augroup! test_window_cmd_wincmd_gf
+  delfunc s:swap_exists
+  bw!
+endfunc
+
+func Test_abort_in_wincmd_f()
+  let fname = 'test_f.txt'
+  let swp_fname = $'.{fname}.swp'
+  call writefile([], fname, 'D')
+  call writefile([], swp_fname, 'D')
+  " Remove the catch-all that runtest.vim adds
+  au! SwapExists
+  augroup test_window_cmd_wincmd_f
+    autocmd!
+    " (A)bort
+    autocmd SwapExists test_f.txt let v:swapchoice = 'a'
+  augroup END
+
+  call setline(1, fname)
+  call assert_equal(1, winnr('$'))
+  try
+    wincmd f
+  catch /^Vim:Interrupt$/
+    " expected interrupt by abort
+  endtry
+  call assert_equal(1, winnr('$'))
+  new | only!
+
+  " See :h W19 for the background of this au!. Ideally other tests
+  " should also follow this.
+  au! test_window_cmd_wincmd_f
+  augroup! test_window_cmd_wincmd_f
+  bw!
 endfunc
 
 func Test_window_quit()
@@ -539,7 +590,7 @@ func Test_equalalways_on_close()
   1wincmd w
   split
   4wincmd w
-  resize + 5
+  resize +5
   " left column has three windows, equalized heights.
   " right column has two windows, top one a bit higher
   let height_1 = winheight(1)
@@ -579,20 +630,22 @@ func Test_window_jump_tag()
   CheckFeature quickfix
 
   help
-  /iccf
-  call assert_match('^|iccf|',  getline('.'))
+  /Kuwasha
+  call assert_match('^- |Kuwasha|',  getline('.'))
   call assert_equal(2, winnr('$'))
+  norm! fK
   2wincmd }
   call assert_equal(3, winnr('$'))
-  call assert_match('^|iccf|',  getline('.'))
+  call assert_match('^- |Kuwasha|',  getline('.'))
   wincmd k
-  call assert_match('\*iccf\*',  getline('.'))
+  call assert_match('\*Kuwasha\*',  getline('.'))
   call assert_equal(2, winheight(0))
 
   wincmd z
   set previewheight=4
   help
   /bugs
+  norm! fb
   wincmd }
   wincmd k
   call assert_match('\*bugs\*',  getline('.'))
@@ -758,12 +811,10 @@ endfunc
 
 func Test_window_prevwin()
   " Can we make this work on MS-Windows?
-  if !has('unix')
-    return
-  endif
+  CheckUnix
 
   set hidden autoread
-  call writefile(['2'], 'tmp.txt')
+  call writefile(['2'], 'tmp.txt', 'D')
   new tmp.txt
   q
   call Fun_RenewFile()
@@ -779,9 +830,9 @@ func Test_window_prevwin()
   wincmd p
   " reset
   q
-  call delete('tmp.txt')
   set hidden&vim autoread&vim
   delfunc Fun_RenewFile
+  bw!
 endfunc
 
 func Test_relative_cursor_position_in_one_line_window()
@@ -1024,8 +1075,7 @@ func Test_win_splitmove()
   let s:triggered = []
   augroup WinSplitMove
     au!
-    " Nvim: WinNewPre not ported yet. Also needs full port of v9.1.0117 to pass.
-    " au WinNewPre * let s:triggered += ['WinNewPre']
+    au WinNewPre * let s:triggered += ['WinNewPre']
     au WinNew * let s:triggered += ['WinNew', win_getid()]
     au WinClosed * let s:triggered += ['WinClosed', str2nr(expand('<afile>'))]
   augroup END
@@ -1164,20 +1214,20 @@ func Run_noroom_for_newwindow_test(dir_arg)
   let dir = (a:dir_arg == 'v') ? 'vert ' : ''
 
   " Open as many windows as possible
-  for i in range(500)
+  while v:true
     try
       exe dir . 'new'
     catch /E36:/
       break
     endtry
-  endfor
+  endwhile
 
-  call writefile(['first', 'second', 'third'], 'Xfile1')
-  call writefile([], 'Xfile2')
-  call writefile([], 'Xfile3')
+  call writefile(['first', 'second', 'third'], 'Xnorfile1')
+  call writefile([], 'Xnorfile2')
+  call writefile([], 'Xnorfile3')
 
   " Argument list related commands
-  args Xfile1 Xfile2 Xfile3
+  args Xnorfile1 Xnorfile2 Xnorfile3
   next
   for cmd in ['sargument 2', 'snext', 'sprevious', 'sNext', 'srewind',
 			\ 'sfirst', 'slast']
@@ -1188,13 +1238,13 @@ func Run_noroom_for_newwindow_test(dir_arg)
   " Buffer related commands
   set modified
   hide enew
-  for cmd in ['sbuffer Xfile1', 'sbnext', 'sbprevious', 'sbNext', 'sbrewind',
+  for cmd in ['sbuffer Xnorfile1', 'sbnext', 'sbprevious', 'sbNext', 'sbrewind',
 		\ 'sbfirst', 'sblast', 'sball', 'sbmodified', 'sunhide']
     call assert_fails(dir .. cmd, 'E36:')
   endfor
 
   " Window related commands
-  for cmd in ['split', 'split Xfile2', 'new', 'new Xfile3', 'sview Xfile1',
+  for cmd in ['split', 'split Xnorfile2', 'new', 'new Xnorfile3', 'sview Xnorfile1',
 		\ 'sfind runtest.vim']
     call assert_fails(dir .. cmd, 'E36:')
   endfor
@@ -1217,7 +1267,8 @@ func Run_noroom_for_newwindow_test(dir_arg)
     call assert_fails(dir .. 'lopen', 'E36:')
 
     " Preview window
-    call assert_fails(dir .. 'pedit Xfile2', 'E36:')
+    call assert_fails(dir .. 'pedit Xnorfile2', 'E36:')
+    call assert_fails(dir .. 'pbuffer', 'E36:')
     call setline(1, 'abc')
     call assert_fails(dir .. 'psearch abc', 'E36:')
   endif
@@ -1225,15 +1276,15 @@ func Run_noroom_for_newwindow_test(dir_arg)
   " Window commands (CTRL-W ^ and CTRL-W f)
   if a:dir_arg == 'h'
     call assert_fails('call feedkeys("\<C-W>^", "xt")', 'E36:')
-    call setline(1, 'Xfile1')
+    call setline(1, 'Xnorfile1')
     call assert_fails('call feedkeys("gg\<C-W>f", "xt")', 'E36:')
   endif
   enew!
 
   " Tag commands (:stag, :stselect and :stjump)
   call writefile(["!_TAG_FILE_ENCODING\tutf-8\t//",
-        \ "second\tXfile1\t2",
-        \ "third\tXfile1\t3",],
+        \ "second\tXnorfile1\t2",
+        \ "third\tXnorfile1\t3",],
         \ 'Xtags')
   set tags=Xtags
   call assert_fails(dir .. 'stag second', 'E36:')
@@ -1255,13 +1306,14 @@ func Run_noroom_for_newwindow_test(dir_arg)
   endif
 
   %bwipe!
-  call delete('Xfile1')
-  call delete('Xfile2')
-  call delete('Xfile3')
+  call delete('Xnorfile1')
+  call delete('Xnorfile2')
+  call delete('Xnorfile3')
   only
 endfunc
 
 func Test_split_cmds_with_no_room()
+  throw "Skipped: Nvim supports cmdwin freedom #40312"
   call Run_noroom_for_newwindow_test('h')
   call Run_noroom_for_newwindow_test('v')
 endfunc
@@ -1714,6 +1766,7 @@ endfunc
 " tabline, for each possible value of 'laststatus', 'scrolloff',
 " 'equalalways', and with the cursor at the top, middle and bottom.
 func Test_splitkeep_options()
+  throw "Skipped: Nvim supports cmdwin freedom #40312"
   " disallow window resizing
   " let save_WS = &t_WS
   " set t_WS=
@@ -1843,10 +1896,11 @@ func Test_splitkeep_options()
 endfunc
 
 func Test_splitkeep_cmdwin_cursor_position()
+  throw 'Skipped: Nvim supports cmdwin freedom #40312'
   set splitkeep=screen
   call setline(1, range(&lines))
 
-  " No scroll when cursor is at near bottom of window and cusor position
+  " No scroll when cursor is at near bottom of window and cursor position
   " recompution (done by line('w0') in this test) happens while in cmdwin.
   normal! G
   let firstline = line('w0')
@@ -1910,6 +1964,78 @@ func Test_splitkeep_misc()
 
   %bwipeout!
   set splitbelow&
+  set splitkeep&
+endfunc
+
+func Test_splitkeep_screen_cursor_pos()
+  new
+  set splitkeep=screen
+  call setline(1, ["longer than the last", "shorter"])
+  norm! $
+  wincmd s
+  close
+  call assert_equal([0, 1, 20, 0], getpos('.'))
+  %bwipeout!
+  set splitkeep&
+endfunc
+
+func Test_splitkeep_phantom_jump()
+  set splitbelow
+  call setline(1, range(1, 100))
+  split
+
+  " Move cursor to last visible line so it is at risk of being pushed off
+  normal! L
+  let old = getcurpos()
+
+  " No jumps, just 3 header lines
+  call assert_equal(3, execute('jumps')->split('\n')->len())
+
+  " Switching to "screen" was causing vim to not update relevant variables
+  set splitkeep=screen
+
+  " Reduce window 2's space, and so bump up the cursor
+  set cmdheight=2
+
+  " Cursor has moved up a single line in the buffer, respecting splitkeep
+  call assert_equal(4, execute('jumps')->split('\n')->len())
+
+  let old[1] = old[1] - 1
+  call assert_equal(old, getcurpos())
+
+  %bwipeout!
+  set splitbelow& splitkeep& cmdheight&
+endfunc
+
+func Test_splitkeep_cmdheight()
+  set splitkeep=screen
+  call setline(1, range(&lines))
+  norm! G
+  set cmdheight=2
+  call assert_equal(&lines - 1, line('.'))
+  %bwipeout!
+  set splitkeep& cmdheight&
+endfunc
+
+func Test_aucmd_win_scroll_multibyte()
+  " Using the autocommand window must not scroll the current window when the
+  " cursor is behind multi-byte characters.
+  set splitkeep=cursor
+  " Use a window with a fixed size, the size of the screen may change while
+  " the test is running.
+  call NewWindow(11, 40)
+  call setline(1, repeat([repeat(nr2char(0x3042), 100)], 20))
+  normal! G050l
+  redraw
+  let topline = line('w0')
+
+  for i in range(3)
+    call bufload(bufadd(''))
+  endfor
+  call assert_equal(topline, line('w0'))
+
+  %bwipeout!
+  only!
   set splitkeep&
 endfunc
 
@@ -2040,6 +2166,26 @@ func Test_splitkeep_skipcol()
   let buf = RunVimInTerminal('-S XTestSplitkeepSkipcol', #{rows: 12, cols: 40})
 
   call VerifyScreenDump(buf, 'Test_splitkeep_skipcol_1', {})
+  call StopVimInTerminal(buf)
+endfunc
+
+func Test_splitkeep_line()
+  CheckScreendump
+
+  let lines =<< trim END
+    set splitkeep=screen nosplitbelow
+    autocmd WinResized * call line('w0', 1000)
+    call setline(1, range(1000))
+  END
+
+  call writefile(lines, 'XTestSplitkeepSkipcol', 'D')
+  let buf = RunVimInTerminal('-S XTestSplitkeepSkipcol', #{rows: 6, cols: 40})
+
+  call VerifyScreenDump(buf, 'Test_splitkeep_line_1', {})
+
+  call term_sendkeys(buf, ":wincmd s\<CR>")
+  call VerifyScreenDump(buf, 'Test_splitkeep_line_2', {})
+  call StopVimInTerminal(buf)
 endfunc
 
 func Test_new_help_window_on_error()
@@ -2112,6 +2258,7 @@ func Test_autocmd_window_force_room()
 endfunc
 
 func Test_win_gotoid_splitmove_textlock_cmdwin()
+  throw 'Skipped: Nvim supports cmdwin freedom #40312'
   call setline(1, 'foo')
   new
   let curwin = win_getid()
@@ -2208,6 +2355,210 @@ func Test_winfixsize_positions()
   call assert_equal(info, s:win_layout_info())
 
   %bwipe
+endfunc
+
+func Test_winfixsize_vsep_statusline()
+  CheckScreendump
+
+  let lines =<< trim END
+    set noequalalways splitbelow splitright
+    vsplit
+    setlocal winfixwidth
+    vsplit
+    func SetupWfh()
+      set laststatus=0
+      only
+      split
+      set winfixheight
+      split
+    endfunc
+  END
+  call writefile(lines, 'XTestWinfixsizeVsepStatusline', 'D')
+  let buf = RunVimInTerminal('-S XTestWinfixsizeVsepStatusline', #{rows: 8})
+
+  call term_sendkeys(buf, ":echo winwidth(1) winwidth(2) winwidth(3)\n")
+  call WaitForAssert({-> assert_match('^16 37 20\>', term_getline(buf, 8))})
+
+  call term_sendkeys(buf, ":quit\n")
+  call VerifyScreenDump(buf, 'Test_winfixsize_vsep_statusline_1', {})
+
+  " Reported widths should be consistent with the screen dump.
+  call term_sendkeys(buf, ":echo winwidth(1) winwidth(2)\n")
+  " (May be better if 'wfw' window remains at 37 columns, but the resize is
+  " consistent with how things currently work for 'winfix*' windows)
+  call WaitForAssert({-> assert_match('^36 38\>', term_getline(buf, 8))})
+
+  " For good measure, also check bottom-most 'winfixheight' windows don't leave
+  " stray statuslines with &laststatus=0.
+  call term_sendkeys(buf,
+        \ ":call SetupWfh() | echo winheight(1) winheight(2) winheight(3)\n")
+  call WaitForAssert({-> assert_match('^1 3 1\>', term_getline(buf, 8))})
+
+  call term_sendkeys(buf, ":quit\n")
+  call VerifyScreenDump(buf, 'Test_winfixsize_vsep_statusline_2', {})
+
+  call term_sendkeys(buf, ":echo winheight(1) winheight(2)\n")
+  " (Likewise, may be better if 'wfh' window remains at 3 rows)
+  call WaitForAssert({-> assert_match('^2 4\>', term_getline(buf, 8))})
+
+  call StopVimInTerminal(buf)
+endfunc
+
+func Test_resize_from_another_tabpage()
+  CheckScreendump
+
+  let lines =<< trim END
+    set laststatus=2
+    vnew
+    let w = win_getid()
+    tabnew
+    call win_execute(w, 'vertical resize 20')
+    tabprev
+  END
+  call writefile(lines, 'XTestResizeFromAnotherTabpage', 'D')
+  let buf = RunVimInTerminal('-S XTestResizeFromAnotherTabpage', #{rows: 8})
+  call VerifyScreenDump(buf, 'Test_resize_from_another_tabpage_1', {})
+
+  call StopVimInTerminal(buf)
+endfunc
+
+" When shrinking a window and the only other window has 'winfixheight'
+" with 'winminheight'=0, freed rows must go to the wfh window.
+func Test_winfixheight_resize_wmh_zero()
+  set winminheight=0 laststatus=0
+
+  let id1 = win_getid()
+  copen
+  let id2 = win_getid()
+  wincmd w
+  wincmd _
+  let wi1 = getwininfo(id1)[0]
+  let wi2 = getwininfo(id2)[0]
+  let exp = &lines - wi1.status_height - wi2.height - wi2.status_height - &ch
+  call assert_equal([exp, 1], [wi1.height, wi1.status_height])
+  call assert_equal([0, 0], [wi2.height, wi2.status_height])
+
+  wincmd w  " enter qf (height 0 -> 1)
+  let wi1 = getwininfo(id1)[0]
+  let wi2 = getwininfo(id2)[0]
+  let exp = &lines - wi1.status_height - wi2.height - wi2.status_height - &ch
+  call assert_equal(exp, wi1.height)
+  call assert_equal(1, wi2.height)
+
+  wincmd w
+  " Freed rows must go to qf (wfh, only other window).
+  " Before the fix, the rows were lost (fr_height sum < topframe fr_height),
+  " resulting in wrong window heights in subsequent operations.
+  1wincmd _
+  let wi1 = getwininfo(id1)[0]
+  let wi2 = getwininfo(id2)[0]
+  call assert_equal(1, wi1.height)
+  let exp = &lines - wi1.height - wi1.status_height - &ch
+  call assert_equal(exp, wi2.height)
+
+  wincmd w
+  99wincmd +
+  let wi1 = getwininfo(id1)[0]
+  let wi2 = getwininfo(id2)[0]
+  call assert_equal(0, wi1.height)
+  let exp = &lines - wi1.height - wi1.status_height - &ch
+  call assert_equal(exp, wi2.height)
+
+  99wincmd -
+  let wi1 = getwininfo(id1)[0]
+  let wi2 = getwininfo(id2)[0]
+  let exp = &lines - wi1.status_height - wi2.height - &ch
+  call assert_equal(exp, wi1.height)
+  call assert_equal(1, wi2.height)
+
+  " The original bug caused a crash here, but could not be reproduced in the
+  " test.  Kept as-is, though it has no particular significance.
+  wincmd w
+  call feedkeys("999i\<CR>\<Esc>", 'tx')
+  call feedkeys("ggMi" .. repeat("\<CR>", 99) .. "\<Esc>", 'tx')
+  let wi1 = getwininfo(id1)[0]
+  let wi2 = getwininfo(id2)[0]
+  let exp = &lines - wi1.status_height - wi2.height - &ch
+  call assert_equal(exp, wi1.height)
+  call assert_equal(1, wi2.height)
+
+  cclose
+  set winminheight& laststatus&
+endfunc
+
+" Splitting the only window while it has 'winfixheight' set and 'laststatus' is
+" one must not leave a screen line unused.
+func Test_winfixheight_split_only_window()
+  set laststatus=1
+  new
+  only!
+  setlocal winfixheight
+  split
+  " Two windows, both with a status line, and the command line.
+  call assert_equal(&lines - &cmdheight - 2, winheight(1) + winheight(2))
+
+  only!
+  setlocal winfixheight&
+  set laststatus&
+  bwipe!
+endfunc
+
+" Test that closing a window respects 'winfixwidth' and 'winfixheight'
+" when the freed space goes to a group of windows.
+func Test_winfixsize_close_non_leaf_frame()
+  for vertical in [v:true, v:false]
+    let opt = vertical ? 'winfixwidth' : 'winfixheight'
+    let split = vertical ? 'vertical ' : ''
+    let other = vertical ? '' : 'vertical '
+    let move = vertical ? 'l' : 'j'
+    let Size = {id -> vertical ? winwidth(win_id2win(id))
+          \                     : winheight(win_id2win(id))}
+
+    exe split .. 'split | ' .. split .. 'resize ' .. (vertical ? 30 : 5)
+    exe 'setlocal ' .. opt
+    let b = win_getid()
+    exe 'wincmd ' .. move
+    let c = win_getid()
+    exe 'botright ' .. other .. 'split'
+    exe 'topleft ' .. split .. 'split | ' .. split .. 'resize 4'
+    let a = win_getid()
+
+    let b0 = Size(b)
+    let c0 = Size(c)
+    let a0 = Size(a)
+    close
+
+    call assert_equal(b0, Size(b), opt)
+    call assert_equal(c0 + a0 + 1, Size(c), opt)
+
+    call win_execute(b, 'setlocal no' .. opt)
+    only!
+  endfor
+endfunc
+
+func Test_window_w_locked_bypass()
+  split Xfoo
+  let s:win = win_getid()
+
+  augroup TestBypass
+    " :quit fired this with w_locked set.  Shouldn't be able to unset w_locked
+    " and close s:win if we do other stuff that also sets it.
+    au WinLeave * ++once call assert_equal(s:win, win_getid())
+                      \| quit | call assert_notequal(0, win_id2win(s:win))
+                      \| args Xbar
+                      \| argadd Xbaz
+                      \| edit Xbaz-but-cooler
+                      \| quit | call assert_notequal(0, win_id2win(s:win))
+  augroup END
+  quit
+  call assert_equal(1, bufexists('Xbaz-but-cooler')) " check WinLeave ran
+
+  unlet! s:win
+  augroup TestBypass
+    au!
+  augroup END
+  %argd!
+  %bw!
 endfunc
 
 " vim: shiftwidth=2 sts=2 expandtab

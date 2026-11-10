@@ -1,8 +1,11 @@
 *usr_06.txt*	Nvim
 
-		     VIM USER MANUAL - by Bram Moolenaar
 
-			  Using syntax highlighting
+		     VIM USER MANUAL	by Bram Moolenaar
+
+
+==============================================================================
+Using syntax highlighting
 
 
 Black and white text is boring.  With colors your file comes to life.  This
@@ -106,7 +109,7 @@ Or the colors could be wrong:
 	scroll back a bit and then forward again.
 	For a real fix, see |:syn-sync|.  Some syntax files have a way to make
 	it look further back, see the help for the specific syntax file.  For
-	example, |tex.vim| for the TeX syntax.
+	example, |ft-tex-syntax| for the TeX syntax.
 
 ==============================================================================
 *06.3*	Different colors				*:syn-default-override*
@@ -199,4 +202,6 @@ buffer, set the 'syntax' option: >
 
 Next chapter: |usr_07.txt|  Editing more than one file
 
-Copyright: see |manual-copyright|  vim:tw=78:ts=8:noet:ft=help:norl:
+Copyright: see |manual-copyright|
+
+vim:tw=78:ts=8:noet:ft=help:norl:

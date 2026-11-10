@@ -13,6 +13,7 @@
 #include "nvim/cmdexpand_defs.h"
 #include "nvim/debugger.h"
 #include "nvim/drawscreen.h"
+#include "nvim/errors.h"
 #include "nvim/eval.h"
 #include "nvim/eval/typval.h"
 #include "nvim/eval/typval_defs.h"
@@ -22,10 +23,10 @@
 #include "nvim/fileio.h"
 #include "nvim/garray.h"
 #include "nvim/garray_defs.h"
-#include "nvim/getchar.h"
-#include "nvim/getchar_defs.h"
 #include "nvim/gettext_defs.h"
 #include "nvim/globals.h"
+#include "nvim/input.h"
+#include "nvim/input_defs.h"
 #include "nvim/keycodes.h"
 #include "nvim/macros_defs.h"
 #include "nvim/memory.h"
@@ -60,9 +61,7 @@ struct debuggy {
   int dbg_level;                ///< stored nested level for expr
 };
 
-#ifdef INCLUDE_GENERATED_DECLARATIONS
-# include "debugger.c.generated.h"
-#endif
+#include "debugger.c.generated.h"
 
 /// Debug mode. Repeatedly get Ex commands, until told to continue normal
 /// execution.
@@ -109,13 +108,11 @@ void do_debug(char *cmd)
   }
   if (debug_oldval != NULL) {
     smsg(0, _("Oldval = \"%s\""), debug_oldval);
-    xfree(debug_oldval);
-    debug_oldval = NULL;
+    XFREE_CLEAR(debug_oldval);
   }
   if (debug_newval != NULL) {
     smsg(0, _("Newval = \"%s\""), debug_newval);
-    xfree(debug_newval);
-    debug_newval = NULL;
+    XFREE_CLEAR(debug_newval);
   }
   char *sname = estack_sfile(ESTACK_NONE);
   if (sname != NULL) {
@@ -152,8 +149,7 @@ void do_debug(char *cmd)
     debug_break_level = -1;
 
     xfree(cmdline);
-    cmdline = getcmdline_prompt('>', NULL, 0, EXPAND_NOTHING, NULL,
-                                CALLBACK_NONE);
+    cmdline = getcmdline_prompt('>', NULL, 0, EXPAND_NOTHING, NULL, CALLBACK_NONE, false, NULL);
 
     debug_break_level = n;
     if (typeahead_saved) {
@@ -832,17 +828,21 @@ static linenr_T debuggy_find(bool file, char *fname, linenr_T after, garray_T *g
       typval_T *const tv = eval_expr_no_emsg(bp);
       if (tv != NULL) {
         if (bp->dbg_val == NULL) {
+          xfree(debug_oldval);
           debug_oldval = typval_tostring(NULL, true);
           bp->dbg_val = tv;
+          xfree(debug_newval);
           debug_newval = typval_tostring(bp->dbg_val, true);
           line = true;
         } else {
           if (typval_compare(tv, bp->dbg_val, EXPR_IS, false) == OK
               && tv->vval.v_number == false) {
             line = true;
+            xfree(debug_oldval);
             debug_oldval = typval_tostring(bp->dbg_val, true);
             // Need to evaluate again, typval_compare() overwrites "tv".
             typval_T *const v = eval_expr_no_emsg(bp);
+            xfree(debug_newval);
             debug_newval = typval_tostring(v, true);
             tv_free(bp->dbg_val);
             bp->dbg_val = v;
@@ -850,7 +850,9 @@ static linenr_T debuggy_find(bool file, char *fname, linenr_T after, garray_T *g
           tv_free(tv);
         }
       } else if (bp->dbg_val != NULL) {
+        xfree(debug_oldval);
         debug_oldval = typval_tostring(bp->dbg_val, true);
+        xfree(debug_newval);
         debug_newval = typval_tostring(NULL, true);
         tv_free(bp->dbg_val);
         bp->dbg_val = NULL;

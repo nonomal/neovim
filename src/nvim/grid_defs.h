@@ -7,10 +7,6 @@
 #include "nvim/pos_defs.h"
 #include "nvim/types_defs.h"
 
-// Includes final NUL. MAX_MCO is no longer used, but at least 4*(MAX_MCO+1)+1=29
-// ensures we can fit all composed chars which did fit before.
-#define MAX_SCHAR_SIZE 32
-
 enum {
   kZIndexDefaultGrid = 0,
   kZIndexFloatDefault = 50,
@@ -69,19 +65,11 @@ struct ScreenGrid {
   // external UI.
   bool throttled;
 
-  // TODO(bfredl): maybe physical grids and "views" (i e drawing
-  // specifications) should be two separate types?
-  // offsets for the grid relative to another grid. Used for grids
-  // that are views into another, actually allocated grid 'target'
-  int row_offset;
-  int col_offset;
-  ScreenGrid *target;
-
   // whether the compositor should blend the grid with the background grid
   bool blending;
 
-  // whether the grid can be focused with mouse clicks.
-  bool focusable;
+  // whether the grid interacts with mouse events.
+  bool mouse_enabled;
 
   // z-index: the order in the stack of grids.
   int zindex;
@@ -106,11 +94,21 @@ struct ScreenGrid {
   // compositor should momentarily ignore the grid. Used internally when
   // moving around grids etc.
   bool comp_disabled;
+
+  // need to resend win_float_pos or similar due to comp_index change
+  bool pending_comp_index_update;
 };
 
 #define SCREEN_GRID_INIT { 0, NULL, NULL, NULL, NULL, NULL, 0, 0, false, \
-                           false, 0, 0, NULL, false, true, 0, \
-                           0, 0, 0, 0, 0,  false }
+                           false, false, true, 0, \
+                           0, 0, 0, 0, 0,  false, true }
+
+/// Represents the position of a viewport within a ScreenGrid
+typedef struct {
+  ScreenGrid *target;
+  int row_offset;
+  int col_offset;
+} GridView;
 
 typedef struct {
   int args[3];

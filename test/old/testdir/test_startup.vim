@@ -22,9 +22,7 @@ endfunc
 " 2. packages
 " 3. plugins in after directories
 func Test_after_comes_later()
-  if !has('packages')
-    return
-  endif
+  CheckFeature packages
   let before =<< trim [CODE]
     set nocp viminfo+=nviminfo
     set guioptions+=M
@@ -46,14 +44,14 @@ func Test_after_comes_later()
     quit
   [CODE]
 
-  call mkdir('Xhere/plugin', 'p')
+  call mkdir('Xhere/plugin', 'pR')
   call writefile(['let g:sequence .= "here "'], 'Xhere/plugin/here.vim')
-  call mkdir('Xanother/plugin', 'p')
+  call mkdir('Xanother/plugin', 'pR')
   call writefile(['let g:sequence .= "another "'], 'Xanother/plugin/another.vim')
   call mkdir('Xhere/pack/foo/start/foobar/plugin', 'p')
   call writefile(['let g:sequence .= "pack "'], 'Xhere/pack/foo/start/foobar/plugin/foo.vim')
 
-  call mkdir('Xdir/after/plugin', 'p')
+  call mkdir('Xdir/after/plugin', 'pR')
   call writefile(['let g:sequence .= "after "'], 'Xdir/after/plugin/later.vim')
 
   if RunVim(before, after, '')
@@ -75,15 +73,40 @@ func Test_after_comes_later()
 
   call delete('Xtestout')
   call delete('Xsequence')
-  call delete('Xhere', 'rf')
-  call delete('Xanother', 'rf')
-  call delete('Xdir', 'rf')
+endfunc
+
+func Test_vim_did_init()
+  let before =<< trim [CODE]
+    set nocp viminfo+=nviminfo
+    set guioptions+=M
+    set loadplugins
+    set rtp=Xhere
+    set nomore
+  [CODE]
+
+  let after =<< trim [CODE]
+    redir! > Xtestout
+    echo g:var_vimrc
+    echo g:var_plugin
+    redir END
+    quit
+  [CODE]
+
+  call writefile(['let g:var_vimrc=v:vim_did_init'], 'Xvimrc', 'D')
+  call mkdir('Xhere/plugin', 'pR')
+  call writefile(['let g:var_plugin=v:vim_did_init'], 'Xhere/plugin/here.vim')
+
+  if RunVim(before, after, '-u Xvimrc')
+    let lines = readfile('Xtestout')
+    call assert_equal('0', lines[1])
+    call assert_equal('1', lines[2])
+  endif
+
+  call delete('Xtestout')
 endfunc
 
 func Test_pack_in_rtp_when_plugins_run()
-  if !has('packages')
-    return
-  endif
+  CheckFeature packages
   let before =<< trim [CODE]
     set nocp viminfo+=nviminfo
     set guioptions+=M
@@ -163,6 +186,7 @@ endfunc
 " horizontally or vertically.
 func Test_o_arg()
   let after =<< trim [CODE]
+    set cpo&vim
     call writefile([winnr("$"),
 		\ winheight(1), winheight(2), &lines,
 		\ winwidth(1), winwidth(2), &columns,
@@ -279,6 +303,23 @@ func Test_V_arg()
 
   let out = system(GetVimCommand() . ' --clean -es -X -V15 -c "set verbose?" -cq')
    " call assert_match("sourcing \"$VIMRUNTIME[\\/]defaults\.vim\"\r\nline 1: \" The default vimrc file\..*  verbose=15\n", out)
+endfunc
+
+" Test that an error is shown when the defaults.vim file could not be read
+func Test_defaults_error()
+  throw 'Skipped: Nvim does not support defaults.vim'
+  " Can't catch the output of gvim.
+  CheckNotGui
+  CheckNotMSWindows
+  " For unknown reasons freeing all memory does not work here, even though
+  " EXITFREE is defined.
+  CheckNotAsan
+
+  let out = system('VIMRUNTIME=/tmp ' .. GetVimCommand() .. ' --clean -cq')
+  call assert_match("E1187: Failed to source defaults.vim", out)
+
+  let out = system('VIMRUNTIME=/tmp ' .. GetVimCommand() .. ' -u DEFAULTS -cq')
+  call assert_match("E1187: Failed to source defaults.vim", out)
 endfunc
 
 " Test the '-q [errorfile]' argument.
@@ -522,8 +563,10 @@ func Test_geometry()
       " Depending on the GUI library and the windowing system the final size
       " might be a bit different, allow for some tolerance.  Tuned based on
       " actual failures.
-      call assert_inrange(31, 35, str2nr(lines[0]))
-      call assert_equal('13', lines[1])
+      call assert_inrange(30, 35, str2nr(lines[0]))
+      " for some reason, the window may contain fewer lines than requested
+      " for GTK, so allow some tolerance
+      call assert_inrange(8, 13,  str2nr(lines[1]))
       call assert_equal('41', lines[2])
       call assert_equal('150', lines[3])
       call assert_equal('[41, 150]', lines[4])
@@ -579,7 +622,7 @@ func Test_invalid_args()
     endfor
   endif
 
-  if has('gui_gtk')
+  if has('gui_gtk') && has("xterm_clipboard")
     let out = split(system(GetVimCommand() .. ' --display'), "\n")
     call assert_equal(1, v:shell_error)
     call assert_match('^VIM - Vi IMproved .* (.*)$',         out[0])
@@ -792,6 +835,7 @@ func Test_issue_3969()
 endfunc
 
 func Test_start_with_tabs()
+  CheckScreendump
   CheckRunVimInTerminal
 
   let buf = RunVimInTerminal('-p a b c', {})
@@ -1144,7 +1188,8 @@ endfunc
 " Test for the "-E" (improved Ex mode) argument
 func Test_E_arg()
   let after =<< trim [CODE]
-    call assert_equal('cv', mode(1))
+    " Nvim: "-E" enters the cmdwin REPL after startup scripts; mode()="n".
+    call assert_equal('n', mode(1))
     call writefile(v:errors, 'Xtestout')
     qall
   [CODE]
@@ -1273,6 +1318,60 @@ func Test_write_in_vimrc()
     call delete('Xtestout')
   endif
   call delete('Xvimrc')
+endfunc
+
+func Test_echo_true_in_cmd()
+  CheckNotGui
+
+  let lines =<< trim END
+      echo v:true
+      call writefile(['done'], 'Xresult')
+      quit
+  END
+  call writefile(lines, 'Xscript')
+  if RunVim([], [], '--cmd "source Xscript"')
+    call assert_equal(['done'], readfile('Xresult'))
+  endif
+  call delete('Xscript')
+  call delete('Xresult')
+endfunc
+
+func Test_rename_buffer_on_startup()
+  CheckUnix
+
+  let lines =<< trim END
+      call writefile(['done'], 'Xresult')
+      qa!
+  END
+  call writefile(lines, 'Xscript')
+  if RunVim([], [], "--clean -e -s --cmd 'file x|new|file x' --cmd 'so Xscript'")
+    call assert_equal(['done'], readfile('Xresult'))
+  endif
+  call delete('Xscript')
+  call delete('Xresult')
+endfunc
+
+" Test that -cq works as expected
+func Test_cq_zero_exmode()
+  CheckFeature channel
+
+  let logfile = 'Xcq_log.txt'
+  let out = system(GetVimCommand() .. ' --clean --log ' .. logfile .. ' -es -X -c "argdelete foobar" -c"7cq"')
+  call assert_equal(8, v:shell_error)
+  let log = filter(readfile(logfile), {idx, val -> val =~ "E480:"})
+  call assert_match('E480: No match: foobar', log[0])
+  call delete(logfile)
+
+  " wrap-around on Unix
+  let out = system(GetVimCommand() .. ' --clean --log ' .. logfile .. ' -es -X -c "argdelete foobar" -c"255cq"')
+  if !has('win32')
+    call assert_equal(0, v:shell_error)
+  else
+    call assert_equal(256, v:shell_error)
+  endif
+  let log = filter(readfile(logfile), {idx, val -> val =~ "E480:"})
+  call assert_match('E480: No match: foobar', log[0])
+  call delete('Xcq_log.txt')
 endfunc
 
 " vim: shiftwidth=2 sts=2 expandtab

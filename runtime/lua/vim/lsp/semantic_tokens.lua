@@ -1,73 +1,60 @@
 local api = vim.api
+local nvim_on = require('vim._core.util').nvim_on
 local bit = require('bit')
-local ms = require('vim.lsp.protocol').Methods
 local util = require('vim.lsp.util')
+local Range = require('vim.treesitter._range')
 local uv = vim.uv
+
+local Capability = require('vim.lsp._capability')
+
+local M = {}
+
+-- Max time that token processing runs before yielding to the event loop.
+M._yield_interval_ns = 5e6
 
 --- @class (private) STTokenRange
 --- @field line integer line number 0-based
 --- @field start_col integer start column 0-based
+--- @field end_line integer end line number 0-based
 --- @field end_col integer end column 0-based
 --- @field type string token type as string
 --- @field modifiers table<string,boolean> token modifiers as a set. E.g., { static = true, readonly = true }
 --- @field marked boolean whether this token has had extmarks applied
----
+
 --- @class (private) STCurrentResult
 --- @field version? integer document version associated with this result
 --- @field result_id? string resultId from the server; used with delta requests
 --- @field highlights? STTokenRange[] cache of highlight ranges for this document version
---- @field tokens? integer[] raw token array as received by the server. used for calculating delta responses
+--- @field tokens? uinteger[] raw token array as received by the server. used for calculating delta responses
 --- @field namespace_cleared? boolean whether the namespace was cleared for this result yet
----
+
 --- @class (private) STActiveRequest
 --- @field request_id? integer the LSP request ID of the most recent request sent to the server
 --- @field version? integer the document version associated with the most recent request
----
+
 --- @class (private) STClientState
 --- @field namespace integer
---- @field active_request STActiveRequest
+--- @field supports_range boolean
+--- @field supports_delta boolean
+--- @field active_request STActiveRequest?
+--- @field active_range_request STActiveRequest?
 --- @field current_result STCurrentResult
+--- @field timer uv.uv_timer_t? uv_timer for debouncing requests for new tokens
+--- @field has_full_result boolean
 
----@class (private) STHighlighter
+---@class (private) STHighlighter : vim.lsp.Capability
 ---@field active table<integer, STHighlighter>
----@field bufnr integer
----@field augroup integer augroup for buffer events
 ---@field debounce integer milliseconds to debounce requests for new tokens
----@field timer table uv_timer for debouncing requests for new tokens
----@field client_state table<integer, STClientState>
-local STHighlighter = { active = {} }
-
---- Do a binary search of the tokens in the half-open range [lo, hi).
----
---- Return the index i in range such that tokens[j].line < line for all j < i, and
---- tokens[j].line >= line for all j >= i, or return hi if no such index is found.
-local function lower_bound(tokens, line, lo, hi)
-  while lo < hi do
-    local mid = bit.rshift(lo + hi, 1) -- Equivalent to floor((lo + hi) / 2).
-    if tokens[mid].line < line then
-      lo = mid + 1
-    else
-      hi = mid
-    end
-  end
-  return lo
-end
-
---- Do a binary search of the tokens in the half-open range [lo, hi).
----
---- Return the index i in range such that tokens[j].line <= line for all j < i, and
---- tokens[j].line > line for all j >= i, or return hi if no such index is found.
-local function upper_bound(tokens, line, lo, hi)
-  while lo < hi do
-    local mid = bit.rshift(lo + hi, 1) -- Equivalent to floor((lo + hi) / 2).
-    if line < tokens[mid].line then
-      hi = mid
-    else
-      lo = mid + 1
-    end
-  end
-  return lo
-end
+---@field client_state table<integer, STClientState?>
+local STHighlighter = {
+  name = 'semantic_tokens',
+  method = 'textDocument/semanticTokens',
+  debounce = 200,
+  active = {},
+}
+STHighlighter.__index = STHighlighter
+setmetatable(STHighlighter, Capability)
+Capability.all[STHighlighter.name] = STHighlighter
 
 --- Extracts modifier strings from the encoded number in the token array
 ---
@@ -90,21 +77,23 @@ end
 
 --- Converts a raw token list to a list of highlight ranges used by the on_win callback
 ---
+---@async
 ---@param data integer[]
 ---@param bufnr integer
 ---@param client vim.lsp.Client
----@param request STActiveRequest
+---@param is_current function
 ---@return STTokenRange[]
-local function tokens_to_ranges(data, bufnr, client, request)
-  local legend = client.server_capabilities.semanticTokensProvider.legend
+local function tokens_to_ranges(data, bufnr, client, is_current)
+  local legend = assert(client.server_capabilities.semanticTokensProvider).legend
   local token_types = legend.tokenTypes
   local token_modifiers = legend.tokenModifiers
+  local encoding = client.offset_encoding
   local lines = api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  -- For all encodings, \r\n takes up two code points, and \n (or \r) takes up one.
+  local eol_offset = vim.bo[bufnr].fileformat == 'dos' and 2 or 1
   local ranges = {} ---@type STTokenRange[]
 
   local start = uv.hrtime()
-  local ms_to_ns = 1000 * 1000
-  local yield_interval_ns = 5 * ms_to_ns
   local co, is_main = coroutine.running()
 
   local line ---@type integer?
@@ -114,48 +103,51 @@ local function tokens_to_ranges(data, bufnr, client, request)
     if not is_main then
       local elapsed_ns = uv.hrtime() - start
 
-      if elapsed_ns > yield_interval_ns then
+      if elapsed_ns >= M._yield_interval_ns then
         vim.schedule(function()
-          coroutine.resume(co, util.buf_versions[bufnr])
+          -- Ensure the request hasn't become stale since the last time the coroutine ran.
+          -- If it's stale, we don't resume the coroutine so it'll be garbage collected.
+          if is_current() then
+            coroutine.resume(co)
+          end
         end)
-        if request.version ~= coroutine.yield() then
-          -- request became stale since the last time the coroutine ran.
-          -- abandon it by yielding without a way to resume
-          coroutine.yield()
-        end
 
+        coroutine.yield()
         start = uv.hrtime()
       end
     end
 
+    -- The protocol encodes each token as five integers.
     local delta_line = data[i]
     line = line and line + delta_line or delta_line
-    local delta_start = data[i + 1]
+    local delta_start = assert(data[i + 1])
     start_char = delta_line == 0 and start_char + delta_start or delta_start
 
     -- data[i+3] +1 because Lua tables are 1-indexed
-    local token_type = token_types[data[i + 3] + 1]
-    local modifiers = modifiers_from_number(data[i + 4], token_modifiers)
-
-    local function _get_byte_pos(col)
-      if col > 0 then
-        local buf_line = lines[line + 1] or ''
-        local ok, result
-        ok, result = pcall(util._str_byteindex_enc, buf_line, col, client.offset_encoding)
-        if ok then
-          return result
-        end
-        return math.min(#buf_line, col)
-      end
-      return col
-    end
-
-    local start_col = _get_byte_pos(start_char)
-    local end_col = _get_byte_pos(start_char + data[i + 2])
+    local token_type = token_types[assert(data[i + 3]) + 1]
 
     if token_type then
+      local modifiers = modifiers_from_number(assert(data[i + 4]), token_modifiers)
+      local end_char = start_char + assert(data[i + 2])
+      local buf_line = lines[line + 1] or ''
+      local end_line = line ---@type integer
+      local start_col = vim.str_byteindex(buf_line, encoding, start_char, false)
+
+      ---@type integer LuaLS bug, type must be marked explicitly here
+      local new_end_char = end_char - vim.str_utfindex(buf_line, encoding) - eol_offset
+      -- While end_char goes past the given line, extend the token range to the next line
+      while new_end_char > 0 and end_line < #lines - 1 do
+        end_char = new_end_char
+        end_line = end_line + 1
+        buf_line = lines[end_line + 1] or ''
+        new_end_char = new_end_char - vim.str_utfindex(buf_line, encoding) - eol_offset
+      end
+
+      local end_col = vim.str_byteindex(buf_line, encoding, end_char, false)
+
       ranges[#ranges + 1] = {
         line = line,
+        end_line = end_line,
         start_col = start_col,
         end_col = end_col,
         type = token_type,
@@ -168,160 +160,348 @@ local function tokens_to_ranges(data, bufnr, client, request)
   return ranges
 end
 
---- Construct a new STHighlighter for the buffer
----
----@private
+---@param existing STTokenRange[] current (existing) highlight tokens
+---@param response STTokenRange[] newly decoded highlight tokens from request
+---@param request_range vim.Range the range the request covered
+---@return STTokenRange[]
+local function merge_highlight_ranges(existing, response, request_range)
+  local function before(a, b)
+    return a.line < b.line or (a.line == b.line and a.start_col <= b.start_col)
+  end
+
+  local srow, scol = request_range.start_row, request_range.start_col
+  local erow, ecol = request_range.end_row, request_range.end_col
+
+  -- Half-open ranges overlap if each starts before the other ends.
+  local function overlaps(token)
+    return Range.cmp_pos.lt(token.line, token.start_col, erow, ecol)
+      and Range.cmp_pos.lt(srow, scol, token.end_line, token.end_col)
+  end
+
+  ---@type STTokenRange[]
+  local result = {}
+  local i, j = 1, 1
+
+  local function add(token)
+    token.marked = false
+    result[#result + 1] = token
+  end
+
+  while true do
+    while i <= #existing and overlaps(existing[i]) do
+      i = i + 1
+    end
+    while j <= #response and not overlaps(response[j]) do
+      j = j + 1
+    end
+
+    local a, b = existing[i], response[j]
+    if not a and not b then
+      break
+    end
+
+    if not b or (a and before(a, b)) then
+      add(a)
+      i = i + 1
+    else
+      add(b)
+      j = j + 1
+    end
+  end
+
+  return result
+end
+
+---@package
 ---@param bufnr integer
----@return STHighlighter
-function STHighlighter.new(bufnr)
-  local self = setmetatable({}, { __index = STHighlighter })
+function STHighlighter:new(bufnr)
+  self = Capability.new(self, bufnr)
 
-  self.bufnr = bufnr
-  self.augroup = api.nvim_create_augroup('vim_lsp_semantic_tokens:' .. bufnr, { clear = true })
-  self.client_state = {}
+  nvim_on('BufWinEnter', self.augroup, { buf = self.bufnr }, function()
+    for client_id, _ in pairs(self.client_state) do
+      self:send_request(client_id)
+    end
+  end)
 
-  STHighlighter.active[bufnr] = self
-
-  api.nvim_buf_attach(bufnr, false, {
-    on_lines = function(_, buf)
-      local highlighter = STHighlighter.active[buf]
-      if not highlighter then
-        return true
+  nvim_on('WinScrolled', self.augroup, { buf = self.bufnr }, function()
+    for client_id, state in pairs(self.client_state) do
+      if state.supports_range then
+        self:debounce_request(client_id)
       end
-      highlighter:on_change()
-    end,
-    on_reload = function(_, buf)
-      local highlighter = STHighlighter.active[buf]
-      if highlighter then
-        highlighter:reset()
-        highlighter:send_request()
-      end
-    end,
-    on_detach = function(_, buf)
-      local highlighter = STHighlighter.active[buf]
-      if highlighter then
-        highlighter:destroy()
-      end
-    end,
-  })
-
-  api.nvim_create_autocmd({ 'BufWinEnter', 'InsertLeave' }, {
-    buffer = self.bufnr,
-    group = self.augroup,
-    callback = function()
-      self:send_request()
-    end,
-  })
-
-  api.nvim_create_autocmd('LspDetach', {
-    buffer = self.bufnr,
-    group = self.augroup,
-    callback = function(args)
-      self:detach(args.data.client_id)
-      if vim.tbl_isempty(self.client_state) then
-        self:destroy()
-      end
-    end,
-  })
+    end
+  end)
 
   return self
 end
 
 ---@package
-function STHighlighter:destroy()
-  for client_id, _ in pairs(self.client_state) do
-    self:detach(client_id)
-  end
-
-  api.nvim_del_augroup_by_id(self.augroup)
-  STHighlighter.active[self.bufnr] = nil
-end
-
----@package
-function STHighlighter:attach(client_id)
+---@param client_id integer
+function STHighlighter:on_attach(client_id)
+  local client = vim.lsp.get_client_by_id(client_id)
   local state = self.client_state[client_id]
   if not state then
     state = {
-      namespace = api.nvim_create_namespace('vim_lsp_semantic_tokens:' .. client_id),
-      active_request = {},
+      namespace = api.nvim_create_namespace('nvim.lsp.semantic_tokens:' .. client_id),
+      supports_range = client
+          and client:supports_method('textDocument/semanticTokens/range', self.bufnr)
+        or false,
+      supports_delta = client
+          and client:supports_method('textDocument/semanticTokens/full/delta', self.bufnr)
+        or false,
       current_result = {},
+      has_full_result = false,
     }
     self.client_state[client_id] = state
   end
+
+  self:send_request(client_id)
 end
 
 ---@package
-function STHighlighter:detach(client_id)
+---@param client_id integer
+function STHighlighter:on_detach(client_id)
   local state = self.client_state[client_id]
   if state then
     --TODO: delete namespace if/when that becomes possible
     api.nvim_buf_clear_namespace(self.bufnr, state.namespace, 0, -1)
+    self:reset_timer(state)
+    -- Drop in-flight responses (see `is_current()` in process_response).
+    self:cancel_active_request(client_id)
     self.client_state[client_id] = nil
   end
 end
 
+---@private
+---@param client_id integer
+function STHighlighter:on_close(client_id)
+  self:reset(client_id)
+end
+
+---@private
+---@param client_id integer
+function STHighlighter:on_change(client_id)
+  self:send_request(client_id)
+end
+
 --- This is the entry point for getting all the tokens in a buffer.
 ---
---- For the given clients (or all attached, if not provided), this sends a request
---- to ask for semantic tokens. If the server supports delta requests, that will
---- be prioritized if we have a previous requestId and token array.
+--- For the given client, this sends semantic token requests to ask for semantic tokens. If the
+--- server supports range requests and a full result has not been processed yet, it will send a
+--- range request for the current visible range. Additionally, if a result for the current document
+--- version hasn't been processed yet, it sends either a full or delta request, depending on what
+--- the server supports and whether there's a current full result for the previous document version.
 ---
---- This function will skip servers where there is an already an active request in
---- flight for the same version. If there is a stale request in flight, that is
---- cancelled prior to sending a new one.
+--- This function will skip full/delta requests on servers where there is an already an active
+--- full/delta request in flight for the same version. If there is a stale request in flight, that
+--- is cancelled prior to sending a new one.
 ---
---- Finally, if the request was successful, the requestId and document version
---- are saved to facilitate document synchronization in the response.
+--- Finally, for successful requests, the requestId (full/delta) and document version are saved to
+--- facilitate document synchronization in the response.
 ---
 ---@package
-function STHighlighter:send_request()
-  local version = util.buf_versions[self.bufnr]
+---@param client_id integer
+function STHighlighter:send_request(client_id)
+  local client = vim.lsp.get_client_by_id(client_id)
+  local state = self.client_state[client_id]
 
-  self:reset_timer()
+  if client and state then
+    self:reset_timer(state)
 
-  for client_id, state in pairs(self.client_state) do
-    local client = vim.lsp.get_client_by_id(client_id)
+    local version = util.buf_versions[self.bufnr]
 
-    local current_result = state.current_result
-    local active_request = state.active_request
+    -- If the server supports range and there's no full result yet, then start with a range
+    -- request
+    if state.supports_range and not state.has_full_result then
+      self:send_range_request(client, state, version)
+    end
 
-    -- Only send a request for this client if the current result is out of date and
-    -- there isn't a current a request in flight for this version
-    if client and current_result.version ~= version and active_request.version ~= version then
-      -- cancel stale in-flight request
-      if active_request.request_id then
-        client.cancel_request(active_request.request_id)
-        active_request = {}
-        state.active_request = active_request
+    if
+      (not state.has_full_result or state.current_result.version ~= version)
+      and (not state.active_request or state.active_request.version ~= version)
+    then
+      self:send_full_delta_request(client, state, version)
+    end
+  end
+end
+
+--- Send a range request for the visible area
+---
+---@private
+---@param client vim.lsp.Client
+---@param state STClientState
+---@param version integer
+function STHighlighter:send_range_request(client, state, version)
+  -- cancel stale in-flight request
+  if state.active_range_request and state.active_range_request.request_id then
+    local request_id = state.active_range_request.request_id
+    state.active_range_request = nil
+    client:cancel_request(request_id)
+  end
+
+  ---@type lsp.SemanticTokensRangeParams
+  local params = {
+    textDocument = util.make_text_document_params(self.bufnr),
+    range = self:get_overscan_range(),
+  }
+
+  ---@type vim.lsp.protocol.Method.ClientToServer.Request
+  local method = 'textDocument/semanticTokens/range'
+
+  local request = { version = version }
+  state.active_range_request = request
+
+  ---@param response? lsp.SemanticTokens
+  local success, request_id = client:request(method, params, function(err, response, ctx)
+    local bufnr = assert(ctx.bufnr)
+    local highlighter = STHighlighter.active[bufnr]
+    if not highlighter then
+      return
+    end
+
+    -- This request was already cancelled, replaced, or completed
+    if state.active_range_request ~= request then
+      return
+    end
+
+    -- Only process range response if we got a valid response and don't have a full result yet
+    if err or not response or state.has_full_result then
+      if err then
+        vim.lsp.log.error('semantic_tokens', err)
       end
+      state.active_range_request = nil
+      return
+    end
 
-      local spec = client.server_capabilities.semanticTokensProvider.full
-      local hasEditProvider = type(spec) == 'table' and spec.delta
+    coroutine.wrap(STHighlighter.process_response)(
+      highlighter,
+      response,
+      client,
+      request,
+      ctx.params.range
+    )
+  end, self.bufnr)
 
-      local params = { textDocument = util.make_text_document_params(self.bufnr) }
-      local method = ms.textDocument_semanticTokens_full
+  if state.active_range_request == request then
+    if success then
+      request.request_id = request_id
+    else
+      state.active_range_request = nil
+    end
+  end
+end
 
-      if hasEditProvider and current_result.result_id then
-        method = method .. '/delta'
-        params.previousResultId = current_result.result_id
+--- Send a full or delta request
+---
+---@private
+---@param client vim.lsp.Client
+---@param state STClientState
+---@param version integer
+function STHighlighter:send_full_delta_request(client, state, version)
+  local current_result = state.current_result
+
+  -- cancel stale in-flight request
+  if state.active_request and state.active_request.request_id then
+    local request_id = state.active_request.request_id
+    state.active_request = nil
+    client:cancel_request(request_id)
+  end
+
+  ---@type lsp.SemanticTokensParams|lsp.SemanticTokensDeltaParams
+  local params = { textDocument = util.make_text_document_params(self.bufnr) }
+
+  ---@type vim.lsp.protocol.Method.ClientToServer.Request
+  local method = 'textDocument/semanticTokens/full'
+
+  if state.supports_delta and current_result.result_id then
+    method = 'textDocument/semanticTokens/full/delta'
+    params.previousResultId = current_result.result_id
+  end
+
+  local request = { version = version }
+  state.active_request = request
+
+  ---@param response? lsp.SemanticTokens|lsp.SemanticTokensDelta
+  local success, request_id = client:request(method, params, function(err, response, ctx)
+    local bufnr = assert(ctx.bufnr)
+    local highlighter = STHighlighter.active[bufnr]
+    if not highlighter then
+      return
+    end
+
+    -- This request was already cancelled, replaced, or completed
+    if state.active_request ~= request then
+      return
+    end
+
+    if err or not response then
+      if err then
+        vim.lsp.log.error('semantic_tokens', err)
       end
-      local success, request_id = client.request(method, params, function(err, response, ctx)
-        -- look client up again using ctx.client_id instead of using a captured
-        -- client object
-        local c = vim.lsp.get_client_by_id(ctx.client_id)
-        local bufnr = assert(ctx.bufnr)
-        local highlighter = STHighlighter.active[bufnr]
-        if not err and c and highlighter then
-          coroutine.wrap(STHighlighter.process_response)(highlighter, response, c, version)
-        end
-      end, self.bufnr)
+      state.active_request = nil
+      return
+    end
 
-      if success then
-        active_request.request_id = request_id
-        active_request.version = version
+    coroutine.wrap(STHighlighter.process_response)(highlighter, response, client, request)
+  end, self.bufnr)
+
+  if state.active_request == request then
+    if success then
+      request.request_id = request_id
+    else
+      state.active_request = nil
+    end
+  end
+end
+
+---@private
+---@param client_id integer
+function STHighlighter:cancel_active_request(client_id)
+  local state = assert(self.client_state[client_id])
+  local client = vim.lsp.get_client_by_id(client_id)
+
+  ---@param field 'active_request'|'active_range_request'
+  local function clear(field)
+    local request = state[field] ---@type STActiveRequest?
+    state[field] = nil ---@type STActiveRequest?
+
+    if client and request and request.request_id then
+      client:cancel_request(request.request_id)
+    end
+  end
+
+  clear('active_range_request')
+  clear('active_request')
+end
+
+--- Gets a range that encompasses all visible lines plus overscan across all windows
+--- @private
+--- @return lsp.Range
+function STHighlighter:get_overscan_range()
+  local wins = vim.fn.win_findbuf(self.bufnr)
+  local num_lines = api.nvim_buf_line_count(self.bufnr)
+  local min_start, max_end = nil, nil
+
+  for _, win in ipairs(wins) do
+    local wininfo = vim.fn.getwininfo(win)[1]
+    if wininfo then
+      -- Overscan the token request by the height of the window on each side
+      -- to prevent flickering when navigating up and down.
+      local start_line = math.max(0, wininfo.topline - 1 - wininfo.height)
+      local end_line = math.min(num_lines, wininfo.botline + wininfo.height)
+      if not min_start or start_line < min_start then
+        min_start = start_line
+      end
+      if not max_end or end_line > max_end then
+        max_end = end_line
       end
     end
   end
+
+  ---@type lsp.Range
+  return {
+    ['start'] = { line = min_start or 0, character = 0 },
+    ['end'] = { line = max_end or 0, character = 0 },
+  }
 end
 
 --- This function will parse the semantic token responses and set up the cache
@@ -335,30 +515,37 @@ end
 --- Finally, a redraw command is issued to force nvim to redraw the screen to
 --- pick up changed highlight tokens.
 ---
+---@async
 ---@param response lsp.SemanticTokens|lsp.SemanticTokensDelta
+---@param client vim.lsp.Client
+---@param request STActiveRequest the request that triggered this response
+---@param range lsp.Range? nil if this was a full request
 ---@private
-function STHighlighter:process_response(response, client, version)
+function STHighlighter:process_response(response, client, request, range)
   local state = self.client_state[client.id]
   if not state then
     return
   end
 
-  -- ignore stale responses
-  if state.active_request.version and version ~= state.active_request.version then
-    return
+  local is_range_request = range ~= nil
+  local field = is_range_request and 'active_range_request' or 'active_request'
+
+  local function is_current()
+    return api.nvim_buf_is_loaded(self.bufnr)
+      and state[field] == request
+      and request.version == util.buf_versions[self.bufnr]
+      and (not is_range_request or not state.has_full_result)
   end
 
-  -- skip nil responses
-  if response == nil then
-    state.active_request = {}
+  if not is_current() then
     return
   end
 
   -- if we have a response to a delta request, update the state of our tokens
   -- appropriately. if it's a full response, just use that
   local tokens ---@type integer[]
-  local token_edits = response.edits
-  if token_edits then
+  if response.edits then
+    local token_edits = response.edits
     table.sort(token_edits, function(a, b)
       return a.start < b.start
     end)
@@ -380,21 +567,72 @@ function STHighlighter:process_response(response, client, version)
 
   -- convert token list to highlight ranges
   -- this could yield and run over multiple event loop iterations
-  local highlights = tokens_to_ranges(tokens, self.bufnr, client, state.active_request)
+  local highlights = tokens_to_ranges(tokens, self.bufnr, client, is_current)
+
+  if not is_current() then
+    return
+  end
+
+  if range then
+    local current = state.current_result
+    local existing = current.version == request.version and current.highlights or {}
+    local request_range = vim.range.lsp(self.bufnr, range, client.offset_encoding)
+    highlights = merge_highlight_ranges(existing, highlights, request_range)
+  end
 
   -- reset active request
-  state.active_request = {}
+  state[field] = nil ---@type STActiveRequest?
+
+  -- if this was a full result, mark the state as having processed it
+  if not is_range_request then
+    state.has_full_result = true
+  end
 
   -- update the state with the new results
-  local current_result = state.current_result
-  current_result.version = version
-  current_result.result_id = response.resultId
-  current_result.tokens = tokens
-  current_result.highlights = highlights
-  current_result.namespace_cleared = false
+  state.current_result = {
+    version = request.version,
+    result_id = not is_range_request and response.resultId or nil,
+    tokens = tokens,
+    highlights = highlights,
+    namespace_cleared = false,
+  }
 
   -- redraw all windows displaying buffer
-  api.nvim__buf_redraw_range(self.bufnr, 0, -1)
+  if vim.fn.win_gettype(vim.fn.bufwinid(self.bufnr)) == '' then
+    api.nvim__redraw({ buf = self.bufnr, valid = true })
+  end
+end
+
+--- @param bufnr integer
+--- @param ns integer
+--- @param token STTokenRange
+--- @param hl_group string
+--- @param priority integer
+local function set_mark(bufnr, ns, token, hl_group, priority)
+  api.nvim_buf_set_extmark(bufnr, ns, token.line, token.start_col, {
+    hl_group = hl_group,
+    end_line = token.end_line,
+    end_col = token.end_col,
+    priority = priority,
+    strict = false,
+  })
+end
+
+--- @param lnum integer
+--- @param foldend integer?
+--- @return boolean, integer?
+local function check_fold(lnum, foldend)
+  if foldend and lnum <= foldend then
+    return true, foldend
+  end
+
+  local folded = vim.fn.foldclosed(lnum)
+
+  if folded == -1 then
+    return false, nil
+  end
+
+  return folded ~= lnum, vim.fn.foldclosedend(lnum)
 end
 
 --- on_win handler for the decoration provider (see |nvim_set_decoration_provider|)
@@ -418,7 +656,7 @@ end
 function STHighlighter:on_win(topline, botline)
   for client_id, state in pairs(self.client_state) do
     local current_result = state.current_result
-    if current_result.version and current_result.version == util.buf_versions[self.bufnr] then
+    if current_result.version == util.buf_versions[self.bufnr] then
       if not current_result.namespace_cleared then
         api.nvim_buf_clear_namespace(self.bufnr, state.namespace, 0, -1)
         current_result.namespace_cleared = true
@@ -450,32 +688,52 @@ function STHighlighter:on_win(topline, botline)
       -- finishes, clangd sends a refresh request which lets the client
       -- re-synchronize the tokens.
 
-      local set_mark = function(token, hl_group, delta)
-        vim.api.nvim_buf_set_extmark(self.bufnr, state.namespace, token.line, token.start_col, {
-          hl_group = hl_group,
-          end_col = token.end_col,
-          priority = vim.highlight.priorities.semantic_tokens + delta,
-          strict = false,
-        })
+      --- @param token STTokenRange
+      --- @param hl_group string
+      --- @param delta integer
+      local function set_mark0(token, hl_group, delta)
+        set_mark(
+          self.bufnr,
+          state.namespace,
+          token,
+          hl_group,
+          vim.hl.priorities.semantic_tokens + delta
+        )
       end
 
       local ft = vim.bo[self.bufnr].filetype
       local highlights = assert(current_result.highlights)
-      local first = lower_bound(highlights, topline, 1, #highlights + 1)
-      local last = upper_bound(highlights, botline, first, #highlights + 1) - 1
+      local first = vim.list.bisect(highlights, { end_line = topline }, {
+        key = function(highlight)
+          return highlight.end_line
+        end,
+      })
+      local last = vim.list.bisect(highlights, { line = botline }, {
+        lo = first,
+        bound = 'upper',
+        key = function(highlight)
+          return highlight.line
+        end,
+      }) - 1
+
+      --- @type boolean?, integer?
+      local is_folded, foldend
 
       for i = first, last do
-        local token = highlights[i]
-        if not token.marked then
-          set_mark(token, string.format('@lsp.type.%s.%s', token.type, ft), 0)
-          for modifier, _ in pairs(token.modifiers) do
-            set_mark(token, string.format('@lsp.mod.%s.%s', modifier, ft), 1)
-            set_mark(token, string.format('@lsp.typemod.%s.%s.%s', token.type, modifier, ft), 2)
+        local token = assert(highlights[i])
+
+        is_folded, foldend = check_fold(token.line + 1, foldend)
+
+        if not is_folded and not token.marked then
+          set_mark0(token, string.format('@lsp.type.%s.%s', token.type, ft), 0)
+          for modifier in pairs(token.modifiers) do
+            set_mark0(token, string.format('@lsp.mod.%s.%s', modifier, ft), 1)
+            set_mark0(token, string.format('@lsp.typemod.%s.%s.%s', token.type, modifier, ft), 2)
           end
           token.marked = true
 
           api.nvim_exec_autocmds('LspTokenUpdate', {
-            buffer = self.bufnr,
+            buf = self.bufnr,
             modeline = false,
             data = {
               token = token,
@@ -491,17 +749,13 @@ end
 --- Reset the buffer's highlighting state and clears the extmark highlights.
 ---
 ---@package
-function STHighlighter:reset()
-  for client_id, state in pairs(self.client_state) do
-    api.nvim_buf_clear_namespace(self.bufnr, state.namespace, 0, -1)
-    state.current_result = {}
-    if state.active_request.request_id then
-      local client = vim.lsp.get_client_by_id(client_id)
-      assert(client)
-      client.cancel_request(state.active_request.request_id)
-      state.active_request = {}
-    end
-  end
+---@param client_id integer
+function STHighlighter:reset(client_id)
+  local state = assert(self.client_state[client_id])
+  self:cancel_active_request(client_id)
+  api.nvim_buf_clear_namespace(self.bufnr, state.namespace, 0, -1)
+  state.current_result = {}
+  state.has_full_result = false
 end
 
 --- Mark a client's results as dirty. This method will cancel any active
@@ -512,50 +766,48 @@ end
 ---@package
 ---@param client_id integer
 function STHighlighter:mark_dirty(client_id)
-  local state = self.client_state[client_id]
-  assert(state)
+  local state = assert(self.client_state[client_id])
 
-  -- if we clear the version from current_result, it'll cause the
-  -- next request to be sent and will also pause new highlights
-  -- from being added in on_win until a new result comes from
-  -- the server
-  if state.current_result then
-    state.current_result.version = nil
-  end
+  -- If we clear the version from current_result, it'll cause the next
+  -- full/delta request to be sent and will also pause new highlights
+  -- from being added in on_win until a new result comes from the server.
+  -- Clearing has_full_result and result_id will allow range requests to
+  -- fire again along with a new full baseline. Not clearing result_id
+  -- here would potentially allow the delta response to be built from
+  -- a set of tokens changed by the range request.
+  state.current_result.version = nil
+  state.current_result.result_id = nil
+  state.has_full_result = false
 
-  if state.active_request.request_id then
-    local client = vim.lsp.get_client_by_id(client_id)
-    assert(client)
-    client.cancel_request(state.active_request.request_id)
-    state.active_request = {}
-  end
+  self:cancel_active_request(client_id)
 end
 
 ---@package
-function STHighlighter:on_change()
-  self:reset_timer()
+---@param client_id integer
+function STHighlighter:debounce_request(client_id)
+  local state = assert(self.client_state[client_id])
+  self:reset_timer(state)
   if self.debounce > 0 then
-    self.timer = vim.defer_fn(function()
-      self:send_request()
+    state.timer = vim.defer_fn(function()
+      self:send_request(client_id)
     end, self.debounce)
   else
-    self:send_request()
+    self:send_request(client_id)
   end
 end
 
 ---@private
-function STHighlighter:reset_timer()
-  local timer = self.timer
+---@param state STClientState
+function STHighlighter.reset_timer(_, state)
+  local timer = state.timer
   if timer then
-    self.timer = nil
+    state.timer = nil
     if not timer:is_closing() then
       timer:stop()
       timer:close()
     end
   end
 end
-
-local M = {}
 
 --- Start the semantic token highlighting engine for the given buffer with the
 --- given client. The client must already be attached to the buffer.
@@ -570,80 +822,55 @@ local M = {}
 --- client.server_capabilities.semanticTokensProvider = nil
 --- ```
 ---
----@param bufnr integer
----@param client_id integer
----@param opts? table Optional keyword arguments
+---@deprecated
+---@param bufnr (integer) Buffer number, or `0` for current buffer
+---@param client_id (integer) The ID of the |vim.lsp.Client|
+---@param opts? (table) Optional keyword arguments
 ---  - debounce (integer, default: 200): Debounce token requests
 ---        to the server by the given number in milliseconds
 function M.start(bufnr, client_id, opts)
-  vim.validate({
-    bufnr = { bufnr, 'n', false },
-    client_id = { client_id, 'n', false },
-  })
+  vim.deprecate('vim.lsp.semantic_tokens.start', 'vim.lsp.semantic_tokens.enable(true)', '0.13.0')
+  vim.validate('bufnr', bufnr, 'number')
+  vim.validate('client_id', client_id, 'number')
 
-  opts = opts or {}
-  assert(
-    (not opts.debounce or type(opts.debounce) == 'number'),
-    'opts.debounce must be a number with the debounce time in milliseconds'
-  )
+  M.enable(true, { bufnr = bufnr, client_id = client_id })
 
-  local client = vim.lsp.get_client_by_id(client_id)
-  if not client then
-    vim.notify('[LSP] No client with id ' .. client_id, vim.log.levels.ERROR)
-    return
+  if opts and opts.debounce and STHighlighter.active[bufnr] then
+    local highlighter = STHighlighter.active[bufnr]
+    local prev = rawget(highlighter, 'debounce')
+    highlighter.debounce = prev and math.max(prev, opts.debounce) or opts.debounce
   end
-
-  if not vim.lsp.buf_is_attached(bufnr, client_id) then
-    vim.notify(
-      '[LSP] Client with id ' .. client_id .. ' not attached to buffer ' .. bufnr,
-      vim.log.levels.WARN
-    )
-    return
-  end
-
-  if not vim.tbl_get(client.server_capabilities, 'semanticTokensProvider', 'full') then
-    vim.notify('[LSP] Server does not support semantic tokens', vim.log.levels.WARN)
-    return
-  end
-
-  local highlighter = STHighlighter.active[bufnr]
-
-  if not highlighter then
-    highlighter = STHighlighter.new(bufnr)
-    highlighter.debounce = opts.debounce or 200
-  else
-    highlighter.debounce = math.max(highlighter.debounce, opts.debounce or 200)
-  end
-
-  highlighter:attach(client_id)
-  highlighter:send_request()
 end
 
 --- Stop the semantic token highlighting engine for the given buffer with the
 --- given client.
 ---
---- NOTE: This is automatically called by a |LspDetach| autocmd that is set up as part
---- of `start()`, so you should only need this function to manually disengage the semantic
---- token engine without fully detaching the LSP client from the buffer.
----
----@param bufnr integer
----@param client_id integer
+---@deprecated
+---@param bufnr (integer) Buffer number, or `0` for current buffer
+---@param client_id (integer) The ID of the |vim.lsp.Client|
 function M.stop(bufnr, client_id)
-  vim.validate({
-    bufnr = { bufnr, 'n', false },
-    client_id = { client_id, 'n', false },
-  })
+  vim.deprecate('vim.lsp.semantic_tokens.stop', 'vim.lsp.semantic_tokens.enable(false)', '0.13.0')
+  M.enable(false, { bufnr = bufnr, client_id = client_id })
+end
 
-  local highlighter = STHighlighter.active[bufnr]
-  if not highlighter then
-    return
-  end
+--- Query whether semantic tokens is enabled in the {filter}ed scope
+---@param filter? vim.lsp.capability.enable.Filter
+function M.is_enabled(filter)
+  return vim.lsp._capability.is_enabled('semantic_tokens', filter)
+end
 
-  highlighter:detach(client_id)
-
-  if vim.tbl_isempty(highlighter.client_state) then
-    highlighter:destroy()
-  end
+--- Enables or disables semantic tokens for the {filter}ed scope.
+---
+--- To "toggle", pass the inverse of `is_enabled()`:
+---
+--- ```lua
+--- vim.lsp.semantic_tokens.enable(not vim.lsp.semantic_tokens.is_enabled())
+--- ```
+---
+---@param enable? boolean true/nil to enable, false to disable
+---@param filter? vim.lsp.capability.enable.Filter
+function M.enable(enable, filter)
+  vim.lsp._capability.enable('semantic_tokens', enable, filter)
 end
 
 --- @nodoc
@@ -661,14 +888,13 @@ end
 ---        the following fields:
 ---        - line (integer) line number, 0-based
 ---        - start_col (integer) start column, 0-based
+---        - end_line (integer) end line number, 0-based
 ---        - end_col (integer) end column, 0-based
 ---        - type (string) token type as string, e.g. "variable"
 ---        - modifiers (table) token modifiers as a set. E.g., { static = true, readonly = true }
 ---        - client_id (integer)
 function M.get_at_pos(bufnr, row, col)
-  if bufnr == nil or bufnr == 0 then
-    bufnr = api.nvim_get_current_buf()
-  end
+  bufnr = vim._resolve_bufnr(bufnr)
 
   local highlighter = STHighlighter.active[bufnr]
   if not highlighter then
@@ -680,11 +906,17 @@ function M.get_at_pos(bufnr, row, col)
     row, col = cursor[1] - 1, cursor[2]
   end
 
+  local position = { row, col, row, col }
+
   local tokens = {} --- @type STTokenRangeInspect[]
   for client_id, client in pairs(highlighter.client_state) do
     local highlights = client.current_result.highlights
     if highlights then
-      local idx = lower_bound(highlights, row, 1, #highlights + 1)
+      local idx = vim.list.bisect(highlights, { end_line = row }, {
+        key = function(highlight)
+          return highlight.end_line
+        end,
+      })
       for i = idx, #highlights do
         local token = highlights[i]
         --- @cast token STTokenRangeInspect
@@ -693,7 +925,9 @@ function M.get_at_pos(bufnr, row, col)
           break
         end
 
-        if token.start_col <= col and token.end_col > col then
+        if
+          Range.contains({ token.line, token.start_col, token.end_line, token.end_col }, position)
+        then
           token.client_id = client_id
           tokens[#tokens + 1] = token
         end
@@ -706,24 +940,23 @@ end
 --- Force a refresh of all semantic tokens
 ---
 --- Only has an effect if the buffer is currently active for semantic token
---- highlighting (|vim.lsp.semantic_tokens.start()| has been called for it)
+--- highlighting (|vim.lsp.semantic_tokens.enable()| has been called for it)
 ---
 ---@param bufnr (integer|nil) filter by buffer. All buffers if nil, current
 ---       buffer if 0
 function M.force_refresh(bufnr)
-  vim.validate({
-    bufnr = { bufnr, 'n', true },
-  })
+  vim.validate('bufnr', bufnr, 'number', true)
 
   local buffers = bufnr == nil and vim.tbl_keys(STHighlighter.active)
-    or bufnr == 0 and { api.nvim_get_current_buf() }
-    or { bufnr }
+    or { vim._resolve_bufnr(bufnr) }
 
   for _, buffer in ipairs(buffers) do
     local highlighter = STHighlighter.active[buffer]
     if highlighter then
-      highlighter:reset()
-      highlighter:send_request()
+      for client_id, _ in pairs(highlighter.client_state) do
+        highlighter:reset(client_id)
+        highlighter:send_request(client_id)
+      end
     end
   end
 end
@@ -732,7 +965,7 @@ end
 --- @inlinedoc
 ---
 --- Priority for the applied extmark.
---- (Default: `vim.highlight.priorities.semantic_tokens + 3`)
+--- (Default: `vim.hl.priorities.semantic_tokens + 3`)
 --- @field priority? integer
 
 --- Highlight a semantic token.
@@ -741,12 +974,13 @@ end
 --- mark will be deleted by the semantic token engine when appropriate; for
 --- example, when the LSP sends updated tokens. This function is intended for
 --- use inside |LspTokenUpdate| callbacks.
----@param token (table) a semantic token, found as `args.data.token` in |LspTokenUpdate|.
----@param bufnr (integer) the buffer to highlight
----@param client_id (integer) The ID of the |vim.lsp.Client|
+---@param token (table) Semantic token, provided as `ev.data.token` in |LspTokenUpdate|
+---@param bufnr (integer) Buffer to highlight, or `0` for current buffer.
+---@param client_id (integer) ID of the |vim.lsp.Client|
 ---@param hl_group (string) Highlight group name
 ---@param opts? vim.lsp.semantic_tokens.highlight_token.Opts  Optional parameters:
 function M.highlight_token(token, bufnr, client_id, hl_group, opts)
+  bufnr = vim._resolve_bufnr(bufnr)
   local highlighter = STHighlighter.active[bufnr]
   if not highlighter then
     return
@@ -757,37 +991,32 @@ function M.highlight_token(token, bufnr, client_id, hl_group, opts)
     return
   end
 
-  opts = opts or {}
-  local priority = opts.priority or vim.highlight.priorities.semantic_tokens + 3
+  local priority = opts and opts.priority or vim.hl.priorities.semantic_tokens + 3
 
-  vim.api.nvim_buf_set_extmark(bufnr, state.namespace, token.line, token.start_col, {
-    hl_group = hl_group,
-    end_col = token.end_col,
-    priority = priority,
-    strict = false,
-  })
+  set_mark(bufnr, state.namespace, token, hl_group, priority)
 end
 
---- @package
 --- |lsp-handler| for the method `workspace/semanticTokens/refresh`
 ---
 --- Refresh requests are sent by the server to indicate a project-wide change
 --- that requires all tokens to be re-requested by the client. This handler will
 --- invalidate the current results of all buffers and automatically kick off a
---- new request for buffers that are displayed in a window. For those that aren't, a
+--- new request for buffers that are displayed in a window. For those that aren't,
 --- the BufWinEnter event should take care of it next time it's displayed.
+---@param err lsp.ResponseError?
+---@param ctx lsp.HandlerContext
 function M._refresh(err, _, ctx)
   if err then
     return vim.NIL
   end
 
-  for _, bufnr in ipairs(vim.lsp.get_buffers_by_client_id(ctx.client_id)) do
-    local highlighter = STHighlighter.active[bufnr]
-    if highlighter and highlighter.client_state[ctx.client_id] then
+  for bufnr, highlighter in pairs(STHighlighter.active) do
+    if highlighter.client_state[ctx.client_id] then
       highlighter:mark_dirty(ctx.client_id)
 
       if not vim.tbl_isempty(vim.fn.win_findbuf(bufnr)) then
-        highlighter:send_request()
+        -- some LSPs send rapid fire refresh notifications, so we'll debounce them with debounce_request()
+        highlighter:debounce_request(ctx.client_id)
       end
     end
   end
@@ -795,15 +1024,8 @@ function M._refresh(err, _, ctx)
   return vim.NIL
 end
 
-local namespace = api.nvim_create_namespace('vim_lsp_semantic_tokens')
-api.nvim_set_decoration_provider(namespace, {
-  on_win = function(_, _, bufnr, topline, botline)
-    local highlighter = STHighlighter.active[bufnr]
-    if highlighter then
-      highlighter:on_win(topline, botline)
-    end
-  end,
-})
+-- Semantic tokens is enabled by default
+M.enable(true)
 
 --- for testing only! there is no guarantee of API stability with this!
 ---

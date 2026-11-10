@@ -2,7 +2,8 @@
 
                             NVIM REFERENCE MANUAL
 
-                          Guide to using Lua in Nvim
+==============================================================================
+Using Lua in Nvim
 
 
                                        Type |gO| to see the table of contents.
@@ -10,36 +11,34 @@
 ==============================================================================
 Introduction                                                         *lua-guide*
 
-This guide will go through the basics of using Lua in Nvim. It is not meant
-to be a comprehensive encyclopedia of all available features, nor will it
-detail all intricacies. Think of it as a survival kit -- the bare minimum
-needed to know to comfortably get started on using Lua in Nvim.
-
-An important thing to note is that this isn't a guide to the Lua language
-itself. Rather, this is a guide on how to configure and modify Nvim through
-the Lua language and the functions we provide to help with this. Take a look
-at |luaref| and |lua-concepts| if you'd like to learn more about Lua itself.
-Similarly, this guide assumes some familiarity with the basics of Nvim
-(commands, options, mappings, autocommands), which are covered in the
+This guide introduces the basics of everyday Lua usage for configuring and
+controlling Nvim. It assumes some familiarity with the (non-Lua) basics of
+Nvim (commands, options, mappings, autocommands), which are covered in the
 |user-manual|.
 
+This is not a comprehensive encyclopedia of all available features. Think of
+it as a survival kit: the bare minimum needed to comfortably get started on
+using Lua in Nvim.
+
+- See |lua-plugin| for guidance on developing Lua plugins.
+- See |luaref| and |lua-concepts| for details on the Lua programming language.
+
 ------------------------------------------------------------------------------
-Some words on the API                                            *lua-guide-api*
+About the API                                                  *lua-guide-api*
 
 The purpose of this guide is to introduce the different ways of interacting
 with Nvim through Lua (the "API"). This API consists of three different
 layers:
 
-1. The "Vim API" inherited from Vim: |Ex-commands| and |builtin-functions| as
-well as |user-function|s in Vimscript. These are accessed through |vim.cmd()|
-and |vim.fn| respectively, which are discussed under |lua-guide-vimscript|
-below.
-
+1. The "Vim API" inherited from Vim: |Ex-command|s and |vimscript-functions|
+   as well as |user-function|s in Vimscript. These are accessed through
+   |vim.cmd()| and |vim.fn| respectively, which are discussed under
+   |lua-guide-vimscript| below.
 2. The "Nvim API" written in C for use in remote plugins and GUIs; see |api|.
-These functions are accessed through |vim.api|.
-
+   These functions are accessed through |vim.api|.
 3. The "Lua API" written in and specifically for Lua. These are any other
-functions accessible through `vim.*` not mentioned already; see |lua-stdlib|.
+   functions accessible through `vim.*` not mentioned already; see
+   |lua-stdlib|.
 
 This distinction is important, as API functions inherit behavior from their
 original layer: For example, Nvim API functions always need all arguments to
@@ -89,23 +88,38 @@ Finally, you can include Lua code in a Vimscript file by putting it inside a
       end
     EOF
 <
+                                                       *lua-guide-interrupt*
+Lua cannot normally be interrupted by |CTRL-C| (Lua does not implicitly
+"yield" to Nvim). To allow the user to interrupt potentially slow loops,
+periodically call |vim.wait()|. Passing `interval=0` skips the dummy timer
+setup, minimizing per-call overhead in a tight loop: >lua
+
+    while true do
+      -- ...work...
+      local _, code = vim.wait(0, nil, 0)
+      if code == -2 then -- CTRL-C.
+        break
+      end
+    end
+<
+See also: https://github.com/neovim/neovim/issues/6800
+
 ------------------------------------------------------------------------------
 Using Lua files on startup                                    *lua-guide-config*
 
 Nvim supports using `init.vim` or `init.lua` as the configuration file, but
-not both at the same time. This should be placed in your |config| directory,
-which is typically `~/.config/nvim` for Linux, BSD, or macOS, and
-`~/AppData/Local/nvim/` for Windows. Note that you can use Lua in `init.vim`
-and Vimscript in `init.lua`, which will be covered below.
+not both at the same time. This should be placed in your |config| directory
+(run `:echo stdpath('config')` to see where it is). Note that you can also use
+Lua in `init.vim` and Vimscript in `init.lua`, which will be covered below.
 
 If you'd like to run any other Lua script on |startup| automatically, then you
-can simply put it in `plugin/` in your |'runtimepath'|.
+can simply put it in `plugin/` in your 'runtimepath'.
 
 ------------------------------------------------------------------------------
 Lua modules                                                  *lua-guide-modules*
 
 If you want to load Lua files on demand, you can place them in the `lua/`
-directory in your |'runtimepath'| and load them with `require`. (This is the
+directory in your 'runtimepath' and load them with `require`. (This is the
 Lua equivalent of Vimscript's |autoload| mechanism.)
 
 Let's assume you have the following directory structure:
@@ -122,7 +136,6 @@ Let's assume you have the following directory structure:
     |-- syntax/
     |-- init.vim
 <
-
 Then the following Lua code will load `myluamodule.lua`:
 >lua
     require("myluamodule")
@@ -135,7 +148,6 @@ Similarly, loading `other_modules/anothermodule.lua` is done via
     -- or
     require('other_modules.anothermodule')
 <
-
 Note how "submodules" are just subdirectories; the `.` is equivalent to the
 path separator `/` (even on Windows).
 
@@ -153,11 +165,11 @@ its functions if this succeeds and prints an error message otherwise:
     if not ok then
       print("Module had an error")
     else
-      mymod.function()
+      mymod.func()
     end
 <
 In contrast to |:source|, |require()| not only searches through all `lua/` directories
-under |'runtimepath'|, it also caches the module on first use. Calling
+under 'runtimepath', it also caches the module on first use. Calling
 `require()` a second time will therefore _not_ execute the script again and
 instead return the cached file. To rerun the file, you need to remove it from
 the cache manually first:
@@ -165,9 +177,8 @@ the cache manually first:
     package.loaded['myluamodule'] = nil
     require('myluamodule')    -- read and execute the module again from disk
 <
-------------------------------------------------------------------------------
 See also:
-• |lua-module-load|
+• |lua-module-load|: how `require()` finds modules
 • |pcall()|
 
 ==============================================================================
@@ -225,21 +236,18 @@ Vimscript are automatically converted:
     end
 
     vim.fn.jobstart('ls', { on_stdout = print_stdout })
-    print(vim.fn.printf('Hello from %s', 'Lua'))
 <
-This works for both |builtin-functions| and |user-function|s.
+This works for both |vimscript-functions| and |user-function|s.
 
 Note that hashes (`#`) are not valid characters for identifiers in Lua, so,
 e.g., |autoload| functions have to be called with this syntax:
 >lua
     vim.fn['my#autoload#function']()
 <
-------------------------------------------------------------------------------
 See also:
-• |builtin-functions|: alphabetic list of all Vimscript functions
-• |function-list|:     list of all Vimscript functions grouped by topic
-• |:runtime|:          run all Lua scripts matching a pattern in |'runtimepath'|
-• |package.path|:      list of all paths searched by `require()`
+• |vimscript-functions|: descriptions of all Vimscript functions
+• |function-list|: Vimscript functions grouped by topic
+• |:runtime|: run all Lua scripts matching a pattern in 'runtimepath'
 
 ==============================================================================
 Variables                                                  *lua-guide-variables*
@@ -294,7 +302,6 @@ To delete a variable, simply set it to `nil`:
 >lua
     vim.g.myvar = nil
 <
-------------------------------------------------------------------------------
 See also:
 • |lua-vim-variables|
 
@@ -391,7 +398,6 @@ window is used:
                                -- in current window only
     print(vim.wo[0].number)    --> true
 <
-------------------------------------------------------------------------------
 See also:
 • |lua-options|
 
@@ -437,12 +443,12 @@ want to defer the loading to the time when the mapping is executed (as for
 The fourth, optional, argument is a table with keys that modify the behavior
 of the mapping such as those from |:map-arguments|. The following are the most
 useful options:
-• `buffer`: If given, only set the mapping for the buffer with the specified
+• `buf`: If given, only set the mapping for the buffer with the specified
   number; `0` or `true` means the current buffer. >lua
     -- set mapping for the current buffer
-    vim.keymap.set('n', '<Leader>pl1', require('plugin').action, { buffer = true })
+    vim.keymap.set('n', '<Leader>pl1', require('plugin').action, { buf = 0 })
     -- set mapping for the buffer number 4
-    vim.keymap.set('n', '<Leader>pl1', require('plugin').action, { buffer = 4 })
+    vim.keymap.set('n', '<Leader>pl1', require('plugin').action, { buf = 4 })
 <
 • `silent`: If set to `true`, suppress output such as error messages. >lua
     vim.keymap.set('n', '<Leader>pl1', require('plugin').action, { silent = true })
@@ -478,9 +484,8 @@ Removing mappings                                       *lua-guide-mappings-del*
 A specific mapping can be removed with |vim.keymap.del()|:
 >lua
     vim.keymap.del('n', '<Leader>ex1')
-    vim.keymap.del({'n', 'c'}, '<Leader>ex2', {buffer = true})
+    vim.keymap.del({'n', 'c'}, '<Leader>ex2', { buf = 0 })
 <
-------------------------------------------------------------------------------
 See also:
 • `vim.api.`|nvim_get_keymap()|:     return all global mapping
 • `vim.api.`|nvim_buf_get_keymap()|: return all mappings for buffer
@@ -532,7 +537,6 @@ Examples:
       callback = function() print("My Plugin Works!") end,
     })
 <
-
 Nvim will always call a Lua function with a single table containing information
 about the triggered autocommand. The most useful keys are
 • `match`: a string that matched the `pattern` (see |<amatch>|)
@@ -544,8 +548,8 @@ For example, this allows you to set buffer-local mappings for some filetypes:
 >lua
     vim.api.nvim_create_autocmd("FileType", {
       pattern = "lua",
-      callback = function(args)
-        vim.keymap.set('n', 'K', vim.lsp.buf.hover, { buffer = args.buf })
+      callback = function(ev)
+        vim.keymap.set('n', 'K', vim.lsp.buf.hover, { buf = ev.buf })
       end
     })
 <
@@ -553,7 +557,7 @@ This means that if your callback itself takes an (even optional) argument, you
 must wrap it in `function() end` to avoid an error:
 >lua
     vim.api.nvim_create_autocmd('TextYankPost', {
-      callback = function() vim.highlight.on_yank() end
+      callback = function() vim.hl.hl_op() end
     })
 <
 (Since unused arguments can be omitted in Lua function definitions, this is
@@ -577,7 +581,7 @@ Instead of using a pattern, you can create a buffer-local autocommand (see
 Similarly to mappings, you can (and should) add a description using `desc`:
 >lua
     vim.api.nvim_create_autocmd('TextYankPost', {
-      callback = function() vim.highlight.on_yank() end,
+      callback = function() vim.hl.hl_op() end,
       desc = "Briefly highlight yanked text"
     })
 <
@@ -654,7 +658,6 @@ the autocommands that are to be removed:
 Note: Autocommands in groups will only be removed if the `group` key is
 specified, even if another option matches it.
 
-------------------------------------------------------------------------------
 See also
 • |nvim_get_autocmds()|:  return all matching autocommands
 • |nvim_exec_autocmds()|: execute all matching autocommands
@@ -683,7 +686,7 @@ takes three mandatory arguments:
 
 Example:
 >lua
-    vim.api.nvim_create_user_command('Test', 'echo "It works!"', {})
+    vim.api.nvim_create_user_command('Test', 'echo "It works!"')
     vim.cmd.Test()
     --> It works!
 <

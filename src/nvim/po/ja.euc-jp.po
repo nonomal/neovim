@@ -409,8 +409,8 @@ msgstr " ユーザー定義補完 (^U^N^P)"
 msgid " Omni completion (^O^N^P)"
 msgstr " オムニ補完 (^O^N^P)"
 
-msgid " Spelling suggestion (s^N^P)"
-msgstr " 綴り修正候補 (s^N^P)"
+msgid " Spelling suggestion (^S^N^P)"
+msgstr " 綴り修正候補 (^S^N^P)"
 
 msgid " Keyword Local completion (^N^P)"
 msgstr " 局所キーワード補完 (^N^P)"
@@ -867,8 +867,8 @@ msgid "E146: Regular expressions can't be delimited by letters"
 msgstr "E146: 正規表現は文字で区切ることができません"
 
 #, c-format
-msgid "replace with %s (y/n/a/q/l/^E/^Y)?"
-msgstr "%s に置換しますか? (y/n/a/q/l/^E/^Y)"
+msgid "replace with %s? (y)es/(n)o/(a)ll/(q)uit/(l)ast/scroll up(^E)/down(^Y)"
+msgstr "%s に置換しますか? (y)es/(n)o/(a)ll/(q)uit/(l)ast/scroll up(^E)/down(^Y)"
 
 msgid "(Interrupted) "
 msgstr "(割込まれました) "
@@ -912,16 +912,16 @@ msgid "E478: Don't panic!"
 msgstr "E478: 慌てないでください"
 
 #, c-format
-msgid "E661: Sorry, no '%s' help for %s"
-msgstr "E661: 残念ですが '%s' のヘルプが %s にはありません"
+msgid "E661: No '%s' help for %s"
+msgstr "E661: '%s' のヘルプが %s にはありません"
 
 #, c-format
-msgid "E149: Sorry, no help for %s"
-msgstr "E149: 残念ですが %s にはヘルプがありません"
+msgid "E149: No help for %s"
+msgstr "E149: %s にはヘルプがありません"
 
 #, c-format
-msgid "Sorry, help file \"%s\" not found"
-msgstr "残念ですがヘルプファイル \"%s\" が見つかりません"
+msgid "Help file \"%s\" not found"
+msgstr "ヘルプファイル \"%s\" が見つかりません"
 
 #, c-format
 msgid "E151: No match: %s"
@@ -3438,12 +3438,8 @@ msgstr "E773: \"%s\" のシンボリックリンクがループになっています"
 msgid "E325: ATTENTION"
 msgstr "E325: 注意"
 
-msgid ""
-"\n"
-"Found a swap file by the name \""
-msgstr ""
-"\n"
-"次の名前でスワップファイルを見つけました \""
+msgid "Found a swap file by the name \""
+msgstr "次の名前でスワップファイルを見つけました \""
 
 msgid "While opening file \""
 msgstr "次のファイルを開いている最中 \""
@@ -3466,8 +3462,8 @@ msgstr ""
 msgid "(2) An edit session for this file crashed.\n"
 msgstr "(2) このファイルの編集セッションがクラッシュした.\n"
 
-msgid "    If this is the case, use \":recover\" or \"vim -r "
-msgstr "    この場合には \":recover\" か \"vim -r "
+msgid "    If this is the case, use \":recover\" or \"nvim -r "
+msgstr "    この場合には \":recover\" か \"nvim -r "
 
 msgid ""
 "\"\n"
@@ -4198,12 +4194,8 @@ msgstr ""
 "\n"
 "sh シェルを実行できません\n"
 
-msgid ""
-"\n"
-"shell returned "
-msgstr ""
-"\n"
-"シェルが値を返しました "
+msgid "shell returned "
+msgstr "シェルが値を返しました "
 
 msgid ""
 "\n"
@@ -6003,9 +5995,6 @@ msgstr "E471: 引数が必要です"
 
 msgid "E10: \\ should be followed by /, ? or &"
 msgstr "E10: \\ の後は / か ? か & でなければなりません"
-
-msgid "E11: Invalid in command-line window; <CR> executes, CTRL-C quits"
-msgstr "E11: コマンドラインでは無効です; <CR>で実行, CTRL-Cでやめる"
 
 msgid "E12: Command not allowed from exrc/vimrc in current dir or tag search"
 msgstr ""

@@ -1,6 +1,7 @@
 local t = require('test.testutil')
 local n = require('test.functional.testnvim')()
 
+local describe, it, before_each, pending = t.describe, t.it, t.before_each, t.pending
 local clear, feed, eq = n.clear, n.feed, t.eq
 local expect, command, eval = n.expect, n.command, n.eval
 local insert, call = n.insert, n.call
@@ -9,7 +10,6 @@ local exec_capture, dedent = n.exec_capture, t.dedent
 -- First test it's implemented using the :lmap and :lnoremap commands, then
 -- check those mappings behave as expected.
 describe("'keymap' / :lmap", function()
-  clear()
   before_each(function()
     clear()
     insert('lllaaa')

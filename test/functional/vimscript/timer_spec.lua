@@ -2,13 +2,15 @@ local t = require('test.testutil')
 local n = require('test.functional.testnvim')()
 local Screen = require('test.functional.ui.screen')
 
+local describe, it, before_each = t.describe, t.it, t.before_each
 local feed, eq, eval, ok = n.feed, t.eq, n.eval, t.ok
 local source, async_meths, run = n.source, n.async_meths, n.run
 local clear, command, fn = n.clear, n.command, n.fn
-local exc_exec = n.exc_exec
 local api = n.api
+local exec_lua = n.exec_lua
 local load_adjust = n.load_adjust
 local retry = t.retry
+local pcall_err = t.pcall_err
 
 describe('timers', function()
   before_each(function()
@@ -63,12 +65,29 @@ describe('timers', function()
     end)
   end)
 
-  it('works with zero timeout', function()
+  it('timeout=0 works', function()
     -- timer_start does still not invoke the callback immediately
     eq(0, eval("[timer_start(0, 'MyHandler', {'repeat': 1000}), g:val][1]"))
     retry(nil, nil, function()
       eq(1000, eval('g:val'))
     end)
+  end)
+
+  it('timeout excludes prior event-loop blocking #42521', function()
+    local elapsed = exec_lua(function()
+      vim.uv.sleep(300) -- Ensure stale/outdated cached loop time relative to timeout=200 below.
+      local start = vim.uv.hrtime()
+      local elapsed_ --- @type number?
+      vim.fn.timer_start(200, function()
+        elapsed_ = (vim.uv.hrtime() - start) / 1e6
+      end)
+      -- Wake the loop often: a stale timer fires on the first wakeup.
+      vim.wait(1000, function()
+        return elapsed_ ~= nil
+      end, 10)
+      return elapsed_
+    end)
+    ok(elapsed >= 190, '>= 190 ms', elapsed)
   end)
 
   it('can be started during sleep', function()
@@ -94,12 +113,56 @@ describe('timers', function()
     assert(0 <= diff and diff <= 4, 'expected (0 <= diff <= 4), got: ' .. tostring(diff))
   end)
 
-  it('are triggered in blocking getchar() call', function()
-    command("call timer_start(5, 'MyHandler', {'repeat': -1})")
-    async_meths.nvim_command('let g:val = 0 | let g:c = getchar()')
+  it('are triggered in inputlist() call #7857', function()
+    async_meths.nvim_exec2(
+      [[
+        call timer_start(5, 'MyHandler', {'repeat': -1})
+        let g:val = 0
+        let g:n = inputlist(['input0', 'input1'])
+      ]],
+      {}
+    )
     retry(nil, nil, function()
       local val = eval('g:val')
       ok(val >= 2, '>= 2', tostring(val))
+      eq(0, eval("exists('g:n')"))
+    end)
+    feed('42<CR>')
+    eq(42, eval('g:n'))
+  end)
+
+  it('are triggered in confirm() call', function()
+    api.nvim_ui_attach(80, 24, {}) -- needed for confirm() to work
+    async_meths.nvim_exec2(
+      [[
+        call timer_start(5, 'MyHandler', {'repeat': -1})
+        let g:val = 0
+        let g:n = confirm('Are you sure?', "&Yes\n&No\n&Cancel")
+      ]],
+      {}
+    )
+    retry(nil, nil, function()
+      local val = eval('g:val')
+      ok(val >= 2, '>= 2', tostring(val))
+      eq(0, eval("exists('g:n')"))
+    end)
+    feed('c')
+    eq(3, eval('g:n'))
+  end)
+
+  it('are triggered in blocking getchar() call', function()
+    async_meths.nvim_exec2(
+      [[
+        call timer_start(5, 'MyHandler', {'repeat': -1})
+        let g:val = 0
+        let g:c = getchar()
+      ]],
+      {}
+    )
+    retry(nil, nil, function()
+      local val = eval('g:val')
+      ok(val >= 2, '>= 2', tostring(val))
+      eq(0, eval("exists('g:c')"))
       eq(0, eval('getchar(1)'))
     end)
     feed('c')
@@ -108,10 +171,6 @@ describe('timers', function()
 
   it('can invoke redraw in blocking getchar() call', function()
     local screen = Screen.new(40, 6)
-    screen:attach()
-    screen:set_default_attr_ids({
-      [1] = { bold = true, foreground = Screen.colors.Blue },
-    })
 
     api.nvim_buf_set_lines(0, 0, -1, true, { 'ITEM 1', 'ITEM 2' })
     source([[
@@ -130,19 +189,29 @@ describe('timers', function()
         redraw
       endfunc
     ]])
-    async_meths.nvim_command('let g:c2 = getchar()')
+    async_meths.nvim_command("let g:c2 = getchar(-1, {'cursor': 'msg'})")
     async_meths.nvim_command(
       'call timer_start(' .. load_adjust(100) .. ", 'AddItem', {'repeat': -1})"
     )
 
     screen:expect([[
-      ^ITEM 1                                  |
+      ITEM 1                                  |
       ITEM 2                                  |
       {1:~                                       }|*3
-                                              |
+      ^                                        |
     ]])
     async_meths.nvim_command('let g:cont = 1')
 
+    screen:expect([[
+      ITEM 1                                  |
+      ITEM 2                                  |
+      ITEM 3                                  |
+      {1:~                                       }|*2
+      ^                                        |
+    ]])
+
+    feed('3')
+    eq(51, eval('g:c2'))
     screen:expect([[
       ^ITEM 1                                  |
       ITEM 2                                  |
@@ -150,19 +219,6 @@ describe('timers', function()
       {1:~                                       }|*2
                                               |
     ]])
-
-    feed('3')
-    eq(51, eval('g:c2'))
-    screen:expect {
-      grid = [[
-      ^ITEM 1                                  |
-      ITEM 2                                  |
-      ITEM 3                                  |
-      {1:~                                       }|*2
-                                              |
-    ]],
-      unchanged = true,
-    }
   end)
 
   it('can be stopped', function()
@@ -228,8 +284,6 @@ describe('timers', function()
 
   it("doesn't mess up the cmdline", function()
     local screen = Screen.new(40, 6)
-    screen:attach()
-    screen:set_default_attr_ids({ [0] = { bold = true, foreground = 255 } })
     source([[
       let g:val = 0
       func! MyHandler(timer)
@@ -247,7 +301,7 @@ describe('timers', function()
     feed(':good')
     screen:expect([[
                                               |
-      {0:~                                       }|*4
+      {1:~                                       }|*4
       :good^                                   |
     ]])
     command('let g:val = 1')
@@ -262,12 +316,14 @@ describe('timers', function()
         call execute('echo ''execute() should be disallowed''', '')
       endfunction
     ]]
-    eq('Vim(call):E48: Not allowed in sandbox', exc_exec("sandbox call timer_start(0, 'Scary')"))
+    eq(
+      'Vim(call):E48: Not allowed in sandbox',
+      pcall_err(command, "sandbox call timer_start(0, 'Scary')")
+    )
   end)
 
   it('can be triggered after an empty string <expr> mapping #17257', function()
     local screen = Screen.new(40, 6)
-    screen:attach()
     command([=[imap <expr> <F2> [timer_start(0, { _ -> execute("throw 'x'", "") }), ''][-1]]=])
     feed('i<F2>')
     screen:expect({ any = 'E605: Exception not caught: x' })

@@ -24,12 +24,14 @@ endfunc
 " Check that a :normal command can be used to stop Visual mode without side
 " effects.
 func Test_normal_escape()
+  throw 'Skipped: Nvim supports cmdwin freedom #40312'
   call feedkeys("q:i\" foo\<Esc>:normal! \<C-V>\<Esc>\<CR>:\" bar\<CR>", 'ntx')
   call assert_equal('" bar', @:)
 endfunc
 
 " This was using a pointer to a freed buffer
 func Test_cmdwin_freed_buffer_ptr()
+  throw "Skipped: Nvim supports cmdwin freedom #40312"
   " this does not work on MS-Windows because renaming an open file fails
   CheckNotMSWindows
 
@@ -94,6 +96,7 @@ func Test_cmdwin_restore_heights()
 endfunc
 
 func Test_cmdwin_temp_curwin()
+  throw "Skipped: Nvim supports cmdwin freedom #40312"
   func CheckWraps(expect_wrap)
     setlocal textwidth=0 wrapmargin=1
 
@@ -128,6 +131,7 @@ func Test_cmdwin_temp_curwin()
 endfunc
 
 func Test_cmdwin_interrupted()
+  throw "Skipped: Nvim supports cmdwin freedom #40312"
   func CheckInterrupted()
     call feedkeys("q::call assert_equal('', getcmdwintype())\<CR>:call assert_equal('', getcmdtype())\<CR>:q<CR>", 'ntx')
   endfunc
@@ -193,6 +197,7 @@ func Test_cmdwin_interrupted()
 endfunc
 
 func Test_cmdwin_existing_bufname()
+  throw "Skipped: Nvim supports cmdwin freedom #40312"
   func CheckName()
     call assert_equal(1, getbufinfo('')[0].command)
     call assert_equal(0, getbufinfo('[Command Line]')[0].command)
@@ -203,6 +208,70 @@ func Test_cmdwin_existing_bufname()
   call feedkeys("q::call CheckName()\<CR>:q\<CR>", 'ntx')
   0file
   delfunc CheckName
+endfunc
+
+func Test_cmdwin_showcmd()
+  CheckScreendump
+
+  let lines =<< trim [SCRIPT]
+    augroup vimHints | au! | augroup END
+    set showcmd
+  [SCRIPT]
+  call writefile(lines, 'XTest_cmdwin_showcmd', 'D')
+  let buf = RunVimInTerminal('-S XTest_cmdwin_showcmd', {'rows': 18})
+
+  for keys in ['q:', ":\<C-F>"]
+    call term_sendkeys(buf, keys)
+    call VerifyScreenDump(buf, 'Test_cmdwin_showcmd_1', {})
+    call term_sendkeys(buf, '"')
+    call WaitForAssert({-> assert_match('^: \+" *$', term_getline(buf, 18))})
+    call term_sendkeys(buf, 'x')
+    call WaitForAssert({-> assert_match('^: \+"x *$', term_getline(buf, 18))})
+    call term_sendkeys(buf, 'y')
+    call WaitForAssert({-> assert_match('^: \+"xy *$', term_getline(buf, 18))})
+    call term_sendkeys(buf, 'y')
+    call WaitForAssert({-> assert_match('^: \+$', term_getline(buf, 18))})
+    call term_sendkeys(buf, "\<C-C>\<C-C>")
+    call VerifyScreenDump(buf, 'Test_cmdwin_showcmd_2', {})
+  endfor
+
+  " clean up
+  call StopVimInTerminal(buf)
+endfunc
+
+func Test_cmdwin_cursor_position()
+  throw "Skipped: Nvim supports cmdwin freedom #40312"
+  " When the cmdline fills the screen width exactly, pressing CTRL-F to open
+  " the cmdwin should place the cursor on the last character, not past it.
+  let cmd = 'echo "' .. repeat('a', &columns - 8) .. '"'
+  call assert_equal(&columns - 1, len(cmd))
+  let g:cmdwin_col = 0
+  let g:cmdwin_line = ''
+  call feedkeys(':' .. cmd .. "\<C-F>" ..
+        \ ":let g:cmdwin_col = col('.')\<CR>" ..
+        \ ":let g:cmdwin_line = getline('.')\<CR>" ..
+        \ ":q\<CR>", 'x!')
+  call assert_equal(len(cmd), g:cmdwin_col)
+  call assert_equal(cmd, g:cmdwin_line)
+  unlet g:cmdwin_col g:cmdwin_line
+endfunc
+
+func Test_cmdwin_no_prefix_on_wrapped_line()
+  CheckScreendump
+
+  let lines =<< trim END
+    augroup vimHints | au! | augroup END
+  END
+  call writefile(lines, 'Xcmdwin_wrap', 'D')
+
+  let buf = RunVimInTerminal('-S Xcmdwin_wrap', #{rows: 12, cols: 40})
+  let cmd = 'echo "' .. repeat('a', 40 - 8) .. '"XYZ'
+  call term_sendkeys(buf, ':' .. cmd .. "\<C-F>")
+  call TermWait(buf, 100)
+  call VerifyScreenDump(buf, 'Test_cmdwin_wrap_prefix', {})
+
+  call term_sendkeys(buf, ":q\<CR>")
+  call StopVimInTerminal(buf)
 endfunc
 
 " vim: shiftwidth=2 sts=2 expandtab

@@ -2,14 +2,15 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <utf8proc.h>
 
 #include "nvim/iconv_defs.h"
 
 enum {
-  /// Maximum number of bytes in a multi-byte character.  It can be one 32-bit
-  /// character of up to 6 bytes, or one 16-bit character of up to three bytes
-  /// plus six following composing characters of three bytes each.
-  MB_MAXBYTES = 21,
+  /// Maximum number of bytes in the multi-byte character of one screen cell.
+  /// It can be one character of up to six bytes, plus MAX_MCO following composing
+  /// characters of up to four bytes each.
+  MB_MAXBYTES = 30,
   /// Maximum length of a Unicode character, excluding composing characters.
   MB_MAXCHAR = 6,
 };
@@ -63,11 +64,21 @@ typedef struct {
 } CharInfo;
 
 typedef struct {
-  char *ptr;     ///< Pointer to the first byte of the character.
+  const char *ptr;     ///< Pointer to the first byte of the character.
   CharInfo chr;  ///< Information about the character.
 } StrCharInfo;
+
+typedef struct {
+  StrCharInfo next;  ///< char after cluster
+  int cells;         ///< cell width of cluster
+  bool first_compose;
+} ClusterInfo;
 
 typedef struct {
   int8_t begin_off;  ///< Offset to the first byte of the codepoint.
   int8_t end_off;    ///< Offset to one past the end byte of the codepoint.
 } CharBoundsOff;
+
+typedef utf8proc_int32_t GraphemeState;
+
+enum { UNICODE_INVALID = 0xFFFD, };

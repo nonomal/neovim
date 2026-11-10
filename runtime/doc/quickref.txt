@@ -1,12 +1,13 @@
 *quickref.txt*  Nvim
 
 
-		  VIM REFERENCE MANUAL    by Bram Moolenaar
+		  VIM REFERENCE MANUAL	  by Bram Moolenaar
 
 ==============================================================================
 Quick reference guide
 
 							 *quickref* *Contents*
+
  tag	  subject			 tag	  subject	~
 |Q_ct|	list of help files		|Q_re|	Repeating commands
 |Q_lr|	motion: Left-right		|Q_km|	Key mapping
@@ -129,7 +130,7 @@ N is used to indicate an optional count that can be given before the command.
 
 |pattern|		Special characters in search patterns
 
-			meaning		      magic   nomagic	~
+			meaning			magic	nomagic ~
 		matches any single character	.	\.
 		       matches start of line	^	^
 			       matches <EOL>	$	$
@@ -147,16 +148,16 @@ N is used to indicate an optional count that can be given before the command.
 		   idem but excluding digits	\P	\P
 	     matches a white space character	\s	\s
 	 matches a non-white space character	\S	\S
-
+     ----------------------------------------------------------
 			       matches <Esc>	\e	\e
 			       matches <Tab>	\t	\t
 				matches <CR>	\r	\r
 				matches <BS>	\b	\b
-
+     ----------------------------------------------------------
      matches 0 or more of the preceding atom	*	\*
      matches 1 or more of the preceding atom	\+	\+
 	matches 0 or 1 of the preceding atom	\=	\=
-	matches 2 to 5 of the preceding atom	\{2,5}  \{2,5}
+	matches 2 to 5 of the preceding atom	\{2,5}	\{2,5}
 		  separates two alternatives	\|	\|
 		group a pattern into an atom	\(\)	\(\)
 
@@ -487,6 +488,8 @@ In Insert or Command-line mode:
 |v_is|	   N  is	Select "inner sentence"
 |v_ap|	   N  ap	Select "a paragraph"
 |v_ip|	   N  ip	Select "inner paragraph"
+|v_al|	      al	Select all lines
+|v_il|	      il	Select "inner line"
 |v_ab|	   N  ab	Select "a block" (from "[(" to "])")
 |v_ib|	   N  ib	Select "inner block" (from "[(" to "])")
 |v_aB|	   N  aB	Select "a Block" (from `[{` to `]}`)
@@ -625,6 +628,9 @@ Short explanation of each option:		*option-list*
 'arabic'	  'arab'    for Arabic as a default second language
 'arabicshape'	  'arshape' do shaping for Arabic characters
 'autochdir'	  'acd'     change directory to the file in the current window
+'autocomplete'	  'ac'      enable automatic completion in insert mode
+'autocompletedelay' 'acl'   delay in msec before menu appears after typing
+'autocompletetimeout' 'act' initial decay timeout for autocompletion algorithm
 'autoindent'	  'ai'	    take indent for new line from previous line
 'autoread'	  'ar'	    autom. read file when changed outside of Vim
 'autowrite'	  'aw'	    automatically write file if changed
@@ -651,6 +657,7 @@ Short explanation of each option:		*option-list*
 'cdpath'	  'cd'	    list of directories searched with ":cd"
 'cedit'			    key used to open the command-line window
 'charconvert'	  'ccv'     expression for character encoding conversion
+'chistory'	  'chi'     maximum number of quickfix lists in history
 'cindent'	  'cin'     do C program indenting
 'cinkeys'	  'cink'    keys that trigger indent when 'cindent' is set
 'cinoptions'	  'cino'    how to do indenting when 'cindent' is set
@@ -667,6 +674,7 @@ Short explanation of each option:		*option-list*
 'completefunc'	  'cfu'     function to be used for Insert mode completion
 'completeopt'	  'cot'     options for Insert mode completion
 'completeslash'	  'csl'	    like 'shellslash' for completion
+'completetimeout' 'cto'     initial decay timeout for CTRL-N and CTRL-P
 'concealcursor'	  'cocu'    whether concealable text is hidden in cursor line
 'conceallevel'	  'cole'    whether concealable text is shown or hidden
 'confirm'	  'cf'	    ask what to do about unsaved/read-only files
@@ -681,6 +689,7 @@ Short explanation of each option:		*option-list*
 'delcombine'	  'deco'    delete combining characters on their own
 'dictionary'	  'dict'    list of file names used for keyword completion
 'diff'			    use diff mode for the current window
+'diffanchors'	  'dia'     list of {address} to force anchoring of a diff
 'diffexpr'	  'dex'     expression used to obtain a diff file
 'diffopt'	  'dip'     options for using diff mode
 'digraph'	  'dg'	    enable the entering of digraphs in Insert mode
@@ -696,6 +705,7 @@ Short explanation of each option:		*option-list*
 'errorfile'	  'ef'	    name of the errorfile for the QuickFix mode
 'errorformat'	  'efm'     description of the lines in the error file
 'eventignore'	  'ei'	    autocommand events that are ignored
+'eventignorewin'  'eiw'     autocommand events that are ignored in a window
 'expandtab'	  'et'	    use spaces when <Tab> is inserted
 'exrc'		  'ex'	    read init files in the current directory
 'fileencoding'	  'fenc'    file encoding for multibyte text
@@ -705,6 +715,7 @@ Short explanation of each option:		*option-list*
 'fileignorecase'  'fic'     ignore case when using file names
 'filetype'	  'ft'	    type of file, used for autocommands
 'fillchars'	  'fcs'     characters to use for displaying special items
+'findfunc'	  'ffu'     function to be called for the |:find| command
 'fixendofline'	  'fixeol'  make sure last line in file has <EOL>
 'foldclose'	  'fcl'     close a fold when the cursor leaves it
 'foldcolumn'	  'fdc'     width of the column used to indicate folds
@@ -719,20 +730,20 @@ Short explanation of each option:		*option-list*
 'foldnestmax'	  'fdn'     maximum fold depth
 'foldopen'	  'fdo'     for which commands a fold will be opened
 'foldtext'	  'fdt'     expression used to display for a closed fold
+'follow'		    multicursor: motions cascade to all cursors
 'formatexpr'	  'fex'     expression used with "gq" command
 'formatlistpat'   'flp'     pattern used to recognize a list header
 'formatoptions'   'fo'	    how automatic formatting is to be done
 'formatprg'	  'fp'	    name of external program used with "gq" command
 'fsync'		  'fs'	    whether to invoke fsync() after file write
-'gdefault'	  'gd'	    the ":substitute" flag 'g' is default on
 'grepformat'	  'gfm'     format of 'grepprg' output
 'grepprg'	  'gp'	    program to use for ":grep"
 'guicursor'	  'gcr'     GUI: settings for cursor shape and blinking
 'guifont'	  'gfn'     GUI: Name(s) of font(s) to be used
 'guifontwide'	  'gfw'     list of font names for double-wide characters
 'guioptions'	  'go'	    GUI: Which components and options are used
-'guitablabel'	  'gtl'     GUI: custom label for a tab page
-'guitabtooltip'   'gtt'     GUI: custom tooltip for a tab page
+'guitablabel'	  'gtl'     GUI: custom label for a tabpage
+'guitabtooltip'   'gtt'     GUI: custom tooltip for a tabpage
 'helpfile'	  'hf'	    full path name of the main help file
 'helpheight'	  'hh'	    minimum height of a new help window
 'helplang'	  'hlg'     preferred help languages
@@ -755,7 +766,6 @@ Short explanation of each option:		*option-list*
 'isfname'	  'isf'     characters included in file names and pathnames
 'isident'	  'isi'     characters included in identifiers
 'iskeyword'	  'isk'     characters included in keywords
-'isprint'	  'isp'     printable characters
 'joinspaces'	  'js'	    two spaces after a period with a join command
 'jumpoptions'	  'jop'     specifies how jumping is done
 'keymap'	  'kmp'     name of a keyboard mapping
@@ -766,6 +776,7 @@ Short explanation of each option:		*option-list*
 'langremap'	  'lrm'	    do apply 'langmap' to mapped characters
 'laststatus'	  'ls'	    tells when last window has status lines
 'lazyredraw'	  'lz'	    don't redraw while executing macros
+'lhistory'	  'lhi'	    maximum number of location lists in history
 'linebreak'	  'lbr'     wrap long lines at a blank
 'lines'			    number of lines in the display
 'linespace'	  'lsp'     number of pixel lines to use between characters
@@ -775,7 +786,6 @@ Short explanation of each option:		*option-list*
 'list'			    show <Tab> and <EOL>
 'listchars'	  'lcs'     characters for displaying in list mode
 'loadplugins'	  'lpl'     load plugin scripts when starting up
-'magic'			    changes special characters in search patterns
 'makeef'	  'mef'     name of the errorfile for ":make"
 'makeencoding'	  'menc'    encoding of external make/grep commands
 'makeprg'	  'mp'	    program to use for the ":make" command
@@ -834,13 +844,14 @@ Short explanation of each option:		*option-list*
 'scrollbind'	  'scb'     scroll in window as other windows scroll
 'scrolljump'	  'sj'	    minimum number of lines to scroll
 'scrolloff'	  'so'	    minimum nr. of lines above and below cursor
+'scrolloffpad'	  'sop'	    vertically center cursor at end of file
 'scrollopt'	  'sbo'     how 'scrollbind' should behave
 'sections'	  'sect'    nroff macros that separate sections
 'secure'		    secure mode for reading .vimrc in current dir
 'selection'	  'sel'     what type of selection to use
 'selectmode'	  'slm'     when to use Select mode instead of Visual mode
 'sessionoptions'  'ssop'    options for |:mksession|
-'shada'		  'sd'	    use .shada file upon startup and exiting
+'shada'		  'sd'	    use |shada| file upon startup and exiting
 'shell'		  'sh'	    name of shell to use for external commands
 'shellcmdflag'	  'shcf'    flag to shell to execute one command
 'shellpipe'	  'sp'	    string to put output of ":make" in error file
@@ -859,15 +870,15 @@ Short explanation of each option:		*option-list*
 'showfulltag'	  'sft'     show full tag pattern when completing tag
 'showmatch'	  'sm'	    briefly jump to matching bracket if insert one
 'showmode'	  'smd'     message on status line to show current mode
-'showtabline'	  'stal'    tells when the tab pages line is displayed
+'showtabline'	  'stal'    tells when the tabpages line is displayed
 'sidescroll'	  'ss'	    minimum number of columns to scroll horizontal
 'sidescrolloff'   'siso'    min. nr. of columns to left and right of cursor
 'signcolumn'	  'scl'	    when and how to display the sign column
 'smartcase'	  'scs'     no ignore case when pattern has uppercase
 'smartindent'	  'si'	    smart autoindenting for C programs
-'smarttab'	  'sta'     use 'shiftwidth' when inserting <Tab>
+'smarttab'	  'sta'     <Tab> in leading whitespace indents by 'shiftwidth'
 'smoothscroll'	  'sms'     scroll by screen lines when 'wrap' is set
-'softtabstop'	  'sts'     number of spaces that <Tab> uses while editing
+'softtabstop'	  'sts'     number of columns between two soft tab stops
 'spell'			    enable spell checking
 'spellcapcheck'   'spc'     pattern to locate end of a sentence
 'spellfile'	  'spf'     files where |zg| and |zw| store words
@@ -886,9 +897,10 @@ Short explanation of each option:		*option-list*
 'switchbuf'	  'swb'     sets behavior when switching to another buffer
 'synmaxcol'	  'smc'     maximum column to find syntax items
 'syntax'	  'syn'     syntax to be loaded for current buffer
-'tabline'	  'tal'     custom format for the console tab pages line
-'tabpagemax'	  'tpm'     maximum number of tab pages for |-p| and "tab all"
-'tabstop'	  'ts'	    number of spaces that <Tab> in file uses
+'tabclose'	  'tcl'     which tabpage to focus when closing a tab
+'tabline'	  'tal'     custom format for the console tabpages line
+'tabpagemax'	  'tpm'     maximum number of tabpages for |-p| and "tab all"
+'tabstop'	  'ts'	    number of columns between two tab stops
 'tagbsearch'	  'tbs'     use binary searching in tags files
 'tagcase'	  'tc'      how to handle case when searching in tags files
 'tagfunc'	  'tfu'	    function to get list of tag matches
@@ -898,6 +910,7 @@ Short explanation of each option:		*option-list*
 'tagstack'	  'tgst'    push tags onto the tag stack
 'term'			    name of the terminal
 'termbidi'	  'tbidi'   terminal takes care of bi-directionality
+'termguicolors'	  'tgc'     enable 24-bit RGB color in the TUI
 'textwidth'	  'tw'	    maximum width of text that is being inserted
 'thesaurus'	  'tsr'     list of thesaurus files for keyword completion
 'thesaurusfunc'	  'tsrfu'   function to be used for thesaurus completion
@@ -917,8 +930,8 @@ Short explanation of each option:		*option-list*
 'undoreload'	  'ur'	    max nr of lines to save for undo on a buffer reload
 'updatecount'	  'uc'	    after this many characters flush swap file
 'updatetime'	  'ut'	    after this many milliseconds flush swap file
-'varsofttabstop'  'vsts'    a list of number of spaces when typing <Tab>
-'vartabstop'	  'vts'	    a list of number of spaces for <Tab>s
+'varsofttabstop'  'vsts'    a list of number of columns between soft tab stops
+'vartabstop'	  'vts'	    a list of number of columns between tab stops
 'verbose'	  'vbs'     give informative messages
 'verbosefile'	  'vfile'   file to write messages in
 'viewdir'	  'vdir'    directory where to store files with :mkview
@@ -1007,7 +1020,7 @@ Short explanation of each option:		*option-list*
 |:version|	:ve[rsion]	show version information
 |:normal|	:norm[al][!] {commands}
 				execute Normal mode commands
-|gQ|		   gQ		switch to "Ex" mode
+|:exmode|	1q:		switch to |Ex-mode|
 
 |:redir|	:redir >{file}		redirect messages to {file}
 |:silent|	:silent[!] {command}	execute {command} silently
@@ -1036,7 +1049,8 @@ Short explanation of each option:		*option-list*
 |c_<BS>|	<BS>		   delete the character in front of the cursor
 |c_<Del>|	<Del>		   delete the character under the cursor
 |c_CTRL-W|	CTRL-W		   delete the word in front of the cursor
-|c_CTRL-U|	CTRL-U		   remove all characters
+|c_CTRL-U|	CTRL-U		   remove all characters between the cursor
+				      and beginning of command-line
 
 |c_<Up>|	<Up>/<Down>	   recall older/newer command-line that starts
 				      with current command
@@ -1106,10 +1120,10 @@ Context-sensitive completion on the command-line:
 			   expected) (see |WORD|)
 |:<cfile>|  <cfile>	file name under the cursor (only where a file name is
 			   expected)
-|:<sfile>|  <sfile>	file name of a ":source"d file, within that file (only
+|:<script>| <script>	file name of a ":source"d file, within that file (only
 			   where a file name is expected)
 
-		After "%", "#", "<cfile>", "<sfile>" or "<afile>"
+		After "%", "#", "<cfile>", "<script>" or "<afile>"
 		|::p|	    :p		full path
 		|::h|	    :h		head (file name removed)
 		|::t|	    :t		tail (file name only)
@@ -1131,7 +1145,7 @@ Context-sensitive completion on the command-line:
 |-+|	+[num]		    put the cursor at line [num] (default: last line)
 |-+c|	+{command}	    execute {command} after loading the file
 |-+/|	+/{pat} {file} ..   put the cursor at the first occurrence of {pat}
-|-e|	-e		    Ex mode, start vim in Ex mode
+|-e|	-e		    |Ex-mode|
 |-R|	-R		    Read-only mode, implies -n
 |-m|	-m		    modifications not allowed (resets 'write' option)
 |-d|	-d		    |diff-mode|
@@ -1186,7 +1200,7 @@ Context-sensitive completion on the command-line:
 				   file
 |:wN|	   :wN[ext][!] [file]	write file and edit previous file
 
-	     in current window    in new window	~
+	     in current window	  in new window		action ~
 |:argument|  :argu[ment] N	  :sar[gument] N	edit file N
 |:next|      :n[ext]		  :sn[ext]		edit next file
 |:next_f|    :n[ext] {arglist}	  :sn[ext] {arglist}	define new arg list
@@ -1376,7 +1390,7 @@ Context-sensitive completion on the command-line:
 ------------------------------------------------------------------------------
 *Q_fo*		Folding
 
-|'foldmethod'|	set foldmethod=manual	manual folding
+'foldmethod'	set foldmethod=manual	manual folding
 		set foldmethod=indent	folding by indent
 		set foldmethod=expr	folding by 'foldexpr'
 		set foldmethod=syntax	folding by syntax regions

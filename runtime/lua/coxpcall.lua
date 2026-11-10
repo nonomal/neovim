@@ -1,5 +1,9 @@
 -------------------------------------------------------------------------------
+-- (Not needed for LuaJIT or Lua 5.2+)
+--
 -- Coroutine safe xpcall and pcall versions
+--
+-- https://keplerproject.github.io/coxpcall/
 --
 -- Encapsulates the protected calls with a coroutine based loop, so errors can
 -- be dealed without the usual Lua 5.x pcall/xpcall issues with coroutines
@@ -16,6 +20,7 @@
 -------------------------------------------------------------------------------
 -- Checks if (x)pcall function is coroutine safe
 -------------------------------------------------------------------------------
+--- @param func function
 local function isCoroutineSafe(func)
     local co = coroutine.create(function()
         return func(coroutine.yield, function() end)
@@ -27,22 +32,30 @@ end
 
 -- No need to do anything if pcall and xpcall are already safe.
 if isCoroutineSafe(pcall) and isCoroutineSafe(xpcall) then
-    copcall = pcall
-    coxpcall = xpcall
+    _G.copcall = pcall
+    _G.coxpcall = xpcall
     return { pcall = pcall, xpcall = xpcall, running = coroutine.running }
 end
 
 -------------------------------------------------------------------------------
 -- Implements xpcall with coroutines
 -------------------------------------------------------------------------------
-local performResume, handleReturnValue
+---@type fun(err: function, co: thread, ...: any): boolean, any...
+local performResume
 local oldpcall, oldxpcall = pcall, xpcall
 local pack = table.pack or function(...) return {n = select("#", ...), ...} end
 local unpack = table.unpack or unpack
 local running = coroutine.running
+--- @type table<thread,thread>
 local coromap = setmetatable({}, { __mode = "k" })
 
-function handleReturnValue(err, co, status, ...)
+--- @async
+--- @param err function
+--- @param co thread
+--- @param status boolean
+--- @param ... any
+--- @return boolean, any...
+local function handleReturnValue(err, co, status, ...)
     if not status then
         return false, err(debug.traceback(co, (...)), ...)
     end
@@ -53,15 +66,27 @@ function handleReturnValue(err, co, status, ...)
     end
 end
 
+--- @async
+--- @param err function
+--- @param co thread
+--- @param ... any
 function performResume(err, co, ...)
     return handleReturnValue(err, co, coroutine.resume(co, ...))
 end
 
+--- @diagnostic disable-next-line: unused-vararg
+--- @generic T
+--- @param trace T
+--- @param ... any
 local function id(trace, ...)
     return trace
 end
 
-function coxpcall(f, err, ...)
+--- @param f function
+--- @param err function
+--- @param ... any
+--- @return boolean, any...
+function _G.coxpcall(f, err, ...)
     local current = running()
     if not current then
         if err == id then
@@ -76,14 +101,18 @@ function coxpcall(f, err, ...)
     else
         local res, co = oldpcall(coroutine.create, f)
         if not res then
+            --- @param ... any
             local newf = function(...) return f(...) end
             co = coroutine.create(newf)
         end
         coromap[co] = current
+        -- This branch only runs inside a coroutine.
+        --- @diagnostic disable-next-line: await-in-sync
         return performResume(err, co, ...)
     end
 end
 
+--- @param coro? thread
 local function corunning(coro)
   if coro ~= nil then
     assert(type(coro)=="thread", "Bad argument; expected thread, got: "..type(coro))
@@ -101,7 +130,12 @@ end
 -- Implements pcall with coroutines
 -------------------------------------------------------------------------------
 
-function copcall(f, ...)
+--- @param f function
+--- @param ... any
+--- @return boolean, any...
+function _G.copcall(f, ...)
+    -- EmmyLua does not distribute the union of xpcall return tuples.
+    --- @diagnostic disable-next-line: return-type-mismatch
     return coxpcall(f, id, ...)
 end
 

@@ -1,8 +1,9 @@
 local t = require('test.testutil')
 local n = require('test.functional.testnvim')()
 local Screen = require('test.functional.ui.screen')
-local tt = require('test.functional.terminal.testutil')
+local tt = require('test.functional.testterm')
 
+local describe, it, before_each, after_each = t.describe, t.it, t.before_each, t.after_each
 local assert_alive = n.assert_alive
 local mkdir, write_file, rmdir = t.mkdir, t.write_file, n.rmdir
 local eq = t.eq
@@ -34,15 +35,11 @@ describe('shell command :!', function()
       n.nvim_set .. ' notermguicolors',
     })
     screen:expect([[
-      {1: }                                                 |
-      {4:~                                                 }|*4
+      ^                                                  |
+      {100:~                                                 }|*4
                                                         |
-      {3:-- TERMINAL --}                                    |
+      {5:-- TERMINAL --}                                    |
     ]])
-  end)
-
-  after_each(function()
-    tt.feed_data('\3') -- Ctrl-C
   end)
 
   it('displays output without LF/EOF. #4646 #4569 #3772', function()
@@ -52,18 +49,25 @@ describe('shell command :!', function()
     tt.feed_data(':!printf foo; sleep 200\n')
     screen:expect([[
                                                         |
-      {4:~                                                 }|*2
-      {5:                                                  }|
+      {100:~                                                 }|*2
+      {3:                                                  }|
       :!printf foo; sleep 200                           |
       foo                                               |
-      {3:-- TERMINAL --}                                    |
+      {5:-- TERMINAL --}                                    |
+    ]])
+    tt.feed_data('\3') -- Ctrl-C
+    screen:expect([[
+      ^                                                  |
+      {100:~                                                 }|*4
+                                                        |
+      {5:-- TERMINAL --}                                    |
     ]])
   end)
 
-  it('throttles shell-command output greater than ~10KB', function()
+  it('throttles shell-command output greater than ~10KB', { retries = 2 }, function()
     skip(is_os('openbsd'), 'FIXME #10804')
     skip(is_os('win'))
-    tt.feed_data((':!%s REP 30001 foo\n'):format(testprg('shell-test')))
+    tt.feed_data((':!%s REP 150001 foo\n'):format(testprg('shell-test')))
 
     -- If we observe any line starting with a dot, then throttling occurred.
     -- Avoid false failure on slow systems.
@@ -71,23 +75,18 @@ describe('shell command :!', function()
 
     -- Final chunk of output should always be displayed, never skipped.
     -- (Throttling is non-deterministic, this test is merely a sanity check.)
-    screen:expect(
-      [[
-      29997: foo                                        |
-      29998: foo                                        |
-      29999: foo                                        |
-      30000: foo                                        |
-                                                        |
-      {10:Press ENTER or type command to continue}{1: }          |
-      {3:-- TERMINAL --}                                    |
-    ]],
-      {
-        -- test/functional/testnvim.lua defaults to background=light.
-        [1] = { reverse = true },
-        [3] = { bold = true },
-        [10] = { foreground = 2 },
-      }
-    )
+    screen:expect {
+      grid = [[
+        149997: foo                                       |
+        149998: foo                                       |
+        149999: foo                                       |
+        150000: foo                                       |
+                                                          |
+        {123:Press ENTER or type command to continue}^           |
+        {5:-- TERMINAL --}                                    |
+      ]],
+      timeout = 20000,
+    }
   end)
 end)
 
@@ -107,19 +106,16 @@ describe('shell command :!', function()
   end)
 
   it('handles control codes', function()
-    skip(is_os('win'), 'missing printf')
+    skip(is_os('win'), 'N/A: missing printf')
     local screen = Screen.new(50, 4)
-    screen:attach()
     -- Print TAB chars. #2958
     feed([[:!printf '1\t2\t3'<CR>]])
-    screen:expect {
-      grid = [[
+    screen:expect([[
       {3:                                                  }|
       :!printf '1\t2\t3'                                |
       1       2       3                                 |
       {6:Press ENTER or type command to continue}^           |
-    ]],
-    }
+    ]])
     feed([[<CR>]])
 
     -- Print BELL control code. #4338
@@ -127,11 +123,11 @@ describe('shell command :!', function()
     feed([[:!printf '\007\007\007\007text'<CR>]])
     screen:expect {
       grid = [[
-      {3:                                                  }|
-      :!printf '\007\007\007\007text'                   |
-      text                                              |
-      {6:Press ENTER or type command to continue}^           |
-    ]],
+        {3:                                                  }|
+        :!printf '\007\007\007\007text'                   |
+        text                                              |
+        {6:Press ENTER or type command to continue}^           |
+      ]],
       condition = function()
         eq(true, screen.bell)
       end,
@@ -167,7 +163,6 @@ describe('shell command :!', function()
       write_file('bang_filter_spec/f2', 'f2')
       write_file('bang_filter_spec/f3', 'f3')
       screen = Screen.new(53, 10)
-      screen:attach()
     end)
 
     after_each(function()
@@ -201,17 +196,17 @@ describe('shell command :!', function()
       screen.bell = false
       screen:expect {
         grid = [[
-                                                             |
-        {1:~                                                    }|
-        {3:                                                     }|
-        :!cat test/functional/fixtures/shell_data.txt        |
-        {18:^@^A^B^C^D^E^F^H}                                     |
-        {18:^N^O^P^Q^R^S^T^U^V^W^X^Y^Z^[^\^]^^^_}                 |
-        ö 한글 {18:<a5><c3>}                                      |
-        t       {18:<ff>}                                         |
-                                                             |
-        {6:Press ENTER or type command to continue}^              |
-      ]],
+                                                               |
+          {1:~                                                    }|
+          {3:                                                     }|
+          :!cat test/functional/fixtures/shell_data.txt        |
+          ^@^A^B^C^D^E^F^H                                     |
+          ^N^O^P^Q^R^S^T^U^V^W^X^Y^Z^[^\^]^^^_                 |
+          ö 한글 <a5><c3>                                      |
+          t       <ff>                                         |
+                                                               |
+          {6:Press ENTER or type command to continue}^              |
+        ]],
         condition = function()
           eq(true, screen.bell)
         end,
@@ -241,7 +236,6 @@ describe('shell command :!', function()
     it('powershell supports literal strings', function()
       set_shell_powershell()
       local screen = Screen.new(45, 4)
-      screen:attach()
       feed_command([[!'Write-Output $a']])
       screen:expect([[
         :!'Write-Output $a'                          |

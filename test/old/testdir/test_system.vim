@@ -53,7 +53,7 @@ func Test_system_exmode()
     let cmd = ' -es -c "source Xscript" +q; echo "result=$?"'
     " Need to put this in a script, "catch" isn't found after an unknown
     " function.
-    call writefile(['try', 'call doesnotexist()', 'catch', 'endtry'], 'Xscript')
+    call writefile(['try', 'call doesnotexist()', 'catch', 'endtry'], 'Xscript', 'D')
     let a = system(GetVimCommand() . cmd)
     call assert_match('result=0', a)
     call assert_equal(0, v:shell_error)
@@ -69,7 +69,6 @@ func Test_system_exmode()
   let cmd = ' -es -c "source Xscript" +q'
   let a = system(GetVimCommand() . cmd)
   call assert_notequal(0, v:shell_error)
-  call delete('Xscript')
 
   if has('unix') " echo $? only works on Unix
     let cmd = ' -es -c "call doesnotexist()" +q; echo $?'
@@ -140,6 +139,44 @@ func Test_system_with_shell_quote()
     let &shellxquote = shellxquote_save
     call delete('Xdir with spaces', 'rf')
   endtry
+endfunc
+
+" Check that Vim does not execute anything from current directory
+func Test_windows_external_cmd_in_cwd()
+  CheckMSWindows
+
+  " just in case
+  call system('rd /S /Q Xfolder')
+  call mkdir('Xfolder', 'R')
+  cd Xfolder
+
+  let contents = ['@echo off', 'echo filename1.txt:1:AAAA']
+  call writefile(contents, 'findstr.cmd')
+
+  let file1 = ['AAAA', 'THIS FILE SHOULD NOT BE FOUND']
+  let file2 = ['BBBB', 'THIS FILE SHOULD BE FOUND']
+
+  call writefile(file1, 'filename1.txt')
+  call writefile(file2, 'filename2.txt')
+
+  if has('quickfix')
+    " use silent to avoid hit-enter-prompt
+    sil grep BBBB filename*.txt
+    call assert_equal('filename2.txt', @%)
+  endif
+
+  let output = system('findstr BBBB filename*')
+  " Match trailing newline byte
+  call assert_match('filename2.txt:BBBB.', output)
+
+  if has('gui')
+    set guioptions+=!
+    let output = system('findstr BBBB filename*')
+    call assert_match('filename2.txt:BBBB.', output)
+  endif
+
+  cd -
+  set guioptions&
 endfunc
 
 " vim: shiftwidth=2 sts=2 expandtab

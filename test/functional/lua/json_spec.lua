@@ -1,6 +1,7 @@
 local t = require('test.testutil')
 local n = require('test.functional.testnvim')()
 
+local describe, it, before_each = t.describe, t.it, t.before_each
 local clear = n.clear
 local exec_lua = n.exec_lua
 local eq = t.eq
@@ -32,6 +33,18 @@ describe('vim.json.decode()', function()
       baz = vim.NIL,
       foo = { a = 'b' },
     }, exec_lua([[return vim.json.decode(..., {})]], jsonstr))
+    eq(
+      {
+        arr = { 1, 2, vim.NIL },
+        bar = { 3, 7 },
+        baz = vim.NIL,
+        foo = { a = 'b' },
+      },
+      exec_lua(
+        [[return vim.json.decode(..., { luanil = { array = false, object = false } })]],
+        jsonstr
+      )
+    )
     eq({
       arr = { 1, 2, vim.NIL },
       bar = { 3, 7 },
@@ -65,6 +78,7 @@ describe('vim.json.decode()', function()
     eq(-100000, exec_lua([[return vim.json.decode('  -100000  ')]]))
     eq(0, exec_lua([[return vim.json.decode('0')]]))
     eq(0, exec_lua([[return vim.json.decode('-0')]]))
+    eq(3053700806959403, exec_lua([[return vim.json.decode('3053700806959403')]]))
   end)
 
   it('parses floating-point numbers', function()
@@ -133,11 +147,162 @@ describe('vim.json.decode()', function()
     local str = ('%s{%s"key"%s:%s[%s"val"%s,%s"val2"%s]%s,%s"key2"%s:%s1%s}%s'):gsub('%%s', s)
     eq({ key = { 'val', 'val2' }, key2 = 1 }, exec_lua([[return vim.json.decode(...)]], str))
   end)
+
+  it('skip_comments', function()
+    eq({}, exec_lua([[return vim.json.decode('{//comment\n}', { skip_comments = true })]]))
+    eq({}, exec_lua([[return vim.json.decode('{//comment\r\n}', { skip_comments = true })]]))
+    eq(
+      'test // /* */ string',
+      exec_lua(
+        [[return vim.json.decode('"test // /* */ string"//comment', { skip_comments = true })]]
+      )
+    )
+    eq(
+      {},
+      exec_lua([[return vim.json.decode('{/* A multi-line\ncomment*/}', { skip_comments = true })]])
+    )
+    eq(
+      { a = 1 },
+      exec_lua([[return vim.json.decode('{"a" /* Comment */: 1}', { skip_comments = true })]])
+    )
+    eq(
+      { a = 1 },
+      exec_lua([[return vim.json.decode('{"a": /* Comment */ 1}', { skip_comments = true })]])
+    )
+    eq({}, exec_lua([[return vim.json.decode('/*first*//*second*/{}', { skip_comments = true })]]))
+    eq(
+      'Expected the end but found unclosed multi-line comment at character 13',
+      pcall_err(exec_lua, [[return vim.json.decode('{}/*Unclosed', { skip_comments = true })]])
+    )
+    eq(
+      'Expected comma or object end but found T_INTEGER at character 12',
+      pcall_err(exec_lua, [[return vim.json.decode('{"a":1/*x*/0}', { skip_comments = true })]])
+    )
+  end)
+
+  it('gives nice error message when attempting to index into null value', function()
+    exec_lua [[ parsed = vim.json.decode('{"foo": null}') ]]
+
+    eq('attempt to index vim.NIL', pcall_err(exec_lua, [[ return parsed.foo.sub_field ]]))
+    eq('attempt to index vim.NIL', pcall_err(exec_lua, [[ parsed.foo.new_field = 3 ]]))
+  end)
 end)
 
 describe('vim.json.encode()', function()
   before_each(function()
     clear()
+  end)
+
+  it('escape_slash', function()
+    -- With slash
+    eq('"Test\\/"', exec_lua([[return vim.json.encode('Test/', { escape_slash = true })]]))
+    eq(
+      'Test/',
+      exec_lua([[return vim.json.decode(vim.json.encode('Test/', { escape_slash = true }))]])
+    )
+
+    -- Without slash
+    eq('"Test/"', exec_lua([[return vim.json.encode('Test/')]]))
+    eq('"Test/"', exec_lua([[return vim.json.encode('Test/', {})]]))
+    eq('"Test/"', exec_lua([[return vim.json.encode('Test/', { _invalid = true })]]))
+    eq('"Test/"', exec_lua([[return vim.json.encode('Test/', { escape_slash = false })]]))
+    eq(
+      '"Test/"',
+      exec_lua([[return vim.json.encode('Test/', { _invalid = true, escape_slash = false })]])
+    )
+    eq(
+      'Test/',
+      exec_lua([[return vim.json.decode(vim.json.encode('Test/', { escape_slash = false }))]])
+    )
+
+    -- Checks for for global side-effects
+    eq(
+      '"Test/"',
+      exec_lua([[
+        vim.json.encode('Test/', { escape_slash = true })
+        return vim.json.encode('Test/')
+      ]])
+    )
+    eq(
+      '"Test\\/"',
+      exec_lua([[
+        vim.json.encode('Test/', { escape_slash = false })
+        return vim.json.encode('Test/', { escape_slash = true })
+      ]])
+    )
+  end)
+
+  it('indent', function()
+    eq('"Test"', exec_lua([[return vim.json.encode('Test', { indent = "  " })]]))
+    eq('[]', exec_lua([[return vim.json.encode({}, { indent = "  " })]]))
+    eq('{}', exec_lua([[return vim.json.encode(vim.empty_dict(), { indent = "  " })]]))
+    eq(
+      '[\n  {\n    "a": "a"\n  },\n  {\n    "b": "b"\n  }\n]',
+      exec_lua([[return vim.json.encode({ { a = "a" }, { b = "b" } }, { indent = "  " })]])
+    )
+    eq(
+      '{\n  "a": {\n    "b": 1\n  }\n}',
+      exec_lua([[return vim.json.encode({ a = { b = 1 } }, { indent = "  " })]])
+    )
+    eq(
+      '[{"a":"a"},{"b":"b"}]',
+      exec_lua([[return vim.json.encode({ { a = "a" }, { b = "b" } }, { indent = "" })]])
+    )
+    eq(
+      '[\n  [\n    1,\n    2\n  ],\n  [\n    3,\n    4\n  ]\n]',
+      exec_lua([[return vim.json.encode({ { 1, 2 }, { 3, 4 } }, { indent = "  " })]])
+    )
+    eq(
+      '{\nabc"a": {\nabcabc"b": 1\nabc}\n}',
+      exec_lua([[return vim.json.encode({ a = { b = 1 } }, { indent = "abc" })]])
+    )
+
+    -- Checks for for global side-effects
+    eq(
+      '[{"a":"a"},{"b":"b"}]',
+      exec_lua([[
+        vim.json.encode('', { indent = "  " })
+        return vim.json.encode({ { a = "a" }, { b = "b" } })
+      ]])
+    )
+  end)
+
+  it('sort_keys', function()
+    eq('"string"', exec_lua([[return vim.json.encode('string', { sort_keys = true })]]))
+    eq('[]', exec_lua([[return vim.json.encode({}, { sort_keys = true })]]))
+    eq('{}', exec_lua([[return vim.json.encode(vim.empty_dict(), { sort_keys = true })]]))
+    eq(
+      '{"$":0,"%":0,"1":0,"4":0,"a":0,"ab":0,"b":0}',
+      exec_lua(
+        [[return vim.json.encode({ a = 0, b = 0, ab = 0, [1] = 0, ["$"] = 0, [4] = 0, ["%"] = 0 }, { sort_keys = true })]]
+      )
+    )
+    eq(
+      '{"aa":1,"ab":2,"ba":3,"bc":4,"cc":5}',
+      exec_lua(
+        [[return vim.json.encode({ aa = 1, ba = 3, ab = 2, bc = 4, cc = 5 }, { sort_keys = true })]]
+      )
+    )
+    eq(
+      '{"a":{"a":1,"b":2,"c":3},"b":{"a":{"a":0,"b":0},"b":{"a":0,"b":0}},"c":0}',
+      exec_lua(
+        [[return vim.json.encode({ a = { b = 2, a = 1, c = 3 }, c = 0, b = { b = { a = 0, b = 0 }, a = { a = 0, b = 0 } } }, { sort_keys = true })]]
+      )
+    )
+    eq(
+      '[{"1":0,"4":0,"a":0,"b":0},{"10":0,"5":0,"f":0,"x":0},{"-2":0,"2":0,"c":0,"d":0}]',
+      exec_lua([[return vim.json.encode({
+        { a = 0, [1] = 0, [4] = 0, b = 0 },
+        { f = 0, [5] = 0, [10] = 0, x = 0 },
+        { c = 0, [-2] = 0, [2] = 0, d = 0 },
+      }, { sort_keys = true })]])
+    )
+    eq(
+      '{"a":2,"ß":3,"é":1,"中":4}',
+      exec_lua(
+        [[return vim.json.encode({ ["é"] = 1, ["a"] = 2, ["ß"] = 3, ["中"] = 4 }, { sort_keys = true })]]
+      )
+    )
   end)
 
   it('dumps strings', function()
@@ -157,6 +322,7 @@ describe('vim.json.encode()', function()
   end)
 
   it('dumps floats', function()
+    eq('3053700806959403', exec_lua([[return vim.json.encode(3053700806959403)]]))
     eq('10.5', exec_lua([[return vim.json.encode(10.5)]]))
     eq('-10.5', exec_lua([[return vim.json.encode(-10.5)]]))
     eq('-1e-05', exec_lua([[return vim.json.encode(-1e-5)]]))

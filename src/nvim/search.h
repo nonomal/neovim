@@ -1,9 +1,10 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
-#include "nvim/eval/typval_defs.h"
+#include "nvim/eval/typval_defs.h"  // IWYU pragma: keep
 #include "nvim/normal_defs.h"  // IWYU pragma: keep
 #include "nvim/os/time_defs.h"
 #include "nvim/pos_defs.h"
@@ -48,7 +49,7 @@ enum {
   FM_BACKWARD  = 0x01,  ///< search backwards
   FM_FORWARD   = 0x02,  ///< search forwards
   FM_BLOCKSTOP = 0x04,  ///< stop at start/end of block
-  FM_SKIPCOMM  = 0x08,  ///< skip comments
+  FM_SKIPCOMM  = 0x08,  ///< skip comments (cursor must start outside)
 };
 
 /// Values for sub_cmd and which_pat argument for search_regcomp()
@@ -62,13 +63,9 @@ enum {
 
 // Values for searchcount()
 enum { SEARCH_STAT_DEF_TIMEOUT = 40, };
-enum { SEARCH_STAT_DEF_MAX_COUNT = 99, };
-enum { SEARCH_STAT_BUF_LEN = 12, };
-
-enum {
-  /// Maximum number of characters that can be fuzzy matched
-  MAX_FUZZY_MATCHES = 256,
-};
+// 'W ':  2 +
+// '[>9999/>9999]': 13 + 1 (NUL)
+enum { SEARCH_STAT_BUF_LEN = 16, };
 
 /// Structure containing offset definition for the last search pattern
 ///
@@ -84,11 +81,12 @@ typedef struct {
 /// Structure containing last search pattern and its attributes.
 typedef struct {
   char *pat;            ///< The pattern (in allocated memory) or NULL.
+  size_t patlen;        ///< The length of the pattern (0 if pat is NULL).
   bool magic;           ///< Magicness of the pattern.
   bool no_scs;          ///< No smartcase for this pattern.
   Timestamp timestamp;  ///< Time of the last change.
   SearchOffset off;     ///< Pattern offset.
-  dict_T *additional_data;  ///< Additional data from ShaDa file.
+  AdditionalData *additional_data;  ///< Additional data from ShaDa file.
 } SearchPattern;
 
 /// Optional extra arguments for searchit().
@@ -109,14 +107,4 @@ typedef struct {
   int last_maxcount;  // the max count of the last search
 } searchstat_T;
 
-/// Fuzzy matched string list item. Used for fuzzy match completion. Items are
-/// usually sorted by "score". The "idx" member is used for stable-sort.
-typedef struct {
-  int idx;
-  char *str;
-  int score;
-} fuzmatch_str_T;
-
-#ifdef INCLUDE_GENERATED_DECLARATIONS
-# include "search.h.generated.h"
-#endif
+#include "search.h.generated.h"

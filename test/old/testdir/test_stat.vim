@@ -50,6 +50,33 @@ func Test_existent_directory()
   call assert_equal(has('win32') ? 'rw-' : 'rwx', getfperm(dname)[0:2])
 endfunc
 
+func Test_getfsize_symlink()
+  if !has('unix') && !has('win32')
+    throw 'Skipped: requires Unix or Windows'
+  endif
+  call mkdir('XsizeTarget', 'R')
+  call writefile(['text'], 'XsizeTarget/file')
+  try
+    if has('win32')
+      silent !mklink /D XsizeLink XsizeTarget
+    else
+      silent !ln -s XsizeTarget XsizeLink
+    endif
+    if v:shell_error
+      throw 'Skipped: cannot create symlinks'
+    endif
+    call assert_equal(0, getfsize('XsizeLink'))
+    call assert_equal(0, getfsize('XsizeLink/'))
+    call assert_equal(5, getfsize('XsizeLink/file'))
+    call delete('XsizeTarget/file')
+    call assert_equal(-1, getfsize('XsizeLink/file'))
+    call delete('XsizeTarget', 'd')
+    call assert_equal(-1, getfsize('XsizeLink'))
+  finally
+    call delete('XsizeLink')
+  endtry
+endfunc
+
 func SleepForTimestamp()
   " FAT has a granularity of 2 seconds, otherwise it's usually 1 second
   if has('win32')
@@ -63,7 +90,7 @@ func Test_checktime()
   let fname = 'Xtest.tmp'
 
   let fl = ['Hello World!']
-  call writefile(fl, fname)
+  call writefile(fl, fname, 'D')
   set autoread
   exec 'e' fname
   call SleepForTimestamp()
@@ -72,8 +99,6 @@ func Test_checktime()
   call writefile(fl, fname)
   checktime
   call assert_equal(fl[0], getline(1))
-
-  call delete(fname)
 endfunc
 
 func Test_checktime_fast()
@@ -82,7 +107,7 @@ func Test_checktime_fast()
   let fname = 'Xtest.tmp'
 
   let fl = ['Hello World!']
-  call writefile(fl, fname)
+  call writefile(fl, fname, 'D')
   set autoread
   exec 'e' fname
   let fl = readfile(fname)
@@ -91,8 +116,6 @@ func Test_checktime_fast()
   call writefile(fl, fname)
   checktime
   call assert_equal(fl[0], getline(1))
-
-  call delete(fname)
 endfunc
 
 func Test_autoread_fast()
@@ -106,12 +129,10 @@ func Test_autoread_fast()
   call setline(1, 'foo')
   w!
   sleep 10m
-  call writefile(['bar'], 'Xautoread')
+  call writefile(['bar'], 'Xautoread', 'D')
   sleep 10m
   checktime
   call assert_equal('bar', trim(getline(1)))
-
-  call delete('Xautoread')
 endfunc
 
 func Test_autoread_file_deleted()

@@ -1,5 +1,6 @@
 local t = require('test.unit.testutil')
-local itp = t.gen_itp(it)
+local describe = t.describe
+local itp = t.gen_itp(t.it)
 
 local cimport = t.cimport
 local ffi = t.ffi
@@ -36,7 +37,7 @@ local function cmp_assert(v1, v2, op, opstr)
   if res == false then
     print(string.format('expected: %f %s %f', v1, opstr, v2))
   end
-  assert.is_true(res)
+  t.ok(res)
 end
 
 local function lt(a, b) -- luacheck: ignore
@@ -96,9 +97,6 @@ describe('profiling related functions', function()
   local function profile_cmp(t1, t2)
     return prof.profile_cmp(t1, t2)
   end
-  local function profile_equal(t1, t2)
-    return prof.profile_equal(t1, t2)
-  end
   local function profile_msg(q)
     return ffi.string(prof.profile_msg(q))
   end
@@ -110,37 +108,23 @@ describe('profiling related functions', function()
     return tonumber(s) + tonumber(us) / 1000000
   end
 
-  describe('profile_equal', function()
-    itp('times are equal to themselves', function()
-      local start = profile_start()
-      assert.is_true(profile_equal(start, start))
-
-      local e = profile_end(start)
-      assert.is_true(profile_equal(e, e))
-    end)
-
-    itp('times are unequal to others', function()
-      assert.is_false(profile_equal(profile_start(), profile_start()))
-    end)
-  end)
-
   -- this is quite difficult to test, as it would rely on other functions in
   -- the profiling package. Those functions in turn will probably be tested
   -- using profile_cmp... circular reasoning.
   describe('profile_cmp', function()
     itp('can compare subsequent starts', function()
       local s1, s2 = profile_start(), profile_start()
-      assert.is_true(profile_cmp(s1, s2) > 0)
-      assert.is_true(profile_cmp(s2, s1) < 0)
+      t.ok(profile_cmp(s1, s2) > 0)
+      t.ok(profile_cmp(s2, s1) < 0)
     end)
 
     itp('can compare the zero element', function()
-      assert.is_true(profile_cmp(profile_zero(), profile_zero()) == 0)
+      t.ok(profile_cmp(profile_zero(), profile_zero()) == 0)
     end)
 
     itp('correctly orders divisions', function()
       local start = profile_start()
-      assert.is_true(profile_cmp(start, profile_divide(start, 10)) <= 0)
+      t.ok(profile_cmp(start, profile_divide(start, 10)) <= 0)
     end)
   end)
 
@@ -161,15 +145,14 @@ describe('profiling related functions', function()
 
       -- res should be in the range [start - divisor, start + divisor]
       local start_min, start_max = profile_sub(start, divisor), profile_add(start, divisor)
-      assert.is_true(profile_cmp(start_min, res) >= 0)
-      assert.is_true(profile_cmp(start_max, res) <= 0)
+      t.ok(profile_cmp(start_min, res) >= 0)
+      t.ok(profile_cmp(start_max, res) <= 0)
     end)
   end)
 
   describe('profile_zero', function()
     itp('returns the same value on each call', function()
       eq(0, profile_zero())
-      assert.is_true(profile_equal(profile_zero(), profile_zero()))
     end)
   end)
 
@@ -203,13 +186,13 @@ describe('profiling related functions', function()
 
   describe('profile_setlimit', function()
     itp('sets no limit when 0 is passed', function()
-      eq(true, profile_equal(profile_setlimit(0), profile_zero()))
+      eq(profile_setlimit(0), profile_zero())
     end)
 
     itp('sets a limit in the future otherwise', function()
       local future = profile_setlimit(1000)
       local now = profile_start()
-      assert.is_true(profile_cmp(future, now) < 0)
+      t.ok(profile_cmp(future, now) < 0)
     end)
   end)
 
@@ -249,14 +232,14 @@ describe('profiling related functions', function()
 
       -- more or less the same goes for the microsecond part, if it doesn't
       -- start with 0, it's too slow.
-      assert.is_true(starts(us, '0'))
+      t.ok(starts(us, '0'))
     end)
   end)
 
   describe('profile_add', function()
     itp('adds profiling times', function()
       local start = profile_start()
-      assert.equals(start, profile_add(profile_zero(), start))
+      t.eq(start, profile_add(profile_zero(), start))
     end)
   end)
 
@@ -264,16 +247,16 @@ describe('profiling related functions', function()
     itp('subtracts profiling times', function()
       -- subtracting zero does nothing
       local start = profile_start()
-      assert.equals(start, profile_sub(start, profile_zero()))
+      t.eq(start, profile_sub(start, profile_zero()))
 
       local start1, start2, start3 = profile_start(), profile_start(), profile_start()
       local cmp = profile_cmp(profile_sub(start2, start1), profile_sub(start3, start1))
       -- t2 >= t1 => profile_cmp(t1, t2) >= 0
-      assert.is_true(cmp >= 0)
+      t.ok(cmp >= 0)
 
       cmp = profile_cmp(profile_sub(start3, start1), profile_sub(start2, start1))
       -- t2 <= t1 => profile_cmp(t1, t2) <= 0
-      assert.is_true(cmp <= 0)
+      t.ok(cmp <= 0)
     end)
   end)
 end)

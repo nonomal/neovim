@@ -1,6 +1,7 @@
 local t = require('test.testutil')
 local n = require('test.functional.testnvim')()
 
+local describe, it = t.describe, t.it
 local clear = n.clear
 local eq = t.eq
 local ok = t.ok
@@ -55,13 +56,13 @@ describe('version', function()
 
   describe('range', function()
     local tests = {
-      ['1.2.3'] = { from = { 1, 2, 3 }, to = { 1, 2, 4 } },
+      ['1.2.3'] = { from = { 1, 2, 3 }, to = { 1, 2, 3 } },
       ['1.2'] = { from = { 1, 2, 0 }, to = { 1, 3, 0 } },
-      ['=1.2.3'] = { from = { 1, 2, 3 }, to = { 1, 2, 4 } },
-      ['>1.2.3'] = { from = { 1, 2, 4 } },
+      ['=1.2.3'] = { from = { 1, 2, 3 }, to = { 1, 2, 3 } },
+      ['>1.2.3'] = { from = '1.2.4-0' },
       ['>=1.2.3'] = { from = { 1, 2, 3 } },
       ['<1.2.3'] = { from = { 0, 0, 0 }, to = { 1, 2, 3 } },
-      ['<=1.2.3'] = { from = { 0, 0, 0 }, to = { 1, 2, 4 } },
+      ['<=1.2.3'] = { from = { 0, 0, 0 }, to = '1.2.4-0' },
       ['~1.2.3'] = { from = { 1, 2, 3 }, to = { 1, 3, 0 } },
       ['^1.2.3'] = { from = { 1, 2, 3 }, to = { 2, 0, 0 } },
       ['^0.2.3'] = { from = { 0, 2, 3 }, to = { 0, 3, 0 } },
@@ -89,6 +90,11 @@ describe('version', function()
         eq(output, range)
       end)
 
+      it('tostring() ' .. input, function()
+        eq('string', type(tostring(range)))
+        eq(range, vim.version.range(tostring(range)))
+      end)
+
       it('[from] in range ' .. input, function()
         assert(range:has(output.from))
       end)
@@ -100,17 +106,184 @@ describe('version', function()
       end)
 
       it('[to] not in range ' .. input .. ' to:' .. tostring(range.to), function()
-        if range.to then
+        if range.to and range.to ~= range.from then
           assert(not (range.to < range.to))
           assert(not range:has(range.to))
         end
       end)
+
+      it('[to] in range ' .. input .. ' to:' .. tostring(range.to), function()
+        if range.to and range.to == range.from then
+          assert(range:has(range.to))
+        end
+      end)
     end
+
+    it('__eq', function()
+      local range1 = vim.version.range('1.2.3 - 2.3.4')
+      local range2 = vim.version.range('1.2.3 - 2.3.4')
+      local range3 = vim.version.range('<=1.2.3')
+      local range4 = vim.version.range('1.2.3')
+      assert(range1 == range1)
+      assert(range1 == range2)
+      assert(range1 ~= range3)
+      assert(range1 ~= range4)
+      assert(range3 ~= range4)
+    end)
 
     it('handles prerelease', function()
       assert(not vim.version.range('1.2.3'):has('1.2.3-alpha'))
       assert(vim.version.range('1.2.3-alpha'):has('1.2.3-alpha'))
       assert(not vim.version.range('1.2.3-alpha'):has('1.2.3-beta'))
+      assert(vim.version.range('>0.10'):has('0.12.0-dev'))
+      assert(not vim.version.range('>=0.12'):has('0.12.0-dev'))
+
+      assert(not vim.version.range('<=1.2.3'):has('1.2.4-alpha'))
+      assert(not vim.version.range('<=1.2.3-0'):has('1.2.3'))
+      assert(not vim.version.range('<=1.2.3-alpha'):has('1.2.3'))
+      assert(not vim.version.range('<=1.2.3-1'):has('1.2.4-0'))
+      assert(vim.version.range('<=1.2.3-0'):has('1.2.3-0'))
+      assert(vim.version.range('<=1.2.3-alpha'):has('1.2.3-alpha'))
+
+      assert(vim.version.range('>1.2.3'):has('1.2.4-0'))
+      assert(vim.version.range('>1.2.3'):has('1.2.4-alpha'))
+      assert(vim.version.range('>1.2.3-0'):has('1.2.3-1'))
+
+      local range_alpha = vim.version.range('1.2.3-alpha')
+      eq(range_alpha, vim.version.range(tostring(range_alpha)))
+    end)
+
+    it('returns nil with empty version', function()
+      eq(nil, vim.version.parse(''))
+    end)
+  end)
+
+  describe('intersect', function()
+    local check = function(input, output)
+      local r1 = vim.version.range(input[1])
+      local r2 = vim.version.range(input[2])
+      if output == nil then
+        eq(nil, vim.version.intersect(r1, r2))
+        eq(nil, vim.version.intersect(r2, r1))
+      else
+        local ref = vim.version.range(output)
+        local result1 = vim.version.intersect(r1, r2)
+        local result2 = vim.version.intersect(r2, r1)
+        eq(ref, result1)
+        eq(ref, result2)
+        assert(result1:has(result1.from))
+        eq(result1, vim.version.intersect(result1, r1))
+      end
+    end
+
+    it('returns biggest common range', function()
+      check({ '>=1.2.3', '>=2.0.0' }, '>=2.0.0')
+      check({ '>=1.2.3', '>=1.3.0' }, '>=1.3.0')
+      check({ '>=1.2.3', '>=1.2.4' }, '>=1.2.4')
+      check({ '>=1.2.3', '>=1.2.3' }, '>=1.2.3')
+      check({ '>=1.2.3', '>1.2.4' }, '>1.2.4')
+      check({ '>=1.2.3', '>1.2.3' }, '>1.2.3')
+      check({ '>=1.2.3', '>1.2.2' }, '>=1.2.3')
+      check({ '>1.2.3', '>1.2.4' }, '>1.2.4')
+      check({ '>1.2.3', '>1.2.3' }, '>1.2.3')
+
+      check({ '>=1.2.3', '1.2.0 - 1.2.2' }, nil)
+      check({ '>=1.2.3', '1.2.0 - 1.2.2' }, nil)
+      check({ '>=1.2.3', '1.2.0 - 1.2.3' }, nil)
+      check({ '>=1.2.3', '1.2.0 - 1.2.4' }, '1.2.3 - 1.2.4')
+      check({ '>=1.2.3', '1.2.3 - 1.2.4' }, '1.2.3 - 1.2.4')
+      check({ '>=1.2.3', '1.2.4 - 1.3.0' }, '1.2.4 - 1.3.0')
+      check({ '>1.2.3', '1.2.0 - 1.2.2' }, nil)
+      check({ '>1.2.3', '1.2.0 - 1.2.2' }, nil)
+      check({ '>1.2.3', '1.2.0 - 1.2.3' }, nil)
+      check({ '>1.2.3', '1.2.0 - 1.2.4' }, '1.2.4-0 - 1.2.4')
+      check({ '>1.2.3', '1.2.3 - 1.2.4' }, '1.2.4-0 - 1.2.4')
+      check({ '>1.2.3', '1.2.4 - 1.3.0' }, '1.2.4 - 1.3.0')
+
+      check({ '>=1.2.3', '=1.2.4' }, '=1.2.4')
+      check({ '>=1.2.3', '=1.2.3' }, '=1.2.3')
+      check({ '>=1.2.3', '=1.2.2' }, nil)
+      check({ '>1.2.3', '=1.2.4' }, '=1.2.4')
+      check({ '>1.2.3', '=1.2.3' }, nil)
+      check({ '>1.2.3', '=1.2.2' }, nil)
+
+      check({ '>=1.2.3', '<=1.3.0' }, '1.2.3 - 1.3.1-0')
+      check({ '>=1.2.3', '<1.3.0' }, '1.2.3 - 1.3.0')
+      check({ '>=1.2.3', '<=1.2.3' }, '1.2.3 - 1.2.4-0') -- A better result would be '=1.2.3'
+      check({ '>=1.2.3', '<1.2.3' }, nil)
+      check({ '>=1.2.3', '<=1.2.2' }, nil)
+      check({ '>=1.2.3', '<1.2.2' }, nil)
+      check({ '>1.2.3', '<=1.3.0' }, '1.2.4-0 - 1.3.1-0')
+      check({ '>1.2.3', '<1.3.0' }, '1.2.4-0 - 1.3.0')
+      check({ '>1.2.3', '<=1.2.3' }, nil)
+      check({ '>1.2.3', '<1.2.3' }, nil)
+      check({ '>1.2.3', '<=1.2.2' }, nil)
+      check({ '>1.2.3', '<1.2.2' }, nil)
+
+      check({ '1.2.3 - 1.3.0', '1.3.1 - 1.4.0' }, nil)
+      check({ '1.2.3 - 1.3.0', '1.3.0 - 1.4.0' }, nil)
+      check({ '1.2.3 - 1.3.0', '1.2.4 - 1.4.0' }, '1.2.4 - 1.3.0')
+      check({ '1.2.3 - 1.3.0', '1.2.3 - 1.4.0' }, '1.2.3 - 1.3.0')
+      check({ '1.2.3 - 1.3.0', '1.2.2 - 1.4.0' }, '1.2.3 - 1.3.0')
+      check({ '1.2.3 - 1.3.0', '1.2.4 - 1.3.0' }, '1.2.4 - 1.3.0')
+      check({ '1.2.3 - 1.3.0', '1.2.3 - 1.3.0' }, '1.2.3 - 1.3.0')
+
+      check({ '1.2.3 - 1.3.0', '=1.4.0' }, nil)
+      check({ '1.2.3 - 1.3.0', '=1.3.0' }, nil)
+      check({ '1.2.3 - 1.3.0', '=1.2.4' }, '=1.2.4')
+      check({ '1.2.3 - 1.3.0', '=1.2.3' }, '=1.2.3')
+      check({ '1.2.3 - 1.3.0', '=1.2.2' }, nil)
+
+      check({ '1.2.3 - 1.3.0', '<=1.4.0' }, '1.2.3 - 1.3.0')
+      check({ '1.2.3 - 1.3.0', '<1.4.0' }, '1.2.3 - 1.3.0')
+      check({ '1.2.3 - 1.3.0', '<=1.3.0' }, '1.2.3 - 1.3.0')
+      check({ '1.2.3 - 1.3.0', '<1.3.0' }, '1.2.3 - 1.3.0')
+      check({ '1.2.3 - 1.3.0', '<=1.2.4' }, '1.2.3 - 1.2.5-0')
+      check({ '1.2.3 - 1.3.0', '<1.2.5' }, '1.2.3 - 1.2.5')
+      check({ '1.2.3 - 1.3.0', '<=1.2.3' }, '1.2.3 - 1.2.4-0') -- A better result would be '=1.2.3'
+      check({ '1.2.3 - 1.3.0', '<1.2.3' }, nil)
+      check({ '1.2.3 - 1.3.0', '<=1.2.2' }, nil)
+      check({ '1.2.3 - 1.3.0', '<1.2.2' }, nil)
+
+      check({ '=1.2.3', '=1.2.4' }, nil)
+      check({ '=1.2.3', '=1.2.3' }, '=1.2.3')
+
+      check({ '=1.2.3', '<1.2.3' }, nil)
+      check({ '<=1.2.2', '=1.2.3' }, nil)
+
+      check({ '=1.2.3', '<=1.3.0' }, '=1.2.3')
+      check({ '=1.2.3', '<1.3.0' }, '=1.2.3')
+      check({ '=1.2.3', '<=1.2.3' }, '=1.2.3')
+      check({ '=1.2.3', '<1.2.3' }, nil)
+      check({ '=1.2.3', '<=1.2.2' }, nil)
+      check({ '=1.2.3', '<1.2.2' }, nil)
+
+      check({ '<=1.2.3', '<=1.3.0' }, '<=1.2.3')
+      check({ '<=1.2.3', '<1.3.0' }, '<=1.2.3')
+      check({ '<=1.2.3', '<=1.2.3' }, '<=1.2.3')
+      check({ '<=1.2.3', '<1.2.3' }, '<1.2.3')
+      check({ '<=1.2.3', '<=1.2.2' }, '<=1.2.2')
+      check({ '<=1.2.3', '<1.2.2' }, '<1.2.2')
+      check({ '<1.2.3', '<=1.3.0' }, '<1.2.3')
+      check({ '<1.2.3', '<1.3.0' }, '<1.2.3')
+      check({ '<1.2.3', '<=1.2.3' }, '<1.2.3')
+      check({ '<1.2.3', '<1.2.3' }, '<1.2.3')
+      check({ '<1.2.3', '<=1.2.2' }, '<=1.2.2')
+      check({ '<1.2.3', '<1.2.2' }, '<1.2.2')
+
+      -- Selective coverage of ranges with pre-releases
+      check({ '>=1.2.3-0', '>=1.2.3-1' }, '>=1.2.3-1')
+      check({ '>=1.2.3-alpha', '>=1.2.3-beta' }, '>=1.2.3-beta')
+      check({ '>=1.2.3-0', '>=1.2.3-alpha' }, '>=1.2.3-alpha')
+      check({ '>=1.2.3-0', '<1.2.3' }, '1.2.3-0 - 1.2.3')
+      check({ '>=1.2.3-0', '<1.2.3-1' }, '1.2.3-0 - 1.2.3-1')
+      check({ '>=1.2.3-alpha', '<1.2.3-beta' }, '1.2.3-alpha - 1.2.3-beta')
+      check({ '>=1.2.3-0', '1.2.2 - 1.2.3' }, '1.2.3-0 - 1.2.3')
+      check({ '>=1.2.3-0', '<=1.2.2' }, nil)
+
+      check({ '<=1.2.3-0', '>=1.2.3' }, nil)
+      check({ '<=1.2.3-0', '=1.2.3' }, nil)
+      check({ '>=1.2.3-0', '<1.2.3-2' }, '1.2.3-0 - 1.2.3-2')
     end)
   end)
 
@@ -134,6 +307,7 @@ describe('version', function()
       { v1 = '1.0.0-2.0', v2 = '1.0.0-2', want = 1 },
       { v1 = '1.0.0-2.0', v2 = '1.0.0-2.0', want = 0 },
       { v1 = '1.0.0-alpha', v2 = '1.0.0-alpha', want = 0 },
+      -- Per semver spec, prereleases have alphabetical ordering.
       { v1 = '1.0.0-alpha', v2 = '1.0.0-beta', want = -1 },
       { v1 = '1.0.0-beta', v2 = '1.0.0-alpha', want = 1 },
       { v1 = '1.0.0-alpha', v2 = '1.0.0-alpha.1', want = -1 },
@@ -287,8 +461,8 @@ describe('version', function()
     assert(v('v1.2.3') >= v('1.2.2'))
     assert(v('v1.2.3') > v('1.2.2'))
     assert(v('v1.2.3') > v('1.0.3'))
-    eq(vim.version.last({ v('1.2.3'), v('2.0.0') }), v('2.0.0'))
-    eq(vim.version.last({ v('2.0.0'), v('1.2.3') }), v('2.0.0'))
+    eq(v('2.0.0'), vim.version.last({ v('1.2.3'), v('2.0.0') }))
+    eq(v('2.0.0'), vim.version.last({ v('2.0.0'), v('1.2.3') }))
   end)
 
   it('le()', function()

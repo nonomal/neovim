@@ -50,17 +50,29 @@ if vim.api then
 end
 
 -- builtin functions which always should be available
-require('vim.shared')
+require('vim._core.shared')
 
 vim._submodules = {
-  inspect = true,
-  version = true,
   fs = true,
   glob = true,
+  inspect = true,
   iter = true,
+  provider = true,
   re = true,
   text = true,
-  provider = true,
+  tty = true,
+  uri = true,
+  version = true,
+}
+
+--- Deprecated aliases of `vim.uri` functions.
+local uri_aliases = {
+  uri_decode = 'decode',
+  uri_encode = 'encode',
+  uri_from_bufnr = 'from_buf',
+  uri_from_fname = 'from_fname',
+  uri_to_bufnr = 'to_buf',
+  uri_to_fname = 'to_fname',
 }
 
 -- These are for loading runtime modules in the vim namespace lazily.
@@ -73,20 +85,22 @@ setmetatable(vim, {
     elseif key == 'inspect_pos' or key == 'show_pos' then
       require('vim._inspector')
       return t[key]
-    elseif vim.startswith(key, 'uri_') then
-      --- @type any?
-      local val = require('vim.uri')[key]
-      if val ~= nil then
-        -- Expose all `vim.uri` functions on the `vim` module.
-        t[key] = val
-        return t[key]
+    elseif uri_aliases[key] then
+      local name = uri_aliases[key]
+      local fn = require('vim.uri')[name] --- @type function
+      t[key] = function(...)
+        if not vim.is_thread() then
+          vim.deprecate(('vim.%s'):format(key), ('vim.uri.%s'):format(name), '0.15')
+        end
+        return fn(...)
       end
+      return t[key]
     end
   end,
 })
 
 --- <Docs described in |vim.empty_dict()| >
----@private
+---@nodoc
 --- TODO: should be in vim.shared when vim.shared always uses nvim-lua
 --- @diagnostic disable-next-line:duplicate-set-field
 function vim.empty_dict()
@@ -95,5 +109,6 @@ end
 
 -- only on main thread: functions for interacting with editor state
 if vim.api and not vim.is_thread() then
-  require('vim._editor')
+  require('vim._core.editor')
+  require('vim._core.system')
 end

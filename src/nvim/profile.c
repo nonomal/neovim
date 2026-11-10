@@ -5,14 +5,16 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <uv.h>
 
 #include "nvim/ascii_defs.h"
 #include "nvim/charset.h"
 #include "nvim/cmdexpand_defs.h"
 #include "nvim/debugger.h"
-#include "nvim/eval.h"
+#include "nvim/errors.h"
 #include "nvim/eval/typval_defs.h"
 #include "nvim/eval/userfunc.h"
+#include "nvim/eval/vars.h"
 #include "nvim/ex_cmds_defs.h"
 #include "nvim/fileio.h"
 #include "nvim/garray.h"
@@ -31,9 +33,7 @@
 #include "nvim/runtime.h"
 #include "nvim/types_defs.h"
 
-#ifdef INCLUDE_GENERATED_DECLARATIONS
-# include "profile.c.generated.h"
-#endif
+#include "profile.c.generated.h"
 
 /// Struct used in sn_prl_ga for every line of a script.
 typedef struct {
@@ -73,7 +73,7 @@ const char *profile_msg(proftime_T tm) FUNC_ATTR_WARN_UNUSED_RESULT
 {
   static char buf[50];
   snprintf(buf, sizeof(buf), "%10.6lf",
-           (double)profile_signed(tm) / 1000000000.0);
+           (double)profile_signed(tm) / NS_PER_SEC);
   return buf;
 }
 
@@ -169,7 +169,7 @@ proftime_T profile_self(proftime_T self, proftime_T total, proftime_T children)
 /// Gets the current waittime.
 ///
 /// @return the current waittime
-proftime_T profile_get_wait(void) FUNC_ATTR_PURE
+static proftime_T profile_get_wait(void) FUNC_ATTR_PURE
 {
   return prof_wait_time;
 }
@@ -192,7 +192,7 @@ proftime_T profile_sub_wait(proftime_T tm, proftime_T tma) FUNC_ATTR_PURE
 /// Checks if time `tm1` is equal to `tm2`.
 ///
 /// @return true if `tm1` == `tm2`
-bool profile_equal(proftime_T tm1, proftime_T tm2) FUNC_ATTR_CONST
+static bool profile_equal(proftime_T tm1, proftime_T tm2) FUNC_ATTR_CONST
 {
   return tm1 == tm2;
 }
@@ -295,7 +295,7 @@ void ex_profile(exarg_T *eap)
 
   if (len == 5 && strncmp(eap->arg, "start", 5) == 0 && *e != NUL) {
     xfree(profile_fname);
-    profile_fname = expand_env_save_opt(e, true);
+    profile_fname = expand_env_save_opt(e, true, NULL);
     do_profiling = PROF_YES;
     profile_set_wait(profile_zero());
     set_vim_var_nr(VV_PROFILING, 1);
@@ -382,19 +382,19 @@ void set_context_in_profile_cmd(expand_T *xp, const char *arg)
   xp->xp_context = EXPAND_NOTHING;
 }
 
-static proftime_T inchar_time;
+static proftime_T wait_time;
 
 /// Called when starting to wait for the user to type a character.
-void prof_inchar_enter(void)
+void prof_input_start(void)
 {
-  inchar_time = profile_start();
+  wait_time = profile_start();
 }
 
 /// Called when finished waiting for the user to type a character.
-void prof_inchar_exit(void)
+void prof_input_end(void)
 {
-  inchar_time = profile_end(inchar_time);
-  profile_set_wait(profile_add(profile_get_wait(), inchar_time));
+  wait_time = profile_end(wait_time);
+  profile_set_wait(profile_add(profile_get_wait(), wait_time));
 }
 
 /// @return  true when a function defined in the current script should be
@@ -614,11 +614,7 @@ static void func_dump_profile(FILE *fd)
         }
         if (fp->uf_script_ctx.sc_sid != 0) {
           bool should_free;
-          const LastSet last_set = (LastSet){
-            .script_ctx = fp->uf_script_ctx,
-            .channel_id = 0,
-          };
-          char *p = get_scriptname(last_set, &should_free);
+          char *p = get_scriptname(fp->uf_script_ctx, &should_free);
           fprintf(fd, "    Defined: %s:%" PRIdLINENR "\n",
                   p, fp->uf_script_ctx.sc_lnum);
           if (should_free) {
@@ -949,13 +945,13 @@ void time_msg(const char *mesg, const proftime_T *start)
 /// Initializes the `time_fd` stream for the --startuptime report.
 ///
 /// @param fname startuptime report file path
-/// @param process_name name of the current Nvim process to write in the report.
-void time_init(const char *fname, const char *process_name)
+/// @param proc_name name of the current Nvim process to write in the report.
+void time_init(const char *fname, const char *proc_name)
 {
   const size_t bufsize = 8192;  // Big enough for the entire --startuptime report.
   time_fd = fopen(fname, "a");
   if (time_fd == NULL) {
-    semsg(_(e_notopen), fname);
+    fprintf(stderr, _(e_notopen), fname);
     return;
   }
   startuptime_buf = xmalloc(sizeof(char) * (bufsize + 1));
@@ -967,11 +963,10 @@ void time_init(const char *fname, const char *process_name)
     XFREE_CLEAR(startuptime_buf);
     fclose(time_fd);
     time_fd = NULL;
-    ELOG("time_init: setvbuf failed: %d %s", r, uv_err_name(r));
-    semsg("time_init: setvbuf failed: %d %s", r, uv_err_name(r));
+    fprintf(stderr, "time_init: setvbuf failed: %d %s", r, uv_err_name(r));
     return;
   }
-  fprintf(time_fd, "--- Startup times for process: %s ---\n", process_name);
+  fprintf(time_fd, "--- Startup times for process: %s ---\n", proc_name);
 }
 
 /// Flushes the startuptimes to disk for the current process

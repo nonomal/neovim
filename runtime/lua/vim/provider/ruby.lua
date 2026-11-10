@@ -1,7 +1,9 @@
 local M = {}
 local s_err ---@type string?
-local s_host ---@type string?
+local s_host ---@type integer?
 
+--- @param host { name: string, orig_name: string }
+--- @return integer
 function M.require(host)
   local prog = M.detect()
   local args = { prog }
@@ -15,6 +17,8 @@ function M.require(host)
   return vim.fn['provider#Poll'](args, host.orig_name, '$NVIM_RUBY_LOG_FILE')
 end
 
+---@param method string
+---@param args any[]
 function M.call(method, args)
   if s_err then
     return
@@ -24,12 +28,15 @@ function M.call(method, args)
     local ok, result = pcall(vim.fn['remote#host#Require'], 'legacy-ruby-provider') ---@type any, any
     if not ok then
       s_err = result
-      vim.api.nvim_echo({ { result, 'WarningMsg' } }, true, {})
+      vim.api.nvim_echo({ { result, 'WarningMsg' } }, true)
       return
     end
+    --- @cast result integer
     s_host = result
   end
 
+  -- Handles host requests in the caller's scope (see eval_call_provider()).
+  ---@diagnostic disable-next-line: deprecated
   return vim.fn.rpcrequest(s_host, 'ruby_' .. method, unpack(args))
 end
 
@@ -45,14 +52,15 @@ function M.detect()
       prog = ''
     else
       -- neovim-ruby-host could be an rbenv shim for another Ruby version.
-      vim.fn.system(p)
-      prog = vim.v.shell_error ~= 0 and '' or p
+      local result = vim.system({ p }):wait()
+      prog = result.code ~= 0 and '' or p
     end
   end
   local err = prog == '' and 'missing ruby or ruby-host' or ''
   return prog, err
 end
 
+--- @param plugin_path string
 function M.start(plugin_path)
   vim.fn['remote#host#RegisterClone']('legacy-ruby-provider', 'ruby')
   vim.fn['remote#host#RegisterPlugin']('legacy-ruby-provider', plugin_path, {})

@@ -8,15 +8,13 @@
 #include "nvim/event/loop.h"
 #include "nvim/event/stream.h"
 #include "nvim/log.h"
-#include "nvim/rbuffer.h"
+#include "nvim/memory.h"
 #include "nvim/types_defs.h"
 #ifdef MSWIN
 # include "nvim/os/os_win_console.h"
 #endif
 
-#ifdef INCLUDE_GENERATED_DECLARATIONS
-# include "event/stream.c.generated.h"
-#endif
+#include "event/stream.c.generated.h"
 
 // For compatibility with libuv < 1.19.0 (tested on 1.18.0)
 #if UV_VERSION_MINOR < 19
@@ -45,6 +43,8 @@ int stream_set_blocking(int fd, bool blocking)
 void stream_init(Loop *loop, Stream *stream, int fd, uv_stream_t *uvstream)
   FUNC_ATTR_NONNULL_ARG(2)
 {
+  // The underlying stream is either a file or an existing uv stream.
+  assert(uvstream == NULL ? fd >= 0 && loop != NULL : fd < 0 && loop == NULL);
   stream->uvstream = uvstream;
 
   if (fd >= 0) {
@@ -57,26 +57,22 @@ void stream_init(Loop *loop, Stream *stream, int fd, uv_stream_t *uvstream)
       // processed between reads.
       uv_idle_init(&loop->uv, &stream->uv.idle);
       stream->uv.idle.data = stream;
+#ifdef MSWIN
+    } else if (type == UV_TTY) {
+      uv_tty_init(&loop->uv, &stream->uv.tty, fd, 0);
+      uv_tty_set_mode(&stream->uv.tty, UV_TTY_MODE_RAW);
+      DWORD dwMode;
+      if (GetConsoleMode(stream->uv.tty.handle, &dwMode)) {
+        dwMode |= ENABLE_VIRTUAL_TERMINAL_INPUT;
+        SetConsoleMode(stream->uv.tty.handle, dwMode);
+      }
+      stream->uvstream = (uv_stream_t *)&stream->uv.tty;
+#endif
     } else {
       assert(type == UV_NAMED_PIPE || type == UV_TTY);
-#ifdef MSWIN
-      if (type == UV_TTY) {
-        uv_tty_init(&loop->uv, &stream->uv.tty, fd, 0);
-        uv_tty_set_mode(&stream->uv.tty, UV_TTY_MODE_RAW);
-        DWORD dwMode;
-        if (GetConsoleMode(stream->uv.tty.handle, &dwMode)) {
-          dwMode |= ENABLE_VIRTUAL_TERMINAL_INPUT;
-          SetConsoleMode(stream->uv.tty.handle, dwMode);
-        }
-        stream->uvstream = (uv_stream_t *)&stream->uv.tty;
-      } else {
-#endif
       uv_pipe_init(&loop->uv, &stream->uv.pipe, 0);
       uv_pipe_open(&stream->uv.pipe, fd);
       stream->uvstream = (uv_stream_t *)&stream->uv.pipe;
-#ifdef MSWIN
-    }
-#endif
     }
   }
 
@@ -84,29 +80,26 @@ void stream_init(Loop *loop, Stream *stream, int fd, uv_stream_t *uvstream)
     stream->uvstream->data = stream;
   }
 
-  stream->internal_data = NULL;
   stream->fpos = 0;
+  stream->internal_data = NULL;
   stream->curmem = 0;
   stream->maxmem = 0;
   stream->pending_reqs = 0;
-  stream->read_cb = NULL;
   stream->write_cb = NULL;
   stream->close_cb = NULL;
   stream->internal_close_cb = NULL;
   stream->closed = false;
-  stream->buffer = NULL;
   stream->events = NULL;
-  stream->num_bytes = 0;
 }
 
-void stream_close(Stream *stream, stream_close_cb on_stream_close, void *data)
+void stream_may_close(Stream *stream)
   FUNC_ATTR_NONNULL_ARG(1)
 {
-  assert(!stream->closed);
+  if (stream->closed) {
+    return;
+  }
   DLOG("closing Stream: %p", (void *)stream);
   stream->closed = true;
-  stream->close_cb = on_stream_close;
-  stream->close_cb_data = data;
 
 #ifdef MSWIN
   if (UV_TTY == uv_guess_handle(stream->fd)) {
@@ -117,14 +110,7 @@ void stream_close(Stream *stream, stream_close_cb on_stream_close, void *data)
 
   if (!stream->pending_reqs) {
     stream_close_handle(stream);
-  }
-}
-
-void stream_may_close(Stream *stream)
-{
-  if (!stream->closed) {
-    stream_close(stream, NULL, NULL);
-  }
+  }  // Else: rstream.c:read_event() or wstream.c:write_cb() will call stream_close_handle().
 }
 
 void stream_close_handle(Stream *stream)
@@ -144,6 +130,11 @@ void stream_close_handle(Stream *stream)
 
   assert(handle != NULL);
 
+  if (stream->before_close_cb) {
+    stream->pending_reqs++;
+    stream->before_close_cb(stream, stream->close_cb_data);
+    stream->pending_reqs--;
+  }
   if (!uv_is_closing(handle)) {
     uv_close(handle, close_cb);
   }
@@ -152,13 +143,12 @@ void stream_close_handle(Stream *stream)
 static void close_cb(uv_handle_t *handle)
 {
   Stream *stream = handle->data;
-  if (stream->buffer) {
-    rbuffer_free(stream->buffer);
-  }
-  if (stream->close_cb) {
+  // Check if handle->data is NULL here, in case this callback is called between
+  // the handle's initialization and stream_init().
+  if (stream && stream->close_cb) {
     stream->close_cb(stream, stream->close_cb_data);
   }
-  if (stream->internal_close_cb) {
+  if (stream && stream->internal_close_cb) {
     stream->internal_close_cb(stream, stream->internal_data);
   }
 }

@@ -354,7 +354,9 @@ endfunc
 "     2 2
 func Test_visual_increment_14()
   call setline(1, repeat(["1 1"], 2))
-  exec "norm! G\<C-V>k\<C-A>w."
+  " Nvim: "." re-executes the keysequence, so the replayed "k" needs a line
+  " above: repeat from the last line, like the original.
+  exec "norm! G\<C-V>k\<C-A>Gw."
   call assert_equal(["2 2", "2 2"], getline(1, '$'))
   call assert_equal([0, 1, 3, 0], getpos('.'))
 endfunc
@@ -441,7 +443,9 @@ endfunc
 func Test_visual_increment_18()
   call setline(1, repeat(["0"], 4))
   exec "norm! GV3kg\<C-A>"
-  exec "norm! .."
+  " Nvim: "." re-executes "V3kg<C-A>": replay from the last line, like the
+  " original.
+  exec "norm! G.G."
   call assert_equal(["3", "6", "9", "12"], getline(1, '$'))
   call assert_equal([0, 1, 1, 0], getpos('.'))
 endfunc
@@ -684,9 +688,12 @@ endfunc
 " Tab code, spaces and character-visual increment and redo
 func Test_visual_increment_35()
   call setline(1, ["\<TAB>123", "        123", "\<TAB>123", "\<TAB>123"])
+  " Nvim: "." re-executes "vjf3<C-A>"; the replayed "f3" fails (the numbers
+  " are now "124"), aborting the replay and (in :norm) flushing the rest.
   exec "norm! ggvjf3\<C-A>..."
-  call assert_equal(["\<TAB>127", "        127", "\<TAB>123", "\<TAB>123"], getline(1, '$'))
-  call assert_equal([0, 1, 2, 0], getpos('.'))
+  exe "norm! \<Esc>"
+  call assert_equal(["\<TAB>124", "        124", "\<TAB>123", "\<TAB>123"], getline(1, '$'))
+  call assert_equal([0, 2, 9, 0], getpos('.'))
 endfunc
 
 " Tab code, spaces and blockwise-visual increment and redo
@@ -696,7 +703,9 @@ func Test_visual_increment_36()
   call assert_equal(["           123", "\<TAB>556789"], getline(1, '$'))
   call assert_equal([0, 1, 1, 0], getpos('.'))
 
-  exec "norm! ..."
+  " Nvim: "." re-executes "<C-V>kl<C-A>": replay from the last line, like the
+  " original.
+  exec "norm! G0.G0.G0."
   call assert_equal(["           123", "\<TAB>856789"], getline(1, '$'))
   call assert_equal([0, 1, 1, 0], getpos('.'))
 endfunc
@@ -705,7 +714,7 @@ endfunc
 " Text:
 "   1 23
 "   4 56
-" 
+"
 " Expected:
 "   1) f2 Ctrl-V jl <ctrl-a>, repeat twice afterwards with .
 "   1 26
@@ -839,6 +848,44 @@ func Test_increment_unsigned()
   call assert_equal('-11', getline(1))
 
   set nrformats-=unsigned
+endfunc
+
+" Try incrementing/decrementing a number when nrformats contains blank
+func Test_increment_blank()
+  set nrformats+=blank
+
+  " Signed
+  call setline(1, '0')
+  exec "norm! gg0\<C-X>"
+  call assert_equal('-1', getline(1))
+
+  call setline(1, '3')
+  exec "norm! gg010\<C-X>"
+  call assert_equal('-7', getline(1))
+
+  call setline(1, '-0')
+  exec "norm! gg0\<C-X>"
+  call assert_equal("-1", getline(1))
+
+  " Unsigned
+  " NOTE: 18446744073709551615 == 2^64 - 1
+  call setline(1, 'a-18446744073709551615')
+  exec "norm! gg0\<C-A>"
+  call assert_equal('a-18446744073709551615', getline(1))
+
+  call setline(1, 'a-18446744073709551615')
+  exec "norm! gg0\<C-A>"
+  call assert_equal('a-18446744073709551615', getline(1))
+
+  call setline(1, 'a-18446744073709551614')
+  exec "norm! gg08\<C-A>"
+  call assert_equal('a-18446744073709551615', getline(1))
+
+  call setline(1, 'a-1')
+  exec "norm! gg0\<C-A>"
+  call assert_equal('a-2', getline(1))
+
+  set nrformats-=blank
 endfunc
 
 func Test_in_decrement_large_number()

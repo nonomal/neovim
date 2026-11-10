@@ -1,11 +1,14 @@
+local t = require('test.testutil')
 local n = require('test.functional.testnvim')()
 local Screen = require('test.functional.ui.screen')
 
+local describe, it, before_each, finally = t.describe, t.it, t.before_each, t.finally
 local clear = n.clear
 local command = n.command
 local exec = n.exec
 local feed = n.feed
 local api = n.api
+local fn = n.fn
 local nvim_dir = n.nvim_dir
 local assert_alive = n.assert_alive
 
@@ -16,8 +19,8 @@ describe('messages', function()
 
   -- oldtest: Test_warning_scroll()
   it('a warning causes scrolling if and only if it has a stacktrace', function()
+    t.skip(t.is_arch('s390x'), 'timing-sensitive test unreliable on s390x')
     screen = Screen.new(75, 6)
-    screen:attach()
 
     -- When the warning comes from a script, messages are scrolled so that the
     -- stacktrace is visible.
@@ -45,7 +48,6 @@ describe('messages', function()
   -- oldtest: Test_message_not_cleared_after_mode()
   it('clearing mode does not remove message', function()
     screen = Screen.new(60, 10)
-    screen:attach()
     exec([[
       nmap <silent> gx :call DebugSilent('normal')<CR>
       vmap <silent> gx :call DebugSilent('visual')<CR>
@@ -84,8 +86,35 @@ describe('messages', function()
       NoSuchFil^e                                                  |
       three                                                       |
       {1:~                                                           }|*5
-      from DebugSilent visual                                     |
+                                                                  |
       {9:E447: Can't find file "NoSuchFile" in path}                  |
+    ]])
+  end)
+
+  -- oldtest: Test_mode_cleared_after_silent_message()
+  it('mode is cleared properly after silent message', function()
+    screen = Screen.new(60, 10)
+    exec([[
+      edit XsilentMessageMode.txt
+      call setline(1, 'foobar')
+      autocmd TextChanged * silent update
+    ]])
+    finally(function()
+      os.remove('XsilentMessageMode.txt')
+    end)
+
+    feed('v')
+    screen:expect([[
+      {17:^f}oobar                                                      |
+      {1:~                                                           }|*8
+      {5:-- VISUAL --}                                                |
+    ]])
+
+    feed('d')
+    screen:expect([[
+      ^oobar                                                       |
+      {1:~                                                           }|*8
+                                                                  |
     ]])
   end)
 
@@ -97,11 +126,6 @@ describe('messages', function()
     -- oldtest: Test_message_more()
     it('works', function()
       screen = Screen.new(75, 6)
-      screen:set_default_attr_ids({
-        [1] = { bold = true, foreground = Screen.colors.SeaGreen }, -- MoreMsg
-        [2] = { foreground = Screen.colors.Brown }, -- LineNr
-      })
-      screen:attach()
 
       command('call setline(1, range(1, 100))')
 
@@ -116,196 +140,236 @@ describe('messages', function()
       ]])
       feed('\n')
       screen:expect([[
-        {2:  1 }1                                                                      |
-        {2:  2 }2                                                                      |
-        {2:  3 }3                                                                      |
-        {2:  4 }4                                                                      |
-        {2:  5 }5                                                                      |
-        {1:-- More --}^                                                                 |
+        {8:  1 }1                                                                      |
+        {8:  2 }2                                                                      |
+        {8:  3 }3                                                                      |
+        {8:  4 }4                                                                      |
+        {8:  5 }5                                                                      |
+        {6:-- More --}^                                                                 |
       ]])
 
       feed('?')
       screen:expect([[
-        {2:  1 }1                                                                      |
-        {2:  2 }2                                                                      |
-        {2:  3 }3                                                                      |
-        {2:  4 }4                                                                      |
-        {2:  5 }5                                                                      |
-        {1:-- More -- SPACE/d/j: screen/page/line down, b/u/k: up, q: quit }^           |
+        {8:  1 }1                                                                      |
+        {8:  2 }2                                                                      |
+        {8:  3 }3                                                                      |
+        {8:  4 }4                                                                      |
+        {8:  5 }5                                                                      |
+        {6:-- More -- SPACE/d/j: screen/page/line down, b/u/k: up, q: quit }^           |
       ]])
 
       -- Down a line with j, <CR>, <NL> or <Down>.
       feed('j')
       screen:expect([[
-        {2:  2 }2                                                                      |
-        {2:  3 }3                                                                      |
-        {2:  4 }4                                                                      |
-        {2:  5 }5                                                                      |
-        {2:  6 }6                                                                      |
-        {1:-- More --}^                                                                 |
+        {8:  2 }2                                                                      |
+        {8:  3 }3                                                                      |
+        {8:  4 }4                                                                      |
+        {8:  5 }5                                                                      |
+        {8:  6 }6                                                                      |
+        {6:-- More --}^                                                                 |
       ]])
       feed('<NL>')
       screen:expect([[
-        {2:  3 }3                                                                      |
-        {2:  4 }4                                                                      |
-        {2:  5 }5                                                                      |
-        {2:  6 }6                                                                      |
-        {2:  7 }7                                                                      |
-        {1:-- More --}^                                                                 |
+        {8:  3 }3                                                                      |
+        {8:  4 }4                                                                      |
+        {8:  5 }5                                                                      |
+        {8:  6 }6                                                                      |
+        {8:  7 }7                                                                      |
+        {6:-- More --}^                                                                 |
       ]])
       feed('<CR>')
       screen:expect([[
-        {2:  4 }4                                                                      |
-        {2:  5 }5                                                                      |
-        {2:  6 }6                                                                      |
-        {2:  7 }7                                                                      |
-        {2:  8 }8                                                                      |
-        {1:-- More --}^                                                                 |
+        {8:  4 }4                                                                      |
+        {8:  5 }5                                                                      |
+        {8:  6 }6                                                                      |
+        {8:  7 }7                                                                      |
+        {8:  8 }8                                                                      |
+        {6:-- More --}^                                                                 |
       ]])
       feed('<Down>')
       screen:expect([[
-        {2:  5 }5                                                                      |
-        {2:  6 }6                                                                      |
-        {2:  7 }7                                                                      |
-        {2:  8 }8                                                                      |
-        {2:  9 }9                                                                      |
-        {1:-- More --}^                                                                 |
+        {8:  5 }5                                                                      |
+        {8:  6 }6                                                                      |
+        {8:  7 }7                                                                      |
+        {8:  8 }8                                                                      |
+        {8:  9 }9                                                                      |
+        {6:-- More --}^                                                                 |
       ]])
 
-      -- Down a screen with <Space>, f, or <PageDown>.
+      -- Down a screen with <Space>, f, <C-F>, or <PageDown>.
       feed('f')
       screen:expect([[
-        {2: 10 }10                                                                     |
-        {2: 11 }11                                                                     |
-        {2: 12 }12                                                                     |
-        {2: 13 }13                                                                     |
-        {2: 14 }14                                                                     |
-        {1:-- More --}^                                                                 |
+        {8: 10 }10                                                                     |
+        {8: 11 }11                                                                     |
+        {8: 12 }12                                                                     |
+        {8: 13 }13                                                                     |
+        {8: 14 }14                                                                     |
+        {6:-- More --}^                                                                 |
       ]])
-      feed('<Space>')
+      feed('\6')
       screen:expect([[
-        {2: 15 }15                                                                     |
-        {2: 16 }16                                                                     |
-        {2: 17 }17                                                                     |
-        {2: 18 }18                                                                     |
-        {2: 19 }19                                                                     |
-        {1:-- More --}^                                                                 |
+        {8: 15 }15                                                                     |
+        {8: 16 }16                                                                     |
+        {8: 17 }17                                                                     |
+        {8: 18 }18                                                                     |
+        {8: 19 }19                                                                     |
+        {6:-- More --}^                                                                 |
+      ]])
+      feed(' ')
+      screen:expect([[
+        {8: 20 }20                                                                     |
+        {8: 21 }21                                                                     |
+        {8: 22 }22                                                                     |
+        {8: 23 }23                                                                     |
+        {8: 24 }24                                                                     |
+        {6:-- More --}^                                                                 |
       ]])
       feed('<PageDown>')
       screen:expect([[
-        {2: 20 }20                                                                     |
-        {2: 21 }21                                                                     |
-        {2: 22 }22                                                                     |
-        {2: 23 }23                                                                     |
-        {2: 24 }24                                                                     |
-        {1:-- More --}^                                                                 |
+        {8: 25 }25                                                                     |
+        {8: 26 }26                                                                     |
+        {8: 27 }27                                                                     |
+        {8: 28 }28                                                                     |
+        {8: 29 }29                                                                     |
+        {6:-- More --}^                                                                 |
       ]])
 
       -- Down a page (half a screen) with d.
       feed('d')
       screen:expect([[
-        {2: 23 }23                                                                     |
-        {2: 24 }24                                                                     |
-        {2: 25 }25                                                                     |
-        {2: 26 }26                                                                     |
-        {2: 27 }27                                                                     |
-        {1:-- More --}^                                                                 |
+        {8: 28 }28                                                                     |
+        {8: 29 }29                                                                     |
+        {8: 30 }30                                                                     |
+        {8: 31 }31                                                                     |
+        {8: 32 }32                                                                     |
+        {6:-- More --}^                                                                 |
       ]])
 
       -- Down all the way with 'G'.
       feed('G')
       screen:expect([[
-        {2: 96 }96                                                                     |
-        {2: 97 }97                                                                     |
-        {2: 98 }98                                                                     |
-        {2: 99 }99                                                                     |
-        {2:100 }100                                                                    |
-        {1:Press ENTER or type command to continue}^                                    |
+        {8: 96 }96                                                                     |
+        {8: 97 }97                                                                     |
+        {8: 98 }98                                                                     |
+        {8: 99 }99                                                                     |
+        {8:100 }100                                                                    |
+        {6:Press ENTER or type command to continue}^                                    |
       ]])
 
       -- Up a line k, <BS> or <Up>.
       feed('k')
       screen:expect([[
-        {2: 95 }95                                                                     |
-        {2: 96 }96                                                                     |
-        {2: 97 }97                                                                     |
-        {2: 98 }98                                                                     |
-        {2: 99 }99                                                                     |
-        {1:-- More --}^                                                                 |
+        {8: 95 }95                                                                     |
+        {8: 96 }96                                                                     |
+        {8: 97 }97                                                                     |
+        {8: 98 }98                                                                     |
+        {8: 99 }99                                                                     |
+        {6:-- More --}^                                                                 |
       ]])
       feed('<BS>')
       screen:expect([[
-        {2: 94 }94                                                                     |
-        {2: 95 }95                                                                     |
-        {2: 96 }96                                                                     |
-        {2: 97 }97                                                                     |
-        {2: 98 }98                                                                     |
-        {1:-- More --}^                                                                 |
+        {8: 94 }94                                                                     |
+        {8: 95 }95                                                                     |
+        {8: 96 }96                                                                     |
+        {8: 97 }97                                                                     |
+        {8: 98 }98                                                                     |
+        {6:-- More --}^                                                                 |
       ]])
       feed('<Up>')
       screen:expect([[
-        {2: 93 }93                                                                     |
-        {2: 94 }94                                                                     |
-        {2: 95 }95                                                                     |
-        {2: 96 }96                                                                     |
-        {2: 97 }97                                                                     |
-        {1:-- More --}^                                                                 |
+        {8: 93 }93                                                                     |
+        {8: 94 }94                                                                     |
+        {8: 95 }95                                                                     |
+        {8: 96 }96                                                                     |
+        {8: 97 }97                                                                     |
+        {6:-- More --}^                                                                 |
       ]])
 
-      -- Up a screen with b or <PageUp>.
+      -- Up a screen with b, <C-B> or <PageUp>.
       feed('b')
       screen:expect([[
-        {2: 88 }88                                                                     |
-        {2: 89 }89                                                                     |
-        {2: 90 }90                                                                     |
-        {2: 91 }91                                                                     |
-        {2: 92 }92                                                                     |
-        {1:-- More --}^                                                                 |
+        {8: 88 }88                                                                     |
+        {8: 89 }89                                                                     |
+        {8: 90 }90                                                                     |
+        {8: 91 }91                                                                     |
+        {8: 92 }92                                                                     |
+        {6:-- More --}^                                                                 |
+      ]])
+      feed('\2')
+      screen:expect([[
+        {8: 83 }83                                                                     |
+        {8: 84 }84                                                                     |
+        {8: 85 }85                                                                     |
+        {8: 86 }86                                                                     |
+        {8: 87 }87                                                                     |
+        {6:-- More --}^                                                                 |
       ]])
       feed('<PageUp>')
       screen:expect([[
-        {2: 83 }83                                                                     |
-        {2: 84 }84                                                                     |
-        {2: 85 }85                                                                     |
-        {2: 86 }86                                                                     |
-        {2: 87 }87                                                                     |
-        {1:-- More --}^                                                                 |
+        {8: 78 }78                                                                     |
+        {8: 79 }79                                                                     |
+        {8: 80 }80                                                                     |
+        {8: 81 }81                                                                     |
+        {8: 82 }82                                                                     |
+        {6:-- More --}^                                                                 |
       ]])
 
       -- Up a page (half a screen) with u.
       feed('u')
       screen:expect([[
-        {2: 80 }80                                                                     |
-        {2: 81 }81                                                                     |
-        {2: 82 }82                                                                     |
-        {2: 83 }83                                                                     |
-        {2: 84 }84                                                                     |
-        {1:-- More --}^                                                                 |
+        {8: 75 }75                                                                     |
+        {8: 76 }76                                                                     |
+        {8: 77 }77                                                                     |
+        {8: 78 }78                                                                     |
+        {8: 79 }79                                                                     |
+        {6:-- More --}^                                                                 |
+      ]])
+
+      -- Test <C-F> and <C-B> as keycodes instead of raw control chars.
+      feed('<C-F>')
+      screen:expect([[
+        {8: 80 }80                                                                     |
+        {8: 81 }81                                                                     |
+        {8: 82 }82                                                                     |
+        {8: 83 }83                                                                     |
+        {8: 84 }84                                                                     |
+        {6:-- More --}^                                                                 |
+      ]])
+      feed('<C-B>')
+      screen:expect([[
+        {8: 75 }75                                                                     |
+        {8: 76 }76                                                                     |
+        {8: 77 }77                                                                     |
+        {8: 78 }78                                                                     |
+        {8: 79 }79                                                                     |
+        {6:-- More --}^                                                                 |
       ]])
 
       -- Up all the way with 'g'.
       feed('g')
       screen:expect([[
         :%p#                                                                       |
-        {2:  1 }1                                                                      |
-        {2:  2 }2                                                                      |
-        {2:  3 }3                                                                      |
-        {2:  4 }4                                                                      |
-        {1:-- More --}^                                                                 |
+        {8:  1 }1                                                                      |
+        {8:  2 }2                                                                      |
+        {8:  3 }3                                                                      |
+        {8:  4 }4                                                                      |
+        {6:-- More --}^                                                                 |
       ]])
 
-      -- All the way down. Pressing f should do nothing but pressing
+      -- All the way down. Pressing f or CTRL-F should do nothing but pressing
       -- space should end the more prompt.
       feed('G')
       screen:expect([[
-        {2: 96 }96                                                                     |
-        {2: 97 }97                                                                     |
-        {2: 98 }98                                                                     |
-        {2: 99 }99                                                                     |
-        {2:100 }100                                                                    |
-        {1:Press ENTER or type command to continue}^                                    |
+        {8: 96 }96                                                                     |
+        {8: 97 }97                                                                     |
+        {8: 98 }98                                                                     |
+        {8: 99 }99                                                                     |
+        {8:100 }100                                                                    |
+        {6:Press ENTER or type command to continue}^                                    |
       ]])
       feed('f')
+      screen:expect_unchanged()
+      feed('<C-F>')
       screen:expect_unchanged()
       feed('<Space>')
       screen:expect([[
@@ -320,34 +384,34 @@ describe('messages', function()
       -- Pressing g< shows the previous command output.
       feed('g<lt>')
       screen:expect([[
-        {2: 96 }96                                                                     |
-        {2: 97 }97                                                                     |
-        {2: 98 }98                                                                     |
-        {2: 99 }99                                                                     |
-        {2:100 }100                                                                    |
-        {1:Press ENTER or type command to continue}^                                    |
+        {8: 96 }96                                                                     |
+        {8: 97 }97                                                                     |
+        {8: 98 }98                                                                     |
+        {8: 99 }99                                                                     |
+        {8:100 }100                                                                    |
+        {6:Press ENTER or type command to continue}^                                    |
       ]])
 
       -- A command line that doesn't print text is appended to scrollback,
       -- even if it invokes a nested command line.
       feed([[:<C-R>=':'<CR>:<CR>g<lt>]])
       screen:expect([[
-        {2: 97 }97                                                                     |
-        {2: 98 }98                                                                     |
-        {2: 99 }99                                                                     |
-        {2:100 }100                                                                    |
+        {8: 97 }97                                                                     |
+        {8: 98 }98                                                                     |
+        {8: 99 }99                                                                     |
+        {8:100 }100                                                                    |
         :::                                                                        |
-        {1:Press ENTER or type command to continue}^                                    |
+        {6:Press ENTER or type command to continue}^                                    |
       ]])
 
       feed(':%p#\n')
       screen:expect([[
-        {2:  1 }1                                                                      |
-        {2:  2 }2                                                                      |
-        {2:  3 }3                                                                      |
-        {2:  4 }4                                                                      |
-        {2:  5 }5                                                                      |
-        {1:-- More --}^                                                                 |
+        {8:  1 }1                                                                      |
+        {8:  2 }2                                                                      |
+        {8:  3 }3                                                                      |
+        {8:  4 }4                                                                      |
+        {8:  5 }5                                                                      |
+        {6:-- More --}^                                                                 |
       ]])
 
       -- Stop command output with q, <Esc> or CTRL-C.
@@ -364,37 +428,81 @@ describe('messages', function()
       -- Execute a : command from the more prompt
       feed(':%p#\n')
       screen:expect([[
-        {2:  1 }1                                                                      |
-        {2:  2 }2                                                                      |
-        {2:  3 }3                                                                      |
-        {2:  4 }4                                                                      |
-        {2:  5 }5                                                                      |
-        {1:-- More --}^                                                                 |
+        {8:  1 }1                                                                      |
+        {8:  2 }2                                                                      |
+        {8:  3 }3                                                                      |
+        {8:  4 }4                                                                      |
+        {8:  5 }5                                                                      |
+        {6:-- More --}^                                                                 |
       ]])
       feed(':')
       screen:expect([[
-        {2:  1 }1                                                                      |
-        {2:  2 }2                                                                      |
-        {2:  3 }3                                                                      |
-        {2:  4 }4                                                                      |
-        {2:  5 }5                                                                      |
+        {8:  1 }1                                                                      |
+        {8:  2 }2                                                                      |
+        {8:  3 }3                                                                      |
+        {8:  4 }4                                                                      |
+        {8:  5 }5                                                                      |
         :^                                                                          |
       ]])
       feed("echo 'Hello'\n")
       screen:expect([[
-        {2:  2 }2                                                                      |
-        {2:  3 }3                                                                      |
-        {2:  4 }4                                                                      |
-        {2:  5 }5                                                                      |
+        {8:  2 }2                                                                      |
+        {8:  3 }3                                                                      |
+        {8:  4 }4                                                                      |
+        {8:  5 }5                                                                      |
         Hello                                                                      |
-        {1:Press ENTER or type command to continue}^                                    |
+        {6:Press ENTER or type command to continue}^                                    |
+      ]])
+    end)
+
+    -- oldtest: Test_message_more_recording()
+    it("hitting 'q' at hit-enter prompt does not start recording", function()
+      screen = Screen.new(60, 6)
+      command('call setline(1, range(1, 100))')
+      feed(':%p\n')
+      screen:expect([[
+        1                                                           |
+        2                                                           |
+        3                                                           |
+        4                                                           |
+        5                                                           |
+        {6:-- More --}^                                                  |
+      ]])
+      feed('G')
+      screen:expect([[
+        96                                                          |
+        97                                                          |
+        98                                                          |
+        99                                                          |
+        100                                                         |
+        {6:Press ENTER or type command to continue}^                     |
+      ]])
+
+      -- Hitting 'q' at the end of the more prompt should not start recording
+      feed('q')
+      screen:expect([[
+        96                                                          |
+        97                                                          |
+        98                                                          |
+        99                                                          |
+        ^100                                                         |
+                                                                    |
+      ]])
+      -- Hitting 'k' now should move the cursor up instead of recording keys
+      feed('k')
+      screen:expect([[
+        96                                                          |
+        97                                                          |
+        98                                                          |
+        ^99                                                          |
+        100                                                         |
+                                                                    |
       ]])
     end)
 
     -- oldtest: Test_echo_verbose_system()
     it('verbose message before echo command', function()
       screen = Screen.new(60, 10)
-      screen:attach()
 
       command('cd ' .. nvim_dir)
       api.nvim_set_option_value('shell', './shell-test', {})
@@ -494,7 +602,6 @@ describe('messages', function()
     -- oldtest: Test_quit_long_message()
     it('with control characters can be quit vim-patch:8.2.1844', function()
       screen = Screen.new(40, 10)
-      screen:attach()
 
       feed([[:echom range(9999)->join("\x01")<CR>]])
       screen:expect([[
@@ -521,7 +628,6 @@ describe('messages', function()
   describe('mode is cleared when', function()
     before_each(function()
       screen = Screen.new(40, 6)
-      screen:attach()
     end)
 
     -- oldtest: Test_mode_message_at_leaving_insert_by_ctrl_c()
@@ -591,7 +697,6 @@ describe('messages', function()
   -- oldtest: Test_ask_yesno()
   it('y/n prompt works', function()
     screen = Screen.new(75, 6)
-    screen:attach()
     command('set noincsearch nohlsearch inccommand=')
     command('call setline(1, range(1, 2))')
 
@@ -644,7 +749,6 @@ describe('messages', function()
   -- oldtest: Test_fileinfo_tabpage_cmdheight()
   it("fileinfo works when 'cmdheight' has just decreased", function()
     screen = Screen.new(40, 6)
-    screen:attach()
 
     exec([[
       set shortmess-=o
@@ -673,7 +777,6 @@ describe('messages', function()
   -- oldtest: Test_fileinfo_after_echo()
   it('fileinfo does not overwrite echo message vim-patch:8.2.4156', function()
     screen = Screen.new(40, 6)
-    screen:attach()
 
     exec([[
       set shortmess-=F
@@ -697,5 +800,158 @@ describe('messages', function()
       'b' written                             |
     ]])
     os.remove('b.txt')
+  end)
+
+  -- oldtest: Test_messagesopt_wait()
+  it('&messagesopt "wait"', function()
+    screen = Screen.new(45, 6)
+    command('set cmdheight=1')
+
+    -- Check hit-enter prompt
+    command('set messagesopt=hit-enter,history:500')
+    feed(":echo 'foo' | echo 'bar' | echo 'baz'\n")
+    screen:expect([[
+                                                   |
+      {3:                                             }|
+      foo                                          |
+      bar                                          |
+      baz                                          |
+      {6:Press ENTER or type command to continue}^      |
+    ]])
+    feed('<CR>')
+
+    -- Check no hit-enter prompt when "wait:" is set
+    command('set messagesopt=wait:500,history:500')
+    feed(":echo 'foo' | echo 'bar' | echo 'baz'\n")
+    screen:expect({
+      grid = [[
+                                                   |
+      {1:~                                            }|
+      {3:                                             }|
+      foo                                          |
+      bar                                          |
+      baz                                          |
+    ]],
+      timeout = 500,
+    })
+    screen:expect([[
+      ^                                             |
+      {1:~                                            }|*4
+                                                   |
+    ]])
+  end)
+
+  -- oldtest: Test_long_formatprg_no_hit_enter()
+  it("long 'formatprg' doesn't cause hit-enter prompt or wrong cursor pos", function()
+    t.skip(fn.executable('sed') == 0, 'missing "sed" command')
+
+    screen = Screen.new(75, 10)
+    exec([[
+      setlocal scrolloff=0
+      call setline(1, range(1, 40))
+      let &l:formatprg = $'sed{repeat(' ', &columns)}p'
+      normal 20Gmz
+      normal 10Gzt
+    ]])
+    screen:expect([[
+      ^10                                                                         |
+      11                                                                         |
+      12                                                                         |
+      13                                                                         |
+      14                                                                         |
+      15                                                                         |
+      16                                                                         |
+      17                                                                         |
+      18                                                                         |
+                                                                                 |
+    ]])
+    feed('gq2j')
+    screen:expect([[
+      10                                                                         |*2
+      11                                                                         |*2
+      12                                                                         |
+      ^12                                                                         |
+      13                                                                         |
+      14                                                                         |
+      15                                                                         |
+                                                                                 |
+    ]])
+    feed(':messages<CR>')
+    screen:expect([[
+      10                                                                         |*2
+      11                                                                         |*2
+      12                                                                         |
+      ^12                                                                         |
+      13                                                                         |
+      14                                                                         |
+      15                                                                         |
+      3 lines filtered                                                           |
+    ]])
+  end)
+
+  -- oldtest: Test_hit_enter_during_mapping()
+  it('hit-enter prompt during a mapping', function()
+    screen = Screen.new(75, 10)
+    exec([[
+      set ruler
+      call setline(1, range(1, 20))
+      " The 8-line :echo leads to a hit-enter prompt.
+      nnoremap X :echo "a\nb\nc\nd\ne\nf\ng\nh"<CR>gg
+      nnoremap \b :echo "a\nb\nc\nd\ne\nf\ng\nh"<CR>:b<Space>
+      normal! 10G
+    ]])
+    t.eq({ mode = 'n', blocking = false }, api.nvim_get_mode())
+    t.eq({ 10, 0 }, api.nvim_win_get_cursor(0))
+
+    feed('X')
+    -- Without the fix the hit-enter prompt eats the mapping's "g" keys and the
+    -- cursor stays put.  With the fix "gg" runs and moves the cursor to line 1.
+    t.eq({ mode = 'n', blocking = false }, api.nvim_get_mode())
+    t.eq({ 1, 0 }, api.nvim_win_get_cursor(0))
+
+    -- If a mapping starts cmdline after multiline messages exceeding 'cmdheight',
+    -- the messages should still be visible.
+    feed('\\b')
+    screen:expect([[
+      {3:                                                                           }|
+      a                                                                          |
+      b                                                                          |
+      c                                                                          |
+      d                                                                          |
+      e                                                                          |
+      f                                                                          |
+      g                                                                          |
+      h                                                                          |
+      :b ^                                                                        |
+    ]])
+  end)
+
+  -- oldtest: Test_fileinfo_after_last_bd()
+  it('fileinfo is shown after :bd on last listed buffer', function()
+    screen = Screen.new(50, 10)
+    exec([[
+      set shortmess-=F
+      edit xxx
+      edit yyy
+    ]])
+    screen:expect([[
+      ^                                                  |
+      {1:~                                                 }|*8
+      "yyy" [New]                                       |
+    ]])
+
+    command('bd')
+    screen:expect([[
+      ^                                                  |
+      {1:~                                                 }|*8
+      "xxx" [New] --No lines in buffer--                |
+    ]])
+
+    command('bd')
+    screen:expect([[
+      ^                                                  |
+      {1:~                                                 }|*8
+      "[No Name]" --No lines in buffer--                |
+    ]])
   end)
 end)

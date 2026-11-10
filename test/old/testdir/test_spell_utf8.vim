@@ -726,8 +726,8 @@ endfunc
 " Test with SAL instead of SOFO items; test automatic reloading
 func Test_spell_sal_and_addition()
   set spellfile=
-  call writefile(g:test_data_dic1, "Xtest.dic")
-  call writefile(g:test_data_aff_sal, "Xtest.aff")
+  call writefile(g:test_data_dic1, "Xtest.dic", 'D')
+  call writefile(g:test_data_aff_sal, "Xtest.aff", 'D')
   mkspell! Xtest Xtest
   set spl=Xtest.utf-8.spl spell
   call assert_equal('kbltykk', soundfold('goobledygoook'))
@@ -735,7 +735,7 @@ func Test_spell_sal_and_addition()
   call assert_equal('*fls kswts tl', soundfold('oeverloos gezwets edale'))
 
   "also use an addition file
-  call writefile(["/regions=usgbnz", "elequint/2", "elekwint/3"], "Xtest.utf-8.add")
+  call writefile(["/regions=usgbnz", "elequint/2", "elekwint/3"], "Xtest.utf-8.add", 'D')
   mkspell! Xtest.utf-8.add.spl Xtest.utf-8.add
 
   bwipe!
@@ -809,13 +809,14 @@ endfunc
 
 func Test_check_empty_line()
   " This was using freed memory
+  set spell
   enew
   spellgood! ﬂ
   norm z=
   norm yy
   sil! norm P]svc
   norm P]s
-
+  set spell&
   bwipe!
 endfunc
 
@@ -827,5 +828,18 @@ func Test_spell_suggest_too_long()
   bwipe!
 endfunc
 
+" A SAL rule that is too long to case-fold must not move the sentinel entry
+" out of its last position in the sl_sal array.
+func Test_spellfile_long_sal_rule()
+  call writefile(['1', 'ab'], 'Xlongsal.dic', 'D')
+  call writefile(['SAL ' .. repeat('w', 299) .. ' a',
+        \ "SAL a\u00e9 a"], 'Xlongsal.aff', 'D')
+  mkspell! Xlongsal Xlongsal
+  set spelllang=Xlongsal.utf-8.spl spell
+  " must not crash
+  call soundfold('ab')
+  set spelllang& spell&
+  call delete('Xlongsal.utf-8.spl')
+endfunc
 
 " vim: shiftwidth=2 sts=2 expandtab

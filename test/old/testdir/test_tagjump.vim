@@ -15,20 +15,20 @@ endfunc
 func Test_ptjump()
   CheckFeature quickfix
 
-  set tags=Xtags
+  set tags=Xpttags
   call writefile(["!_TAG_FILE_ENCODING\tutf-8\t//",
-        \ "one\tXfile\t1",
-        \ "three\tXfile\t3",
-        \ "two\tXfile\t2"],
-        \ 'Xtags')
-  call writefile(['one', 'two', 'three'], 'Xfile')
+        \ "one\tXptfile\t1",
+        \ "three\tXptfile\t3",
+        \ "two\tXptfile\t2"],
+        \ 'Xpttags', 'D')
+  call writefile(['one', 'two', 'three'], 'Xptfile', 'D')
 
   %bw!
   ptjump two
   call assert_equal(2, winnr())
   wincmd p
   call assert_equal(1, &previewwindow)
-  call assert_equal('Xfile', expand("%:p:t"))
+  call assert_equal('Xptfile', expand("%:p:t"))
   call assert_equal(2, line('.'))
   call assert_equal(2, winnr('$'))
   call assert_equal(1, winnr())
@@ -38,7 +38,7 @@ func Test_ptjump()
   call assert_equal(2, winnr())
   wincmd p
   call assert_equal(1, &previewwindow)
-  call assert_equal('Xfile', expand("%:p:t"))
+  call assert_equal('Xptfile', expand("%:p:t"))
   call assert_equal(3, line('.'))
   call assert_equal(2, winnr('$'))
   call assert_equal(1, winnr())
@@ -48,8 +48,6 @@ func Test_ptjump()
   call assert_equal(5, winheight(0))
   close
 
-  call delete('Xtags')
-  call delete('Xfile')
   set tags&
 endfunc
 
@@ -60,25 +58,24 @@ func Test_cancel_ptjump()
   call writefile(["!_TAG_FILE_ENCODING\tutf-8\t//",
         \ "word\tfile1\tcmd1",
         \ "word\tfile2\tcmd2"],
-        \ 'Xtags')
+        \ 'Xtags', 'D')
 
   only!
   call feedkeys(":ptjump word\<CR>\<CR>", "xt")
   help
   call assert_equal(2, winnr('$'))
 
-  call delete('Xtags')
   set tags&
   quit
 endfunc
 
 func Test_static_tagjump()
-  set tags=Xtags
+  set tags=Xtjtags
   call writefile(["!_TAG_FILE_ENCODING\tutf-8\t//",
-        \ "one\tXfile1\t/^one/;\"\tf\tfile:\tsignature:(void)",
-        \ "word\tXfile2\tcmd2"],
-        \ 'Xtags')
-  new Xfile1
+        \ "one\tXtjfile1\t/^one/;\"\tf\tfile:\tsignature:(void)",
+        \ "word\tXtjfile2\tcmd2"],
+        \ 'Xtjtags', 'D')
+  new Xtjfile1
   call setline(1, ['empty', 'one()', 'empty'])
   write
   tag one
@@ -86,19 +83,18 @@ func Test_static_tagjump()
 
   bwipe!
   set tags&
-  call delete('Xtags')
-  call delete('Xfile1')
+  call delete('Xtjfile1')
 endfunc
 
 func Test_duplicate_tagjump()
-  set tags=Xtags
+  set tags=Xdttags
   call writefile(["!_TAG_FILE_ENCODING\tutf-8\t//",
-        \ "thesame\tXfile1\t1;\"\td\tfile:",
-        \ "thesame\tXfile1\t2;\"\td\tfile:",
-        \ "thesame\tXfile1\t3;\"\td\tfile:",
+        \ "thesame\tXdtfile1\t1;\"\td\tfile:",
+        \ "thesame\tXdtfile1\t2;\"\td\tfile:",
+        \ "thesame\tXdtfile1\t3;\"\td\tfile:",
         \ ],
-        \ 'Xtags')
-  new Xfile1
+        \ 'Xdttags', 'D')
+  new Xdtfile1
   call setline(1, ['thesame one', 'thesame two', 'thesame three'])
   write
   tag thesame
@@ -110,19 +106,18 @@ func Test_duplicate_tagjump()
 
   bwipe!
   set tags&
-  call delete('Xtags')
-  call delete('Xfile1')
+  call delete('Xdtfile1')
 endfunc
 
 func Test_tagjump_switchbuf()
   CheckFeature quickfix
 
-  set tags=Xtags
+  set tags=Xswtags
   call writefile(["!_TAG_FILE_ENCODING\tutf-8\t//",
-        \ "second\tXfile1\t2",
-        \ "third\tXfile1\t3",],
-        \ 'Xtags')
-  call writefile(['first', 'second', 'third'], 'Xfile1')
+        \ "second\tXsbfile1\t2",
+        \ "third\tXsbfile1\t3",],
+        \ 'Xswtags', 'D')
+  call writefile(['first', 'second', 'third'], 'Xsbfile1', 'D')
 
   enew | only
   set switchbuf=
@@ -150,11 +145,32 @@ func Test_tagjump_switchbuf()
   1tabnext | stag third
   call assert_equal(2, tabpagenr('$'))
   call assert_equal(3, line('.'))
+  tabonly
+
+  " use a vertically split window
+  enew | only
+  set switchbuf=vsplit
+  stag third
+  call assert_equal(2, winnr('$'))
+  call assert_equal(1, winnr())
+  call assert_equal(3, line('.'))
+  call assert_equal(['row', [['leaf', win_getid(1)], ['leaf', win_getid(2)]]], winlayout())
+
+  " jump to a tag in a new tabpage
+  enew | only
+  set switchbuf=newtab
+  stag second
+  call assert_equal(2, tabpagenr('$'))
+  call assert_equal(2, tabpagenr())
+  call assert_equal(2, line('.'))
+  0tab stag third
+  call assert_equal(3, tabpagenr('$'))
+  call assert_equal(1, tabpagenr())
+  call assert_equal(3, line('.'))
 
   tabclose!
+  tabclose!
   enew | only
-  call delete('Xfile1')
-  call delete('Xtags')
   set tags&
   set switchbuf&vim
 endfunc
@@ -221,7 +237,7 @@ func Test_tag_symbolic()
   call assert_equal('Xtest.c', expand('%:t'))
   call assert_equal(2, col('.'))
 
-  set nohidden
+  set nohidden  " Accommodate Nvim default
   set tags&
   enew!
   call delete('Xtags')
@@ -777,7 +793,7 @@ func Test_tag_guess()
   let code =<< trim [CODE]
 
     int FUNC1  (int x) { }
-    int 
+    int
     func2   (int y) { }
     int * func3 () { }
 
@@ -1001,8 +1017,63 @@ func Test_tag_stack()
   call settagstack(1, {'items' : []})
   call assert_fails('pop', 'E73:')
 
+  " References to wiped buffer are deleted.
+  for i in range(10, 20)
+    edit Xtest
+    exe "tag var" .. i
+  endfor
+  edit Xtest
+
+  let t = gettagstack()
+  call assert_equal(11, t.length)
+  call assert_equal(12, t.curidx)
+
+  bwipe!
+
+  let t = gettagstack()
+  call assert_equal(0, t.length)
+  call assert_equal(1, t.curidx)
+
+  " References to wiped buffer are deleted with multiple tabpages.
+  let w1 = win_getid()
+  call settagstack(1, {'items' : []})
+  for i in range(10, 20) | edit Xtest | exe "tag var" .. i | endfor
+  enew
+
+  new
+  let w2 = win_getid()
+  call settagstack(1, {'items' : []})
+  for i in range(10, 20) | edit Xtest | exe "tag var" .. i | endfor
+  enew
+
+  tabnew
+  let w3 = win_getid()
+  call settagstack(1, {'items' : []})
+  for i in range(10, 20) | edit Xtest | exe "tag var" .. i | endfor
+  enew
+
+  new
+  let w4 = win_getid()
+  call settagstack(1, {'items' : []})
+  for i in range(10, 20) | edit Xtest | exe "tag var" .. i | endfor
+  enew
+
+  for w in [w1, w2, w3, w4]
+    let t = gettagstack(w)
+    call assert_equal(11, t.length)
+    call assert_equal(12, t.curidx)
+  endfor
+
+  bwipe! Xtest
+
+  for w in [w1, w2, w3, w4]
+    let t = gettagstack(w)
+    call assert_equal(0, t.length)
+    call assert_equal(1, t.curidx)
+  endfor
+
+  %bwipe!
   set tags&
-  %bwipe
 endfunc
 
 " Test for browsing multiple matching tags
@@ -1168,16 +1239,13 @@ func Test_tselect_listing()
 
   call feedkeys("\<CR>", "t")
   let l = split(execute("tselect first"), "\n")
+  " Nvim: :tselect goes through vim.ui.select().
   let expected =<< [DATA]
-  # pri kind tag               file
-  1 FS  v    first             Xfoo
-               typeref:typename:int 
-               1
-  2 FS  v    first             Xfoo
-               typeref:typename:char 
-               2
-Type number and <Enter> (q or empty cancels): 
+Select a tag:
+1:   FS  v    first              Xfoo
+2:   FS  v    first              Xfoo
 [DATA]
+
   call assert_equal(expected, l)
 
   call delete('Xtags')
@@ -1292,7 +1360,7 @@ func Test_inc_search()
   call assert_fails('isplit 6 foo', 'E389:')
   call assert_fails('isplit bar', 'E389:')
 
-  close!
+  bw!
 endfunc
 
 " this was using a line from ml_get() freed by the regexp
@@ -1405,7 +1473,7 @@ func Test_macro_search()
   call assert_fails('dsplit 6 FOO', 'E388:')
   call assert_fails('dsplit BAR', 'E388:')
 
-  close!
+  bw!
 endfunc
 
 func Test_define_search()
@@ -1451,7 +1519,7 @@ func Test_comment_search()
   call assert_beeps('normal! 15|[/')
   call setline(1, '        /* comment')
   call assert_beeps('normal! 15|]/')
-  close!
+  bw!
 endfunc
 
 " Test for the 'taglength' option
@@ -1551,14 +1619,14 @@ func Test_tagbsearch()
         \ "third\tXfoo\t3",
         \ "second\tXfoo\t2",
         \ "first\tXfoo\t1"],
-        \ 'Xtags')
+        \ 'Xtags', 'D')
   set tags=Xtags
   let code =<< trim [CODE]
     int first() {}
     int second() {}
     int third() {}
   [CODE]
-  call writefile(code, 'Xfoo')
+  call writefile(code, 'Xfoo', 'D')
 
   enew
   set tagbsearch
@@ -1618,9 +1686,64 @@ func Test_tagbsearch()
         \ 'Xtags')
   call assert_fails('tag bbb', 'E426:')
 
-  call delete('Xtags')
-  call delete('Xfoo')
   set tags& tagbsearch&
+endfunc
+
+" Test tag guessing with very short names
+func Test_tag_guess_short()
+  call writefile(["!_TAG_FILE_ENCODING\tutf-8\t//",
+        \ "y\tXf\t/^y()/"],
+        \ 'Xt', 'D')
+  set tags=Xt cpoptions+=t
+  call writefile(['', 'int * y () {}', ''], 'Xf', 'D')
+
+  let v:statusmsg = ''
+  let @/ = ''
+  ta y
+  call assert_match('E435:', v:statusmsg)
+  call assert_equal(2, line('.'))
+  call assert_match('<y', @/)
+
+  set tags& cpoptions-=t
+endfunc
+
+func Test_tag_excmd_with_nostartofline()
+  call writefile(["!_TAG_FILE_ENCODING\tutf-8\t//",
+        \ "f\tXfile\tascii"],
+        \ 'Xtags', 'D')
+  call writefile(['f', 'foobar'], 'Xfile', 'D')
+
+  set nostartofline
+  new Xfile
+  setlocal tags=Xtags
+  normal! G$
+  " This used to cause heap-buffer-overflow
+  tag f
+
+  bwipe!
+  set startofline&
+endfunc
+
+" Test that backtick expressions in tag filenames are not expanded.
+" This prevents command injection via malicious tags files.
+func Test_tag_backtick_filename_not_expanded()
+  let pwned_file = 'Xtags_pwnd'
+  call assert_false(filereadable(pwned_file))
+
+  let tagline = "main\t`touch " .. pwned_file .. "`\t/^int main/;\"\tf"
+  call writefile([tagline], 'Xbt_tags', 'D')
+  call writefile(['int main(int argc, char **argv) {', '}'], 'Xbt_main.c', 'D')
+
+  set tags=Xbt_tags
+  sp Xbt_main.c
+
+  " The :tag command should fail to find the file, but must NOT execute
+  " the backtick shell command.
+  call assert_fails('tag main', 'E429:')
+  call assert_false(filereadable(pwned_file))
+
+  set tags&
+  bwipe!
 endfunc
 
 " vim: shiftwidth=2 sts=2 expandtab

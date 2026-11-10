@@ -1,12 +1,13 @@
 local t = require('test.testutil')
 local n = require('test.functional.testnvim')()
 
+local describe, it, setup = t.describe, t.it, t.setup
 local eq = t.eq
 local eval = n.eval
 local clear = n.clear
 
 describe('Division operator', function()
-  before_each(clear)
+  setup(clear)
 
   it('returns infinity on {positive}/0.0', function()
     eq("str2float('inf')", eval('string(1.0/0.0)'))

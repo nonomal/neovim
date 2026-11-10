@@ -2,6 +2,7 @@ local t = require('test.testutil')
 local n = require('test.functional.testnvim')()
 local Screen = require('test.functional.ui.screen')
 
+local describe, it, before_each = t.describe, t.it, t.before_each
 local clear = n.clear
 local command = n.command
 local eq = t.eq
@@ -11,7 +12,7 @@ local feed = n.feed
 local insert = n.insert
 local fn = n.fn
 local api = n.api
-local neq = t.neq
+local matches = t.matches
 local ok = t.ok
 local retry = t.retry
 local source = n.source
@@ -66,7 +67,6 @@ local function common_setup(screen, inccommand, text)
     command('syntax on')
     command('set nohlsearch')
     command('hi Substitute guifg=red guibg=yellow')
-    screen:attach()
 
     screen:add_extra_attr_ids {
       [100] = { underline = true },
@@ -556,10 +556,9 @@ describe(":substitute, 'inccommand' preserves undo", function()
   end)
 
   it('with undolevels=1', function()
-    local screen = Screen.new(20, 10)
-
     for _, case in pairs(cases) do
       clear()
+      local screen = Screen.new(20, 10)
       common_setup(screen, case, default_text)
       screen:expect([[
         Inc substitution on |
@@ -617,10 +616,9 @@ describe(":substitute, 'inccommand' preserves undo", function()
   end)
 
   it('with undolevels=2', function()
-    local screen = Screen.new(20, 10)
-
     for _, case in pairs(cases) do
       clear()
+      local screen = Screen.new(20, 10)
       common_setup(screen, case, default_text)
       command('set undolevels=2')
 
@@ -641,7 +639,7 @@ describe(":substitute, 'inccommand' preserves undo", function()
       if case == 'split' then
         screen:expect([[
           Inc substitution on |
-          two line^s           |
+          ^two lines           |
                               |
           {1:~                   }|*6
           Already ...t change |
@@ -649,7 +647,7 @@ describe(":substitute, 'inccommand' preserves undo", function()
       else
         screen:expect([[
           Inc substitution on |
-          two line^s           |
+          ^two lines           |
                               |
           {1:~                   }|*6
           Already ...t change |
@@ -697,10 +695,9 @@ describe(":substitute, 'inccommand' preserves undo", function()
   end)
 
   it('with undolevels=-1', function()
-    local screen = Screen.new(20, 10)
-
     for _, case in pairs(cases) do
       clear()
+      local screen = Screen.new(20, 10)
       common_setup(screen, case, default_text)
 
       command('set undolevels=-1')
@@ -728,6 +725,7 @@ describe(":substitute, 'inccommand' preserves undo", function()
 
       -- repeat with an interrupted substitution
       clear()
+      screen = Screen.new(20, 10)
       common_setup(screen, case, default_text)
 
       command('set undolevels=-1')
@@ -1138,6 +1136,24 @@ describe(':substitute, inccommand=split', function()
       :%s/B.*N/x^                    |
     ]])
 
+    -- Assert that 'inccommand' is again ENABLED after leaving cmdline mode.
+    feed([[<C-\><C-N>]])
+    eq('split', eval('&inccommand'))
+  end)
+
+  it('time limit is enforced while matching a single line #40773', function()
+    -- prevent redraws from 'incsearch'
+    api.nvim_set_option_value('incsearch', false, {})
+    -- Assert that 'inccommand' is ENABLED initially.
+    eq('split', eval('&inccommand'))
+    -- Set 'redrawtime' to minimal value, to ensure timeout is triggered.
+    command('set redrawtime=1 nowrap')
+    -- Prepare the text
+    api.nvim_buf_set_lines(0, 0, -1, true, { ('aaaaaaaa/'):rep(6) .. ('b'):rep(200) })
+    feed([[:%s/.\+\/\(.\+\)\+ft\/\1]])
+    screen:expect({ any = vim.pesc([[:%s/.\+\/\(.\+\)\+ft\/\1]]) })
+    -- Assert that 'inccommand' is DISABLED in cmdline mode.
+    eq('', eval('&inccommand'))
     -- Assert that 'inccommand' is again ENABLED after leaving cmdline mode.
     feed([[<C-\><C-N>]])
     eq('split', eval('&inccommand'))
@@ -1636,12 +1652,12 @@ describe("'inccommand' and :cnoremap", function()
       refresh(case, true)
       command("cnoremap <expr> x execute('bwipeout!')[-1].'x'")
 
-      feed(':%s/tw/tox<enter>')
-      screen:expect { any = [[{9:^E565:]] }
-      feed('<c-c>')
-
+      api.nvim_set_vvar('errmsg', '')
+      feed(':%s/tw/tox')
       -- error thrown b/c of the mapping
-      neq(nil, eval('v:errmsg'):find('^E565:'))
+      matches('^E565:', api.nvim_get_vvar('errmsg'))
+
+      feed('<enter>')
       expect([[
       Inc substitution on
       toxo lines
@@ -2510,7 +2526,7 @@ describe(':substitute', function()
   end)
 
   it("doesn't prompt to swap cmd range", function()
-    screen = Screen.new(50, 8) -- wide to avoid hit-enter prompt
+    screen:try_resize(50, 8) -- wide to avoid hit-enter prompt
     common_setup(screen, 'split', default_text)
     feed(':2,1s/tw/MO/g')
 
@@ -2547,7 +2563,7 @@ describe(':substitute', function()
 end)
 
 it(':substitute with inccommand during :terminal activity', function()
-  if t.skip_fragile(pending) then
+  if t.skip_fragile(t.pending) then
     return
   end
   retry(2, 40000, function()
@@ -2594,6 +2610,12 @@ it(':substitute with inccommand, timer-induced :redraw #9777', function()
     {2:[Preview]                     }|
     :%s/foo/ZZZ^                   |
   ]])
+
+  -- Also with nvim__redraw()
+  command('call timer_start(10, {-> nvim__redraw(#{flush:1})}, {"repeat":-1})')
+  command('call timer_start(10, {-> nvim__redraw(#{statusline:1})}, {"repeat":-1})')
+  sleep(20) -- Allow some timer activity.
+  screen:expect_unchanged()
 end)
 
 it(':substitute with inccommand, allows :redraw before first separator is typed #18857', function()
@@ -2933,4 +2955,16 @@ it("'inccommand' disables preview if preview buffer can't be created #27086", fu
     :%s/foo/bar^                   |
   ]])
   eq('nosplit', api.nvim_get_option_value('inccommand', {}))
+end)
+
+it("'inccommand' :substitute preview skips input() prompt #11940", function()
+  clear()
+  local screen = Screen.new(30, 3)
+  common_setup(screen, 'split', 'foo')
+  feed([[:s/f/\=input("sub: ")]])
+  screen:expect([[
+    oo                            |
+    {1:~                             }|
+    :s/f/\=input("sub: ")^         |
+  ]])
 end)

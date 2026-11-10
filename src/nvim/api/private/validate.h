@@ -16,6 +16,23 @@
     } \
   } while (0)
 
+#define VALIDATE_R(cond, name, code) \
+  do { \
+    if (!(cond)) { \
+      api_err_required(err, name); \
+      code; \
+    } \
+  } while (0)
+
+/// Shows a "not allowed with" message, for mutually-exclusive args.
+#define VALIDATE_CON(cond, name, name2, code) \
+  do { \
+    if (!(cond)) { \
+      api_err_conflict(err, name, name2); \
+      code; \
+    } \
+  } while (0)
+
 #define VALIDATE_INT(cond, name, val_, code) \
   do { \
     if (!(cond)) { \
@@ -42,7 +59,7 @@
 
 #define VALIDATE_T(name, expected_t, actual_t, code) \
   do { \
-    STATIC_ASSERT(expected_t != kObjectTypeDictionary, "use VALIDATE_T_DICT"); \
+    STATIC_ASSERT(expected_t != kObjectTypeDict, "use VALIDATE_T_DICT"); \
     if (expected_t != actual_t) { \
       api_err_exp(err, name, api_typename(expected_t), api_typename(actual_t)); \
       code; \
@@ -52,7 +69,7 @@
 /// Checks that `obj_` has type `expected_t`.
 #define VALIDATE_T2(obj_, expected_t, code) \
   do { \
-    STATIC_ASSERT(expected_t != kObjectTypeDictionary, "use VALIDATE_T_DICT"); \
+    STATIC_ASSERT(expected_t != kObjectTypeDict, "use VALIDATE_T_DICT"); \
     if ((obj_).type != expected_t) { \
       api_err_exp(err, STR(obj_), api_typename(expected_t), api_typename((obj_).type)); \
       code; \
@@ -62,11 +79,11 @@
 /// Checks that `obj_` has Dict type. Also allows empty Array in a Lua context.
 #define VALIDATE_T_DICT(name, obj_, code) \
   do { \
-    if ((obj_).type != kObjectTypeDictionary \
+    if ((obj_).type != kObjectTypeDict \
         && !(channel_id == LUA_INTERNAL_CALL \
              && (obj_).type == kObjectTypeArray \
              && (obj_).data.array.size == 0)) { \
-      api_err_exp(err, name, api_typename(kObjectTypeDictionary), api_typename((obj_).type)); \
+      api_err_exp(err, name, api_typename(kObjectTypeDict), api_typename((obj_).type)); \
       code; \
     } \
   } while (0)
@@ -88,9 +105,4 @@
     } \
   } while (0)
 
-#define VALIDATE_R(cond, name, code) \
-  VALIDATE(cond, "Required: '%s'", name, code);
-
-#ifdef INCLUDE_GENERATED_DECLARATIONS
-# include "api/private/validate.h.generated.h"
-#endif
+#include "api/private/validate.h.generated.h"

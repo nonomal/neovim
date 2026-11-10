@@ -16,24 +16,26 @@
 #include "nvim/buffer_defs.h"
 #include "nvim/buffer_updates.h"
 #include "nvim/channel.h"
-#include "nvim/context.h"
 #include "nvim/decoration_provider.h"
 #include "nvim/drawline.h"
+#include "nvim/errors.h"
 #include "nvim/eval.h"
 #include "nvim/gettext_defs.h"
 #include "nvim/globals.h"
 #include "nvim/highlight.h"
 #include "nvim/highlight_group.h"
+#include "nvim/input_cmdatom.h"
 #include "nvim/insexpand.h"
 #include "nvim/lua/executor.h"
 #include "nvim/main.h"
 #include "nvim/map_defs.h"
 #include "nvim/mapping.h"
+#include "nvim/mcursor.h"
 #include "nvim/memfile.h"
 #include "nvim/memory.h"
 #include "nvim/message.h"
+#include "nvim/normal.h"
 #include "nvim/option_vars.h"
-#include "nvim/os/input.h"
 #include "nvim/sign.h"
 #include "nvim/state_defs.h"
 #include "nvim/statusline.h"
@@ -42,7 +44,6 @@
 #include "nvim/ui_client.h"
 #include "nvim/ui_compositor.h"
 #include "nvim/usercmd.h"
-#include "nvim/vim_defs.h"
 
 #ifdef UNIT_TESTING
 # define malloc(size) mem_malloc(size)
@@ -55,9 +56,7 @@ MemCalloc mem_calloc = &calloc;
 MemRealloc mem_realloc = &realloc;
 #endif
 
-#ifdef INCLUDE_GENERATED_DECLARATIONS
-# include "memory.c.generated.h"
-#endif
+#include "memory.c.generated.h"
 
 #ifdef EXITFREE
 bool entered_free_all_mem = false;
@@ -65,7 +64,7 @@ bool entered_free_all_mem = false;
 
 /// Try to free memory. Used when trying to recover from out of memory errors.
 /// @see {xmalloc}
-void try_to_free_memory(void)
+static void try_to_free_memory(void)
 {
   static bool trying_to_free = false;
   // avoid recursive calls
@@ -82,6 +81,24 @@ void try_to_free_memory(void)
   arena_free_reuse_blks();
 
   trying_to_free = false;
+}
+
+/// Avoid repeating the error message many times (they take 1 second each).
+/// `did_outofmem_msg` is reset when a character is read.
+static void do_outofmem_msg(size_t size)
+{
+  if (did_outofmem_msg) {
+    return;
+  }
+
+  // Don't hide this message
+  emsg_silent = 0;
+
+  // Must come first to avoid coming back here when printing the error
+  // message fails, e.g. when setting v:errmsg.
+  did_outofmem_msg = true;
+
+  semsg(_("E342: Out of memory!  (allocating %" PRIu64 " bytes)"), (uint64_t)size);
 }
 
 /// malloc() wrapper
@@ -198,11 +215,11 @@ void *xmallocz(size_t size)
 {
   size_t total_size = size + 1;
   if (total_size < size) {
-    preserve_exit(_("Vim: Data too large to fit into virtual memory space\n"));
+    preserve_exit(_("Nvim: Data too large to fit into virtual memory space\n"));
   }
 
   void *ret = xmalloc(total_size);
-  ((char *)ret)[size] = '\0';
+  ((char *)ret)[size] = NUL;
 
   return ret;
 }
@@ -232,7 +249,7 @@ void *xmemcpyz(void *dst, const void *src, size_t len)
   FUNC_ATTR_NONNULL_ALL FUNC_ATTR_NONNULL_RET
 {
   memcpy(dst, src, len);
-  ((char *)dst)[len] = '\0';
+  ((char *)dst)[len] = NUL;
   return dst;
 }
 
@@ -240,7 +257,7 @@ void *xmemcpyz(void *dst, const void *src, size_t len)
 size_t xstrnlen(const char *s, size_t n)
   FUNC_ATTR_NONNULL_ALL FUNC_ATTR_PURE
 {
-  const char *end = memchr(s, '\0', n);
+  const char *end = memchr(s, NUL, n);
   if (end == NULL) {
     return n;
   }
@@ -258,8 +275,8 @@ size_t xstrnlen(const char *s, size_t n)
 char *xstrchrnul(const char *str, char c)
   FUNC_ATTR_NONNULL_RET FUNC_ATTR_NONNULL_ALL FUNC_ATTR_PURE
 {
-  char *p = strchr(str, c);
-  return p ? p : (char *)(str + strlen(str));
+  const char *p = strchr(str, c);
+  return p ? (char *)p : (char *)(str + strlen(str));
 }
 
 /// A version of memchr() that returns a pointer one past the end
@@ -273,8 +290,8 @@ char *xstrchrnul(const char *str, char c)
 void *xmemscan(const void *addr, char c, size_t size)
   FUNC_ATTR_NONNULL_RET FUNC_ATTR_NONNULL_ALL FUNC_ATTR_PURE
 {
-  char *p = memchr(addr, c, size);
-  return p ? p : (char *)addr + size;
+  const char *p = memchr(addr, c, size);
+  return p ? (char *)p : (char *)addr + size;
 }
 
 /// Replaces every instance of `c` with `x`.
@@ -287,7 +304,7 @@ void *xmemscan(const void *addr, char c, size_t size)
 void strchrsub(char *str, char c, char x)
   FUNC_ATTR_NONNULL_ALL
 {
-  assert(c != '\0');
+  assert(c != NUL);
   while ((str = strchr(str, c))) {
     *str++ = x;
   }
@@ -387,7 +404,7 @@ char *xstpcpy(char *restrict dst, const char *restrict src)
 char *xstpncpy(char *restrict dst, const char *restrict src, size_t maxlen)
   FUNC_ATTR_NONNULL_RET FUNC_ATTR_WARN_UNUSED_RESULT FUNC_ATTR_NONNULL_ALL
 {
-  const char *p = memchr(src, '\0', maxlen);
+  const char *p = memchr(src, NUL, maxlen);
   if (p) {
     size_t srclen = (size_t)(p - src);
     memcpy(dst, src, srclen);
@@ -419,7 +436,7 @@ size_t xstrlcpy(char *restrict dst, const char *restrict src, size_t dsize)
   if (dsize) {
     size_t len = MIN(slen, dsize - 1);
     memcpy(dst, src, len);
-    dst[len] = '\0';
+    dst[len] = NUL;
   }
 
   return slen;  // Does not include NUL.
@@ -449,7 +466,7 @@ size_t xstrlcat(char *const dst, const char *const src, const size_t dsize)
 
   if (slen > dsize - dlen - 1) {
     memmove(dst + dlen, src, dsize - dlen - 1);
-    dst[dsize - 1] = '\0';
+    dst[dsize - 1] = NUL;
   } else {
     memmove(dst + dlen, src, slen + 1);
   }
@@ -509,7 +526,7 @@ char *xstrndup(const char *str, size_t len)
   FUNC_ATTR_MALLOC FUNC_ATTR_WARN_UNUSED_RESULT FUNC_ATTR_NONNULL_RET
   FUNC_ATTR_NONNULL_ALL
 {
-  char *p = memchr(str, '\0', len);
+  const char *p = memchr(str, NUL, len);
   return xmemdupz(str, p ? (size_t)(p - str) : len);
 }
 
@@ -540,24 +557,6 @@ bool strnequal(const char *a, const char *b, size_t n)
   return (a == NULL && b == NULL) || (a && b && strncmp(a, b, n) == 0);
 }
 
-// Avoid repeating the error message many times (they take 1 second each).
-// Did_outofmem_msg is reset when a character is read.
-void do_outofmem_msg(size_t size)
-{
-  if (did_outofmem_msg) {
-    return;
-  }
-
-  // Don't hide this message
-  emsg_silent = 0;
-
-  // Must come first to avoid coming back here when printing the error
-  // message fails, e.g. when setting v:errmsg.
-  did_outofmem_msg = true;
-
-  semsg(_("E342: Out of memory!  (allocating %" PRIu64 " bytes)"), (uint64_t)size);
-}
-
 /// Writes time_t to "buf[8]".
 void time_to_bytes(time_t time_, uint8_t buf[8])
 {
@@ -566,6 +565,115 @@ void time_to_bytes(time_t time_, uint8_t buf[8])
   for (size_t i = 7, bufi = 0; bufi < 8; i--, bufi++) {
     buf[bufi] = (uint8_t)((uint64_t)time_ >> (i * 8));
   }
+}
+
+/// Iterative merge sort for doubly linked list.
+/// O(NlogN) worst case, and stable.
+///  - The list is divided into blocks of increasing size (1, 2, 4, 8, ...).
+///  - Each pair of blocks is merged in sorted order.
+///  - Merged blocks are reconnected to build the sorted list.
+void *mergesort_list(void *head, MergeSortGetFunc get_next, MergeSortSetFunc set_next,
+                     MergeSortGetFunc get_prev, MergeSortSetFunc set_prev,
+                     MergeSortCompareFunc compare)
+{
+  if (!head || !get_next(head)) {
+    return head;
+  }
+
+  // Count length
+  int n = 0;
+  void *curr = head;
+  while (curr) {
+    n++;
+    curr = get_next(curr);
+  }
+
+  for (int size = 1; size < n; size *= 2) {
+    void *new_head = NULL;
+    void *tail = NULL;
+    curr = head;
+
+    while (curr) {
+      // Split two runs
+      void *left = curr;
+      void *right = left;
+      for (int i = 0; i < size && right; i++) {
+        right = get_next(right);
+      }
+
+      void *next = right;
+      for (int i = 0; i < size && next; i++) {
+        next = get_next(next);
+      }
+
+      // Break links
+      void *l_end = right ? get_prev(right) : NULL;
+      if (l_end) {
+        set_next(l_end, NULL);
+      }
+      if (right) {
+        set_prev(right, NULL);
+      }
+
+      void *r_end = next ? get_prev(next) : NULL;
+      if (r_end) {
+        set_next(r_end, NULL);
+      }
+      if (next) {
+        set_prev(next, NULL);
+      }
+
+      // Merge
+      void *merged = NULL;
+      void *merged_tail = NULL;
+
+      while (left || right) {
+        void *chosen = NULL;
+        if (!left) {
+          chosen = right;
+          right = get_next(right);
+        } else if (!right) {
+          chosen = left;
+          left = get_next(left);
+        } else if (compare(left, right) <= 0) {
+          chosen = left;
+          left = get_next(left);
+        } else {
+          chosen = right;
+          right = get_next(right);
+        }
+
+        if (merged_tail) {
+          set_next(merged_tail, chosen);
+          set_prev(chosen, merged_tail);
+          merged_tail = chosen;
+        } else {
+          merged = merged_tail = chosen;
+          set_prev(chosen, NULL);
+        }
+      }
+
+      // Connect to full list
+      if (!new_head) {
+        new_head = merged;
+      } else {
+        set_next(tail, merged);
+        set_prev(merged, tail);
+      }
+
+      // Move tail to end
+      while (get_next(merged_tail)) {
+        merged_tail = get_next(merged_tail);
+      }
+      tail = merged_tail;
+
+      curr = next;
+    }
+
+    head = new_head;
+  }
+
+  return head;
 }
 
 #define REUSE_MAX 4
@@ -707,31 +815,38 @@ char *arena_allocz(Arena *arena, size_t size)
 }
 
 char *arena_memdupz(Arena *arena, const char *buf, size_t size)
+  FUNC_ATTR_NONNULL_ARG(2)
 {
   char *mem = arena_allocz(arena, size);
   memcpy(mem, buf, size);
   return mem;
 }
 
-#if defined(EXITFREE)
+char *arena_strdup(Arena *arena, const char *str)
+  FUNC_ATTR_NONNULL_ARG(2)
+{
+  return arena_memdupz(arena, str, strlen(str));
+}
+
+#ifdef EXITFREE
 
 # include "nvim/autocmd.h"
 # include "nvim/buffer.h"
 # include "nvim/cmdhist.h"
 # include "nvim/diff.h"
-# include "nvim/edit.h"
 # include "nvim/ex_cmds.h"
 # include "nvim/ex_docmd.h"
 # include "nvim/file_search.h"
-# include "nvim/getchar.h"
 # include "nvim/grid.h"
+# include "nvim/input.h"
+# include "nvim/insert.h"
 # include "nvim/mark.h"
 # include "nvim/msgpack_rpc/channel.h"
-# include "nvim/ops.h"
 # include "nvim/option.h"
 # include "nvim/os/os.h"
 # include "nvim/quickfix.h"
 # include "nvim/regexp.h"
+# include "nvim/register.h"
 # include "nvim/search.h"
 # include "nvim/spell.h"
 # include "nvim/tag.h"
@@ -746,9 +861,10 @@ void free_all_mem(void)
 {
   buf_T *buf, *nextbuf;
 
-  // When we cause a crash here it is caught and Vim tries to exit cleanly.
-  // Don't try freeing everything again.
+  // If a routine below recurses into free_all_mem, don't try freeing everything again.
   if (entered_free_all_mem) {
+    // Except the Lua state. #39675
+    nlua_free_all_mem();
     return;
   }
   entered_free_all_mem = true;
@@ -757,7 +873,7 @@ void free_all_mem(void)
 
   // Close all tabs and windows.  Reset 'equalalways' to avoid redraws.
   p_ea = false;
-  if (first_tabpage->tp_next != NULL) {
+  if (first_tabpage != NULL && first_tabpage->tp_next != NULL) {
     do_cmdline_cmd("tabonly!");
   }
 
@@ -767,18 +883,20 @@ void free_all_mem(void)
   // Clear user commands (before deleting buffers).
   ex_comclear(NULL);
 
-  // Clear menus.
-  do_cmdline_cmd("aunmenu *");
-  do_cmdline_cmd("tlunmenu *");
-  do_cmdline_cmd("menutranslate clear");
+  if (curbuf != NULL) {
+    // Clear menus.
+    do_cmdline_cmd("aunmenu *");
+    do_cmdline_cmd("tlunmenu *");
+    do_cmdline_cmd("menutranslate clear");
 
-  // Clear mappings, abbreviations, breakpoints.
-  // NB: curbuf not used with local=false arg
-  map_clear_mode(curbuf, MAP_ALL_MODES, false, false);
-  map_clear_mode(curbuf, MAP_ALL_MODES, false, true);
-  do_cmdline_cmd("breakdel *");
-  do_cmdline_cmd("profdel *");
-  do_cmdline_cmd("set keymap=");
+    // Clear mappings, abbreviations, breakpoints.
+    // NB: curbuf not used with local=false arg
+    map_clear_mode(curbuf, MAP_ALL_MODES, false, false);
+    map_clear_mode(curbuf, MAP_ALL_MODES, false, true);
+    do_cmdline_cmd("breakdel *");
+    do_cmdline_cmd("profdel *");
+    do_cmdline_cmd("set keymap=");
+  }
 
   free_titles();
   free_findfile();
@@ -788,7 +906,6 @@ void free_all_mem(void)
   free_all_marks();
   alist_clear(&global_alist);
   free_homedir();
-  free_envmap();
   free_users();
   free_search_patterns();
   free_old_sub();
@@ -800,7 +917,9 @@ void free_all_mem(void)
   free_cd_dir();
   free_signs();
   set_expr_line(NULL);
-  diff_clear(curtab);
+  if (curtab != NULL) {
+    diff_clear(curtab);
+  }
   clear_sb_text(true);            // free any scrollback text
 
   // Free some global vars.
@@ -817,8 +936,10 @@ void free_all_mem(void)
   // Close all script inputs.
   close_all_scripts();
 
-  // Destroy all windows.  Must come before freeing buffers.
-  win_free_all();
+  if (curwin != NULL) {
+    // Destroy all windows.  Must come before freeing buffers.
+    win_free_all();
+  }
 
   // Free all option values.  Must come after closing windows.
   free_all_options();
@@ -832,40 +953,40 @@ void free_all_mem(void)
     bufref_T bufref;
     set_bufref(&bufref, buf);
     nextbuf = buf->b_next;
+    // All windows were freed.  Reset b_nwindows so buffers can be wiped.
+    buf->b_nwindows = 0;
 
     // Since options (in addition to other stuff) have been freed above we need to ensure no
     // callbacks are called, so free them before closing the buffer.
     buf_free_callbacks(buf);
 
-    close_buffer(NULL, buf, DOBUF_WIPE, false, false);
+    close_buffer(NULL, buf, DOBUF_WIPE, false, false, false);
     // Didn't work, try next one.
     buf = bufref_valid(&bufref) ? nextbuf : firstbuf;
   }
 
   // Clear registers.
   clear_registers();
-  ResetRedobuff();
-  ResetRedobuff();
+  redo_free_all();
 
   // highlight info
   free_highlight();
 
   reset_last_sourcing();
 
-  free_tabpage(first_tabpage);
-  first_tabpage = NULL;
+  if (first_tabpage != NULL) {
+    free_tabpage(first_tabpage);
+    first_tabpage = NULL;
+  }
 
   // message history
-  while (true) {
-    if (delete_first_msg() == FAIL) {
-      break;
-    }
-  }
+  msg_hist_clear(0);
 
   channel_free_all_mem();
   eval_clear();
   api_extmark_free_all_mem();
-  ctx_free_all();
+  atom_free_all();
+  mc_free_all();
 
   map_destroy(int, &buffer_handles);
   map_destroy(int, &window_handles);
@@ -882,7 +1003,6 @@ void free_all_mem(void)
 
   decor_free_all_mem();
   drawline_free_all_mem();
-  input_free_all_mem();
 
   if (ui_client_channel_id) {
     ui_client_free_all_mem();
@@ -893,6 +1013,7 @@ void free_all_mem(void)
   ui_comp_free_all_mem();
   nlua_free_all_mem();
   rpc_free_all_mem();
+  autocmd_free_all_mem();
 
   // should be last, in case earlier free functions deallocates arenas
   arena_free_reuse_blks();

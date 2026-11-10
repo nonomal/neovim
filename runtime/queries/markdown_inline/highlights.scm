@@ -10,10 +10,15 @@
 (shortcut_link
   (link_text) @nospell)
 
-[
-  (backslash_escape)
-  (hard_line_break)
-] @string.escape
+; Conceal backslash in backslash escapes
+((backslash_escape) @conceal
+  (#offset! @conceal 0 0 0 -1)
+  (#set! conceal ""))
+
+; Conceal backslash in hard line breaks
+((hard_line_break
+  "\\" @conceal)
+  (#set! conceal ""))
 
 ; Conceal codeblock and text style markers
 ([
@@ -33,10 +38,20 @@
   ] @markup.link
   (#set! conceal ""))
 
-(inline_link
-  (link_text) @markup.link.label
-  (link_destination) @markup.link
-  (#set! @markup.link.label "url" @markup.link))
+[
+  (link_label)
+  (link_text)
+  (link_title)
+  (image_description)
+] @markup.link.label
+
+((inline_link
+  (link_destination) @_url) @_label
+  (#set! @_label url @_url))
+
+((image
+  (link_destination) @_url) @_label
+  (#set! @_label url @_url))
 
 ; Conceal image links
 (image
@@ -78,19 +93,19 @@
 [
   (link_destination)
   (uri_autolink)
+  (email_autolink)
 ] @markup.link.url @nospell
 
-[
-  (link_label)
-  (link_text)
-  (link_title)
-  (image_description)
-] @markup.link.label
+((uri_autolink) @_url
+  (#offset! @_url 0 1 0 -1)
+  (#set! @_url url @_url))
+
+(entity_reference) @nospell
 
 ; Replace common HTML entities.
 ((entity_reference) @character.special
   (#eq? @character.special "&nbsp;")
-  (#set! conceal ""))
+  (#set! conceal " "))
 
 ((entity_reference) @character.special
   (#eq? @character.special "&lt;")

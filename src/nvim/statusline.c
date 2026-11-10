@@ -9,15 +9,18 @@
 #include "nvim/api/private/defs.h"
 #include "nvim/api/private/helpers.h"
 #include "nvim/ascii_defs.h"
+#include "nvim/autocmd.h"
 #include "nvim/buffer.h"
 #include "nvim/buffer_defs.h"
 #include "nvim/charset.h"
+#include "nvim/context.h"
 #include "nvim/digraph.h"
 #include "nvim/drawline.h"
 #include "nvim/drawscreen.h"
 #include "nvim/eval.h"
 #include "nvim/eval/typval_defs.h"
 #include "nvim/eval/vars.h"
+#include "nvim/eval_defs.h"
 #include "nvim/gettext_defs.h"
 #include "nvim/globals.h"
 #include "nvim/grid.h"
@@ -35,7 +38,6 @@
 #include "nvim/normal.h"
 #include "nvim/option.h"
 #include "nvim/option_vars.h"
-#include "nvim/optionstr.h"
 #include "nvim/os/os.h"
 #include "nvim/os/os_defs.h"
 #include "nvim/path.h"
@@ -52,6 +54,15 @@
 #include "nvim/undo.h"
 #include "nvim/window.h"
 
+// Specifies whether/where to add padding to reach target width.
+typedef enum {
+  kPaddingNone,
+  kPaddingLeft,
+  kPaddingRight,
+} StlPadding;
+
+#include "statusline.c.generated.h"
+
 // Determines how deeply nested %{} blocks will be evaluated in statusline.
 #define MAX_STL_EVAL_DEPTH 100
 
@@ -67,7 +78,6 @@ typedef enum {
 /// If inversion is possible we use it. Else '=' characters are used.
 void win_redr_status(win_T *wp)
 {
-  int attr;
   bool is_stl_global = global_stl_height() > 0;
   static bool busy = false;
 
@@ -78,113 +88,39 @@ void win_redr_status(win_T *wp)
       || (wild_menu_showing != 0 && !ui_has(kUIWildmenu))) {
     return;
   }
-  busy = true;
 
+  busy = true;
   wp->w_redr_status = false;
-  if (wp->w_status_height == 0 && !(is_stl_global && wp == curwin)) {
+
+  // curwin may be temporarily switched during autocmds (ctx_switch).
+  win_T *stl_curwin = ctx_saved_curwin();
+  if (stl_curwin == NULL) {
+    stl_curwin = curwin;
+  }
+  bool is_stl_curwin = wp == stl_curwin;
+
+  if (wp->w_status_height == 0 && !(is_stl_global && is_stl_curwin)) {
     // no status line, either global statusline is enabled or the window is a last window
     redraw_cmdline = true;
   } else if (!redrawing()) {
     // Don't redraw right now, do it later. Don't update status line when
     // popup menu is visible and may be drawn over it
     wp->w_redr_status = true;
-  } else if (*p_stl != NUL || *wp->w_p_stl != NUL) {
-    // redraw custom status line
-    redraw_custom_statusline(wp);
-  } else {
-    schar_T fillchar = fillchar_status(&attr, wp);
-    const int stl_width = is_stl_global ? Columns : wp->w_width;
-
-    get_trans_bufname(wp->w_buffer);
-    char *p = NameBuff;
-    int len = (int)strlen(p);
-
-    if ((bt_help(wp->w_buffer)
-         || wp->w_p_pvw
-         || bufIsChanged(wp->w_buffer)
-         || wp->w_buffer->b_p_ro)
-        && len < MAXPATHL - 1) {
-      *(p + len++) = ' ';
-    }
-    if (bt_help(wp->w_buffer)) {
-      snprintf(p + len, MAXPATHL - (size_t)len, "%s", _("[Help]"));
-      len += (int)strlen(p + len);
-    }
-    if (wp->w_p_pvw) {
-      snprintf(p + len, MAXPATHL - (size_t)len, "%s", _("[Preview]"));
-      len += (int)strlen(p + len);
-    }
-    if (bufIsChanged(wp->w_buffer)) {
-      snprintf(p + len, MAXPATHL - (size_t)len, "%s", "[+]");
-      len += (int)strlen(p + len);
-    }
-    if (wp->w_buffer->b_p_ro) {
-      snprintf(p + len, MAXPATHL - (size_t)len, "%s", _("[RO]"));
-      // len += (int)strlen(p + len);  // dead assignment
-    }
-
-    int this_ru_col = ru_col - (Columns - stl_width);
-    if (this_ru_col < (stl_width + 1) / 2) {
-      this_ru_col = (stl_width + 1) / 2;
-    }
-    if (this_ru_col <= 1) {
-      p = "<";                // No room for file name!
-      len = 1;
-    } else {
-      int i;
-
-      // Count total number of display cells.
-      int clen = (int)mb_string2cells(p);
-
-      // Find first character that will fit.
-      // Going from start to end is much faster for DBCS.
-      for (i = 0; p[i] != NUL && clen >= this_ru_col - 1;
-           i += utfc_ptr2len(p + i)) {
-        clen -= utf_ptr2cells(p + i);
-      }
-      len = clen;
-      if (i > 0) {
-        p = p + i - 1;
-        *p = '<';
-        len++;
-      }
-    }
-
-    grid_line_start(&default_grid, is_stl_global ? (Rows - (int)p_ch - 1) : W_ENDROW(wp));
-    const int off = is_stl_global ? 0 : wp->w_wincol;
-
-    int width = grid_line_puts(off, p, -1, attr);
-    grid_line_fill(off + width, off + this_ru_col, fillchar, attr);
-
-    if (get_keymap_str(wp, "<%s>", NameBuff, MAXPATHL)
-        && this_ru_col - len > (int)strlen(NameBuff) + 1) {
-      grid_line_puts(off + this_ru_col - (int)strlen(NameBuff) - 1, NameBuff, -1, attr);
-    }
-
-    win_redr_ruler(wp);
-
-    // Draw the 'showcmd' information if 'showcmdloc' == "statusline".
-    if (p_sc && *p_sloc == 's') {
-      const int sc_width = MIN(10, this_ru_col - len - 2);
-
-      if (sc_width > 0) {
-        grid_line_puts(off + this_ru_col - sc_width - 1, showcmd_buf, sc_width, attr);
-      }
-    }
-
-    grid_line_flush();
+  } else if (*wp->w_p_stl != NUL || !wp->w_floating || (is_stl_global && is_stl_curwin)) {
+    win_redr_stl_expr(wp, false, false, false);
   }
 
+  hlf_T group = HLF_C;
   // May need to draw the character below the vertical separator.
   if (wp->w_vsep_width != 0 && wp->w_status_height != 0 && redrawing()) {
     schar_T fillchar;
     if (stl_connected(wp)) {
-      fillchar = fillchar_status(&attr, wp);
+      fillchar = fillchar_status(&group, wp);
     } else {
-      attr = win_hl_attr(wp, HLF_C);
       fillchar = wp->w_p_fcs_chars.vert;
     }
-    grid_line_start(&default_grid, W_ENDROW(wp));
+    int attr = win_hl_attr(wp, (int)group);
+    grid_line_start(&default_gridview, W_ENDROW(wp));
     grid_line_put_schar(W_ENDCOL(wp), fillchar, attr);
     grid_line_flush();
   }
@@ -291,15 +227,19 @@ void stl_fill_click_defs(StlClickDefinition *click_defs, StlClickRecord *click_r
   }
 }
 
-/// Redraw the status line, window bar or ruler of window "wp".
-/// When "wp" is NULL redraw the tab pages line from 'tabline'.
-static void win_redr_custom(win_T *wp, bool draw_winbar, bool draw_ruler)
+static bool did_show_ext_ruler = false;
+/// Redraws the statusline, winbar, ruler or tabline.
+///
+/// @param wp  target window, NULL for 'tabline'
+/// @param draw_winbar  redraw 'winbar'
+/// @param draw_ruler  redraw 'rulerformat'
+/// @param ui_event  emit UI-event instead of drawing
+static void win_redr_stl_expr(win_T *wp, bool draw_winbar, bool draw_ruler, bool ui_event)
 {
   static bool entered = false;
-  int attr;
-  int row;
   int col = 0;
-  int maxwidth;
+  int attr, row, maxwidth;
+  hlf_T group;
   schar_T fillchar;
   char buf[MAXPATHL];
   char transbuf[MAXPATHL];
@@ -307,10 +247,14 @@ static void win_redr_custom(win_T *wp, bool draw_winbar, bool draw_ruler)
   OptIndex opt_idx = kOptInvalid;
   int opt_scope = 0;
   stl_hlrec_t *hltab;
-  StlClickRecord *tabtab;
+  StlClickDefinition *click_defs;
   bool is_stl_global = global_stl_height() > 0;
 
-  ScreenGrid *grid = &default_grid;
+  ScreenGrid *grid = wp && wp->w_floating && !is_stl_global ? &wp->w_grid_alloc : &default_grid;
+
+  if (!is_stl_global && wp != NULL && wp->w_config.hide) {
+    return;  // unnecessary
+  }
 
   // There is a tiny chance that this gets called recursively: When
   // redrawing a status line triggers redrawing the ruler or tabline.
@@ -320,81 +264,104 @@ static void win_redr_custom(win_T *wp, bool draw_winbar, bool draw_ruler)
   }
   entered = true;
 
+  // Restore actual curwin before redrawing.
+  win_T *save_curwin = ctx_saved_curwin();
+  win_T *restore_curwin = save_curwin != NULL ? curwin : NULL;
+  if (save_curwin != NULL) {
+    curwin = save_curwin;
+    curbuf = curwin->w_buffer;
+  }
+
   // setup environment for the task at hand
   if (wp == NULL) {
     // Use 'tabline'.  Always at the first line of the screen.
     stl = p_tal;
     row = 0;
     fillchar = schar_from_ascii(' ');
-    attr = HL_ATTR(HLF_TPF);
+    group = HLF_TPF;
+    attr = HL_ATTR(group);
     maxwidth = Columns;
     opt_idx = kOptTabline;
+    click_defs = tab_page_click_defs;
   } else if (draw_winbar) {
     opt_idx = kOptWinbar;
     stl = ((*wp->w_p_wbr != NUL) ? wp->w_p_wbr : p_wbr);
     opt_scope = ((*wp->w_p_wbr != NUL) ? OPT_LOCAL : 0);
     row = -1;  // row zero is first row of text
     col = 0;
-    grid = &wp->w_grid;
-    grid_adjust(&grid, &row, &col);
+    grid = grid_adjust(&wp->w_grid, &row, &col);
 
     if (row < 0) {
       goto theend;
     }
 
     fillchar = wp->w_p_fcs_chars.wbr;
-    attr = (wp == curwin) ? win_hl_attr(wp, HLF_WBR) : win_hl_attr(wp, HLF_WBRNC);
-    maxwidth = wp->w_width_inner;
+    group = (wp == curwin) ? HLF_WBR : HLF_WBRNC;
+    attr = win_hl_attr(wp, (int)group);
+    maxwidth = wp->w_view_width;
     stl_clear_click_defs(wp->w_winbar_click_defs, wp->w_winbar_click_defs_size);
     wp->w_winbar_click_defs = stl_alloc_click_defs(wp->w_winbar_click_defs, maxwidth,
                                                    &wp->w_winbar_click_defs_size);
+    click_defs = wp->w_winbar_click_defs;
+  } else if (draw_ruler && ui_event) {
+    stl = p_ruf;
+    opt_idx = kOptRulerformat;
+    maxwidth = Columns / 2;
+    fillchar = schar_from_ascii(' ');
+    group = HLF_MSG;
+    attr = HL_ATTR(group);
+    click_defs = NULL;
+  } else if (draw_ruler) {
+    stl = p_ruf;
+    opt_idx = kOptRulerformat;
+    // advance past any leading group spec - implicit in ru_col
+    if (*stl == '%') {
+      if (*++stl == '-') {
+        stl++;
+      }
+      if (atoi(stl)) {
+        while (ascii_isdigit(*stl)) {
+          stl++;
+        }
+      }
+      if (*stl++ != '(') {
+        stl = p_ruf;
+      }
+    }
+    row = Rows - 1;
+    col = MAX(ru_col, Columns / 2);
+    grid = grid_adjust(&msg_grid_adj, &row, &col);
+    maxwidth = Columns - col;
+    fillchar = schar_from_ascii(' ');
+    group = HLF_MSG;
+    attr = HL_ATTR(group);
+    click_defs = NULL;
   } else {
-    row = is_stl_global ? (Rows - (int)p_ch - 1) : W_ENDROW(wp);
-    fillchar = fillchar_status(&attr, wp);
-    const bool in_status_line = wp->w_status_height != 0 || is_stl_global;
-    maxwidth = in_status_line && !is_stl_global ? wp->w_width : Columns;
+    // statusline
+    stl = ((*wp->w_p_stl != NUL) ? wp->w_p_stl : p_stl);
+    opt_idx = kOptStatusline;
+    opt_scope = ((*wp->w_p_stl != NUL) ? OPT_LOCAL : 0);
+    if (is_stl_global) {
+      row = Rows - (int)p_ch - 1;
+      col = 0;
+      maxwidth = Columns;
+    } else if (wp->w_status_height == 0) {
+      goto theend;
+    } else if (wp->w_floating) {
+      row = wp->w_winrow_off + wp->w_view_height;
+      col = wp->w_wincol_off;
+      maxwidth = wp->w_view_width;
+    } else {
+      row = W_ENDROW(wp);
+      col = wp->w_wincol;
+      maxwidth = wp->w_width;
+    }
+    fillchar = fillchar_status(&group, wp);
+    attr = win_hl_attr(wp, (int)group);
     stl_clear_click_defs(wp->w_status_click_defs, wp->w_status_click_defs_size);
     wp->w_status_click_defs = stl_alloc_click_defs(wp->w_status_click_defs, maxwidth,
                                                    &wp->w_status_click_defs_size);
-
-    if (draw_ruler) {
-      stl = p_ruf;
-      opt_idx = kOptRulerformat;
-      // advance past any leading group spec - implicit in ru_col
-      if (*stl == '%') {
-        if (*++stl == '-') {
-          stl++;
-        }
-        if (atoi(stl)) {
-          while (ascii_isdigit(*stl)) {
-            stl++;
-          }
-        }
-        if (*stl++ != '(') {
-          stl = p_ruf;
-        }
-      }
-      col = ru_col - (Columns - maxwidth);
-      if (col < (maxwidth + 1) / 2) {
-        col = (maxwidth + 1) / 2;
-      }
-      maxwidth -= col;
-      if (!in_status_line) {
-        grid = &msg_grid_adj;
-        row = Rows - 1;
-        maxwidth--;  // writing in last column may cause scrolling
-        fillchar = schar_from_ascii(' ');
-        attr = HL_ATTR(HLF_MSG);
-      }
-    } else {
-      opt_idx = kOptStatusline;
-      stl = ((*wp->w_p_stl != NUL) ? wp->w_p_stl : p_stl);
-      opt_scope = ((*wp->w_p_stl != NUL) ? OPT_LOCAL : 0);
-    }
-
-    if (in_status_line && !is_stl_global) {
-      col += wp->w_wincol;
-    }
+    click_defs = wp->w_status_click_defs;
   }
 
   if (maxwidth <= 0) {
@@ -410,8 +377,11 @@ static void win_redr_custom(win_T *wp, bool draw_winbar, bool draw_ruler)
   // Make a copy, because the statusline may include a function call that
   // might change the option value and free the memory.
   stl = xstrdup(stl);
-  build_stl_str_hl(ewp, buf, sizeof(buf), stl, opt_idx, opt_scope,
-                   fillchar, maxwidth, &hltab, NULL, &tabtab, NULL);
+
+  StlClickRecord *tabtab = NULL;
+  build_stl_str_hl(ewp, (CharBuf){ buf, sizeof(buf) }, stl, opt_idx, opt_scope,
+                   fillchar, maxwidth, &hltab, NULL, click_defs ? &tabtab : NULL, NULL);
+  stl_fill_click_defs(click_defs, tabtab, buf, maxwidth, wp == NULL);
 
   xfree(stl);
   ewp->w_p_crb = p_crb_save;
@@ -419,52 +389,81 @@ static void win_redr_custom(win_T *wp, bool draw_winbar, bool draw_ruler)
   int len = (int)strlen(buf);
   int start_col = col;
 
-  // Draw each snippet with the specified highlighting.
-  if (!draw_ruler) {
-    grid_line_start(grid, row);
+  if (!ui_event) {
+    // Draw each snippet with the specified highlighting.
+    screengrid_line_start(grid, row, 0);
   }
 
-  int curattr = attr;
   char *p = buf;
-  for (int n = 0; hltab[n].start != NULL; n++) {
-    int textlen = (int)(hltab[n].start - p);
-    // Make all characters printable.
-    size_t tsize = transstr_buf(p, textlen, transbuf, sizeof transbuf, true);
-    col += grid_line_puts(col, transbuf, (int)tsize, curattr);
-    p = hltab[n].start;
-
-    if (hltab[n].userhl == 0) {
-      curattr = attr;
-    } else if (hltab[n].userhl < 0) {
-      curattr = syn_id2attr(-hltab[n].userhl);
-    } else if (wp != NULL && wp != curwin && wp->w_status_height != 0) {
-      curattr = highlight_stlnc[hltab[n].userhl - 1];
+  int curattr = attr;
+  int curgroup = (int)group;
+  Array content = ARRAY_DICT_INIT;
+  for (stl_hlrec_t *sp = hltab;; sp++) {
+    int textlen = (int)(sp->start ? sp->start - p : buf + len - p);
+    // Make all characters printable. Use an empty string instead of p, if p is beyond buf + len.
+    size_t tsize = transstr_buf(p >= buf + len ? "" : p, textlen, transbuf, sizeof transbuf, true);
+    if (!ui_event) {
+      col += grid_line_puts(col, transbuf, (int)tsize, curattr);
     } else {
-      curattr = highlight_user[hltab[n].userhl - 1];
+      Array chunk = ARRAY_DICT_INIT;
+      ADD(chunk, INTEGER_OBJ(curattr));
+      ADD(chunk, STRING_OBJ(cbuf_as_string(xmemdupz(transbuf, tsize), tsize)));
+      ADD(chunk, INTEGER_OBJ(curgroup));
+      ADD(content, ARRAY_OBJ(chunk));
+    }
+    p = sp->start;
+
+    if (p == NULL) {
+      break;
+    } else if (sp->userhl == 0) {
+      curattr = attr;
+      curgroup = (int)group;
+    } else if (sp->userhl < 0) {
+      int new_attr = syn_id2attr(-sp->userhl);
+      if (sp->item == STL_HIGHLIGHT_COMB) {
+        curattr = hl_combine_attr(curattr, new_attr);
+      } else {
+        curattr = new_attr;
+      }
+      curgroup = -sp->userhl;
+    } else {
+      int *userhl = (wp != NULL && wp != curwin && wp->w_status_height != 0)
+                    ? highlight_stlnc : highlight_user;
+      char userbuf[5] = "User";
+      userbuf[4] = (char)sp->userhl + '0';
+      curattr = userhl[sp->userhl - 1];
+      curgroup = syn_name2id_len(userbuf, 5);
+    }
+    if (curattr != attr) {
+      curattr = hl_combine_attr(attr, curattr);
     }
   }
-  // Make sure to use an empty string instead of p, if p is beyond buf + len.
-  size_t tsize = transstr_buf(p >= buf + len ? "" : p, -1, transbuf, sizeof transbuf, true);
-  col += grid_line_puts(col, transbuf, (int)tsize, curattr);
+
+  if (p_sc && find_option(p_sloc) == opt_idx) {
+    showcmd_update_clear_state();
+  }
+
+  if (ui_event) {
+    ui_call_msg_ruler(content);
+    did_show_ext_ruler = true;
+    api_free_array(content);
+    goto theend;
+  }
+
   int maxcol = start_col + maxwidth;
 
   // fill up with "fillchar"
   grid_line_fill(col, maxcol, fillchar, curattr);
-
-  if (!draw_ruler) {
-    grid_line_flush();
-  }
-
-  // Fill the tab_page_click_defs, w_status_click_defs or w_winbar_click_defs array for clicking
-  // in the tab page line, status line or window bar
-  StlClickDefinition *click_defs = (wp == NULL) ? tab_page_click_defs
-                                                : draw_winbar ? wp->w_winbar_click_defs
-                                                              : wp->w_status_click_defs;
-
-  stl_fill_click_defs(click_defs, tabtab, buf, maxwidth, wp == NULL);
+  grid_line_flush();
 
 theend:
   entered = false;
+
+  // Restore temporary autocmd curwin.
+  if (restore_curwin != NULL) {
+    curwin = restore_curwin;
+    curbuf = restore_curwin->w_buffer;
+  }
 }
 
 void win_redr_winbar(win_T *wp)
@@ -481,23 +480,32 @@ void win_redr_winbar(win_T *wp)
   if (wp->w_winbar_height == 0 || !redrawing()) {
     // Do nothing.
   } else if (*p_wbr != NUL || *wp->w_p_wbr != NUL) {
-    win_redr_custom(wp, true, false);
+    win_redr_stl_expr(wp, true, false, false);
   }
   entered = false;
 }
 
-/// must be called after a grid_line_start() at the intended row
-void win_redr_ruler(win_T *wp)
+void redraw_ruler(void)
 {
+  static bool did_show_ruler = false;
+  win_T *wp = !curwin->w_config.hide
+              && curwin->w_status_height == 0 ? curwin : lastwin_nofloating(NULL);
   bool is_stl_global = global_stl_height() > 0;
-  static bool did_show_ext_ruler = false;
 
-  // If 'ruler' off, don't do anything
-  if (!p_ru) {
+  // Check if ruler should be drawn, clear if it was drawn before.
+  bool part_of_status = wp->w_status_height != 0 || is_stl_global;
+  if (!p_ru || part_of_status || (p_ch == 0 && !ui_has(kUIMessages))) {
+    if (did_show_ext_ruler && ui_has(kUIMessages)) {
+      ui_call_msg_ruler((Array)ARRAY_DICT_INIT);
+      did_show_ext_ruler = false;
+    } else if (did_show_ruler && !ui_has(kUIMessages)) {
+      msg_clr_eos();
+    }
+    did_show_ruler = false;
     return;
   }
 
-  // Check if cursor.lnum is valid, since win_redr_ruler() may be called
+  // Check if cursor.lnum is valid, since redraw_ruler() may be called
   // after deleting lines, before cursor.lnum is corrected.
   if (wp->w_cursor.lnum > wp->w_buffer->b_ml.ml_line_count) {
     return;
@@ -505,148 +513,24 @@ void win_redr_ruler(win_T *wp)
 
   // Don't draw the ruler while doing insert-completion, it might overwrite
   // the (long) mode message.
-  win_T *ruler_win = curwin->w_status_height == 0 ? curwin : lastwin_nofloating();
-  if (wp == ruler_win && ruler_win->w_status_height == 0 && !is_stl_global) {
-    if (edit_submode != NULL) {
-      return;
-    }
-  }
-
-  if (*p_ruf && p_ch > 0 && !ui_has(kUIMessages)) {
-    win_redr_custom(wp, false, true);
+  if (wp->w_status_height == 0 && !is_stl_global && edit_submode != NULL) {
     return;
   }
 
-  // Check if not in Insert mode and the line is empty (will show "0-1").
-  int empty_line = (State & MODE_INSERT) == 0
-                   && *ml_get_buf(wp->w_buffer, wp->w_cursor.lnum) == NUL;
-
-  int width;
-  schar_T fillchar;
-  int attr;
-  int off;
-  bool part_of_status = false;
-
-  if (wp->w_status_height) {
-    fillchar = fillchar_status(&attr, wp);
-    off = wp->w_wincol;
-    width = wp->w_width;
-    part_of_status = true;
-  } else if (is_stl_global) {
-    fillchar = fillchar_status(&attr, wp);
-    off = 0;
-    width = Columns;
-    part_of_status = true;
-  } else {
-    fillchar = schar_from_ascii(' ');
-    attr = HL_ATTR(HLF_MSG);
-    width = Columns;
-    off = 0;
-  }
-
-  // In list mode virtcol needs to be recomputed
-  colnr_T virtcol = wp->w_virtcol;
-  if (wp->w_p_list && wp->w_p_lcs_chars.tab1 == NUL) {
-    wp->w_p_list = false;
-    getvvcol(wp, &wp->w_cursor, NULL, &virtcol, NULL);
-    wp->w_p_list = true;
-  }
-
-#define RULER_BUF_LEN 70
-  char buffer[RULER_BUF_LEN];
-
-  // Some sprintfs return the length, some return a pointer.
-  // To avoid portability problems we use strlen() here.
-  vim_snprintf(buffer, RULER_BUF_LEN, "%" PRId64 ",",
-               (wp->w_buffer->b_ml.ml_flags &
-                ML_EMPTY) ? 0 : (int64_t)wp->w_cursor.lnum);
-  size_t len = strlen(buffer);
-  col_print(buffer + len, RULER_BUF_LEN - len,
-            empty_line ? 0 : (int)wp->w_cursor.col + 1,
-            (int)virtcol + 1);
-
-  // Add a "50%" if there is room for it.
-  // On the last line, don't print in the last column (scrolls the
-  // screen up on some terminals).
-  int i = (int)strlen(buffer);
-  get_rel_pos(wp, buffer + i + 1, RULER_BUF_LEN - i - 1);
-  int o = i + vim_strsize(buffer + i + 1);
-  if (wp->w_status_height == 0 && !is_stl_global) {  // can't use last char of screen
-    o++;
-  }
-  int this_ru_col = ru_col - (Columns - width);
-  if (this_ru_col < 0) {
-    this_ru_col = 0;
-  }
-  // Never use more than half the window/screen width, leave the other half
-  // for the filename.
-  if (this_ru_col < (width + 1) / 2) {
-    this_ru_col = (width + 1) / 2;
-  }
-  if (this_ru_col + o < width) {
-    // Need at least 3 chars left for get_rel_pos() + NUL.
-    while (this_ru_col + o < width && RULER_BUF_LEN > i + 4) {
-      i += (int)schar_get(buffer + i, fillchar);
-      o++;
-    }
-    get_rel_pos(wp, buffer + i, RULER_BUF_LEN - i);
-  }
-
-  if (ui_has(kUIMessages) && !part_of_status) {
-    MAXSIZE_TEMP_ARRAY(content, 1);
-    MAXSIZE_TEMP_ARRAY(chunk, 2);
-    ADD_C(chunk, INTEGER_OBJ(attr));
-    ADD_C(chunk, CSTR_AS_OBJ(buffer));
-    ADD_C(content, ARRAY_OBJ(chunk));
-    ui_call_msg_ruler(content);
-    did_show_ext_ruler = true;
-  } else {
-    if (did_show_ext_ruler) {
-      ui_call_msg_ruler((Array)ARRAY_DICT_INIT);
-      did_show_ext_ruler = false;
-    }
-    // Truncate at window boundary.
-    o = 0;
-    for (i = 0; buffer[i] != NUL; i += utfc_ptr2len(buffer + i)) {
-      o += utf_ptr2cells(buffer + i);
-      if (this_ru_col + o > width) {
-        buffer[i] = NUL;
-        break;
-      }
-    }
-
-    int w = grid_line_puts(off + this_ru_col, buffer, -1, attr);
-    grid_line_fill(off + this_ru_col + w, off + width, fillchar, attr);
-  }
+  win_redr_stl_expr(wp, false, true, ui_has(kUIMessages));
+  did_show_ruler = !ui_has(kUIMessages);
 }
 
 /// Get the character to use in a status line.  Get its attributes in "*attr".
-schar_T fillchar_status(int *attr, win_T *wp)
+schar_T fillchar_status(hlf_T *group, win_T *wp)
 {
   if (wp == curwin) {
-    *attr = win_hl_attr(wp, HLF_S);
+    *group = HLF_S;
     return wp->w_p_fcs_chars.stl;
   } else {
-    *attr = win_hl_attr(wp, HLF_SNC);
+    *group = HLF_SNC;
     return wp->w_p_fcs_chars.stlnc;
   }
-}
-
-/// Redraw the status line according to 'statusline' and take care of any
-/// errors encountered.
-void redraw_custom_statusline(win_T *wp)
-{
-  static bool entered = false;
-
-  // When called recursively return.  This can happen when the statusline
-  // contains an expression that triggers a redraw.
-  if (entered) {
-    return;
-  }
-  entered = true;
-
-  win_redr_custom(wp, false, false);
-  entered = false;
 }
 
 static void ui_ext_tabline_update(void)
@@ -660,14 +544,14 @@ static void ui_ext_tabline_update(void)
 
   Array tabs = arena_array(&arena, n_tabs);
   FOR_ALL_TABS(tp) {
-    Dictionary tab_info = arena_dict(&arena, 2);
+    Dict tab_info = arena_dict(&arena, 2);
     PUT_C(tab_info, "tab", TABPAGE_OBJ(tp->handle));
 
     win_T *cwp = (tp == curtab) ? curwin : tp->tp_curwin;
     get_trans_bufname(cwp->w_buffer);
     PUT_C(tab_info, "name", CSTR_TO_ARENA_OBJ(&arena, NameBuff));
 
-    ADD_C(tabs, DICTIONARY_OBJ(tab_info));
+    ADD_C(tabs, DICT_OBJ(tab_info));
   }
 
   size_t n_buffers = 0;
@@ -682,13 +566,13 @@ static void ui_ext_tabline_update(void)
       continue;
     }
 
-    Dictionary buffer_info = arena_dict(&arena, 2);
+    Dict buffer_info = arena_dict(&arena, 2);
     PUT_C(buffer_info, "buffer", BUFFER_OBJ(buf->handle));
 
     get_trans_bufname(buf);
     PUT_C(buffer_info, "name", CSTR_TO_ARENA_OBJ(&arena, NameBuff));
 
-    ADD_C(buffers, DICTIONARY_OBJ(buffer_info));
+    ADD_C(buffers, DICT_OBJ(buffer_info));
   }
 
   ui_call_tabline_update(curtab->handle, tabs, curbuf->handle, buffers);
@@ -699,8 +583,8 @@ static void ui_ext_tabline_update(void)
 void draw_tabline(void)
 {
   win_T *wp;
-  int attr_nosel = HL_ATTR(HLF_TP);
   int attr_fill = HL_ATTR(HLF_TPF);
+  int attr_nosel = hl_combine_attr(attr_fill, HL_ATTR(HLF_TP));
   bool use_sep_chars = (t_colors < 8);
 
   if (default_grid.chars == NULL) {
@@ -723,25 +607,18 @@ void draw_tabline(void)
 
   // Use the 'tabline' option if it's set.
   if (*p_tal != NUL) {
-    win_redr_custom(NULL, false, false);
+    win_redr_stl_expr(NULL, false, false, false);
   } else {
     int tabcount = 0;
-    int tabwidth = 0;
     int col = 0;
     win_T *cwp;
     int wincount;
-    grid_line_start(&default_grid, 0);
+    grid_line_start(&default_gridview, 0);
     FOR_ALL_TABS(tp) {
       tabcount++;
     }
 
-    if (tabcount > 0) {
-      tabwidth = (Columns - 1 + tabcount / 2) / tabcount;
-    }
-
-    if (tabwidth < 6) {
-      tabwidth = 6;
-    }
+    int tabwidth = MAX(tabcount > 0 ? (Columns - 1 + tabcount / 2) / tabcount : 0, 6);
 
     int attr = attr_nosel;
     tabcount = 0;
@@ -762,14 +639,14 @@ void draw_tabline(void)
       }
 
       if (tp->tp_topframe == topframe) {
-        attr = win_hl_attr(cwp, HLF_TPS);
+        attr = hl_combine_attr(attr_fill, win_hl_attr(cwp, HLF_TPS));
       }
       if (use_sep_chars && col > 0) {
         grid_line_put_schar(col++, schar_from_ascii('|'), attr);
       }
 
       if (tp->tp_topframe != topframe) {
-        attr = win_hl_attr(cwp, HLF_TP);
+        attr = hl_combine_attr(attr_fill, win_hl_attr(cwp, HLF_TP));
       }
 
       grid_line_put_schar(col++, schar_from_ascii(' '), attr);
@@ -777,15 +654,16 @@ void draw_tabline(void)
       bool modified = false;
 
       for (wincount = 0; wp != NULL; wp = wp->w_next, wincount++) {
-        if (bufIsChanged(wp->w_buffer)) {
+        if (!win_is_focusable(wp)) {
+          wincount--;
+        } else if (bufIsChanged(wp->w_buffer)) {
           modified = true;
         }
       }
 
       if (modified || wincount > 1) {
         if (wincount > 1) {
-          vim_snprintf(NameBuff, MAXPATHL, "%d", wincount);
-          int len = (int)strlen(NameBuff);
+          int len = vim_snprintf(NameBuff, MAXPATHL, "%d", wincount);
           if (col + len >= Columns - 3) {
             break;
           }
@@ -810,9 +688,8 @@ void draw_tabline(void)
           len -= ptr2cells(p);
           MB_PTR_ADV(p);
         }
-        if (len > Columns - col - 1) {
-          len = Columns - col - 1;
-        }
+        int n = Columns - col - 1;
+        len = MIN(len, n);
 
         grid_line_puts(col, p, -1, attr);
         col += len;
@@ -831,17 +708,29 @@ void draw_tabline(void)
       }
     }
 
+    for (int scol = col; scol < Columns; scol++) {
+      // Use 0 as tabpage number here, so that double-click opens a tabpage
+      // after the last one, and single-click goes to the next tabpage.
+      tab_page_click_defs[scol] = (StlClickDefinition) {
+        .type = kStlClickTabSwitch,
+        .tabnr = 0,
+        .func = NULL,
+      };
+    }
+
     char c = use_sep_chars ? '_' : ' ';
     grid_line_fill(col, Columns, schar_from_ascii(c), attr_fill);
 
     // Draw the 'showcmd' information if 'showcmdloc' == "tabline".
     if (p_sc && *p_sloc == 't') {
-      const int sc_width = MIN(10, (int)Columns - col - (tabcount > 1) * 3);
+      int n = Columns - col - (tabcount > 1) * 3;
+      const int sc_width = MIN(10, n);
 
       if (sc_width > 0) {
         grid_line_puts(Columns - sc_width - (tabcount > 1) * 2,
                        showcmd_buf, sc_width, attr_nosel);
       }
+      showcmd_update_clear_state();
     }
 
     // Put an "X" for closing the current tab if there are several.
@@ -866,31 +755,235 @@ void draw_tabline(void)
 /// the v:lnum and v:relnum variables don't have to be updated.
 ///
 /// @return  The width of the built status column string for line "lnum"
-int build_statuscol_str(win_T *wp, linenr_T lnum, linenr_T relnum, char *buf, statuscol_T *stcp)
+int build_statuscol_str(win_T *wp, linenr_T lnum, int relnum, int virtnum, CharBuf buf,
+                        statuscol_T *stcp)
 {
-  // Only update click definitions once per window per redraw.
-  // Don't update when current width is 0, since it will be redrawn again if not empty.
-  const bool fillclick = relnum >= 0 && stcp->width > 0 && lnum == wp->w_topline;
-
   if (relnum >= 0) {
     set_vim_var_nr(VV_LNUM, lnum);
     set_vim_var_nr(VV_RELNUM, relnum);
   }
+  set_vim_var_nr(VV_VIRTNUM, virtnum);
 
   StlClickRecord *clickrec;
   char *stc = xstrdup(wp->w_p_stc);
-  int width = build_stl_str_hl(wp, buf, MAXPATHL, stc, kOptStatuscolumn, OPT_LOCAL, 0,
-                               stcp->width, &stcp->hlrec, NULL, fillclick ? &clickrec : NULL, stcp);
+  int width = build_stl_str_hl(wp, buf, stc, kOptStatuscolumn, OPT_LOCAL, 0,
+                               stcp->width, &stcp->hlrec, NULL, &clickrec, stcp);
   xfree(stc);
 
-  if (fillclick) {
-    stl_clear_click_defs(wp->w_statuscol_click_defs, wp->w_statuscol_click_defs_size);
-    wp->w_statuscol_click_defs = stl_alloc_click_defs(wp->w_statuscol_click_defs, width,
-                                                      &wp->w_statuscol_click_defs_size);
-    stl_fill_click_defs(wp->w_statuscol_click_defs, clickrec, buf, width, false);
+  if (clickrec[0].start != NULL) {
+    StcClicks *clicks = map_put_ref(int, StcClicks)(wp->w_statuscol_click_defs, lnum, NULL, NULL);
+    StcClick *click_defs = map_put_ref(int, StcClick)(clicks, virtnum, NULL, NULL);
+    stl_clear_click_defs(click_defs->def, click_defs->size);
+    click_defs->def = stl_alloc_click_defs(click_defs->def, width, &click_defs->size);
+    stl_fill_click_defs(click_defs->def, clickrec, buf.data, width, false);
   }
 
   return width;
+}
+
+/// Truncates the statusline at the first truncation marker (%<) if present,
+/// or alternatively at the first item, or otherwise at the beginning.
+///
+/// @param width  Current width in cells (will be adjusted if truncation took place)
+/// @param minwid  Minimum width in cells
+/// @param maxwid  Maximum width in cells
+/// @param fillchar  Fillchar
+/// @param stl_items  Items
+/// @param startitem  Start item index (inclusive)
+/// @param curitem  End item index (exclusive)
+/// @param start_p  Start position in the output buffer
+/// @param out_p  Current output buffer position (will be adjusted if truncation took place)
+static void stl_truncate(int *width, int minwid, int maxwid, schar_T fillchar,
+                         stl_item_t *stl_items, int startitem, int *curitem, char *start_p,
+                         char **out_p)
+{
+  minwid = MIN(minwid, maxwid);
+
+  int item_idx = startitem;
+  char *trunc_p;
+
+  // If there are no items, truncate from beginning
+  if (startitem == *curitem) {
+    trunc_p = start_p;
+
+    // Otherwise, look for the truncation item
+  } else {
+    // Default to truncating at the first item
+    trunc_p = stl_items[item_idx].start;
+
+    for (int i = startitem; i < *curitem; i++) {
+      if (stl_items[i].type == Trunc) {
+        // Truncate at %< stl_items.
+        trunc_p = stl_items[i].start;
+        item_idx = i;
+        break;
+      }
+    }
+  }
+
+  // If the truncation point we found is beyond the maximum
+  // length of the string, truncate the end of the string.
+  if (*width - vim_strsize(trunc_p) >= maxwid) {
+    // Walk from the beginning of the
+    // string to find the last character that will fit.
+    trunc_p = start_p;
+    *width = 0;
+    while (true) {
+      int char_cells = ptr2cells(trunc_p);
+      if (*width + char_cells >= maxwid) {
+        break;
+      }
+
+      // Note: Only advance the pointer if the next
+      //       character will fit in the available output space
+      *width += char_cells;
+      trunc_p += utfc_ptr2len(trunc_p);
+    }
+
+    // Ignore any items in the statusline that occur after
+    // the truncation point
+    for (int i = startitem; i < *curitem; i++) {
+      if (stl_items[i].start > trunc_p) {
+        for (int j = i; j < *curitem; j++) {
+          if (stl_items[j].type == ClickFunc) {
+            XFREE_CLEAR(stl_items[j].cmd);
+          }
+        }
+        *curitem = i;
+        break;
+      }
+    }
+
+    // Truncate the output
+    *trunc_p++ = '>';
+    *out_p = trunc_p;
+
+    // Truncate at the truncation point we found
+  } else {
+    // { Determine how many bytes to remove
+    int trunc_len = 0;
+    while (*width >= maxwid) {
+      *width -= ptr2cells(trunc_p + trunc_len);
+      trunc_len += utfc_ptr2len(trunc_p + trunc_len);
+    }
+    // }
+
+    // { Truncate the string
+    char *trunc_end_p = trunc_p + trunc_len;
+    memmove(trunc_p + 1, trunc_end_p, (size_t)(*out_p - trunc_end_p) + 1);  // +1 for NUL
+    *out_p -= (size_t)(trunc_end_p - (trunc_p + 1));
+
+    // Put a `<` to mark where we truncated at
+    *trunc_p = '<';
+    // }
+
+    // { Change the start point for items based on
+    //  their position relative to our truncation point
+
+    // Note: The offset is one less than the truncation length because
+    //       the truncation marker `<` is not counted.
+    int item_offset = trunc_len - 1;
+
+    for (int i = item_idx; i < *curitem; i++) {
+      // Items starting at or after the end of the truncated section need
+      // to be moved backwards.
+      if (stl_items[i].start >= trunc_end_p) {
+        stl_items[i].start -= item_offset;
+      } else {
+        // Anything inside the truncated area is set to start
+        // at the `<` truncation character.
+        stl_items[i].start = trunc_p;
+      }
+    }
+    // }
+  }
+
+  // Fill up for half a double-wide character.
+  while (++*width < minwid) {
+    schar_get_adv(out_p, fillchar);
+  }
+  **out_p = NUL;
+}
+
+/// Expands the statusline at separation markers (%=) if present,
+/// or otherwise according to padding choice.
+///
+/// @param width  Current width in cells (will be adjusted if expansion took place)
+/// @param target_width  Target width in cells
+/// @param padding  Padding to add until target width is reached, if there are no separation markers
+/// @param remaining_capacity  Remaining output buffer capacity in bytes
+/// @param fillchar  Fillchar
+/// @param stl_items  Items
+/// @param startitem  Start item index (inclusive)
+/// @param curitem  End item index (exclusive)
+/// @param start_p  Start position in the output buffer
+/// @param out_p  Current output buffer position (will be adjusted if expansion took place)
+static void stl_expand(int *width, int target_width, StlPadding padding, int remaining_capacity,
+                       schar_T fillchar, stl_item_t *stl_items, int startitem, int curitem,
+                       char *start_p, char **out_p)
+{
+  int fillchar_bytes = (int)schar_len(fillchar);
+  int added_cells = MIN(target_width - *width, remaining_capacity / fillchar_bytes);
+  int added_bytes = added_cells * fillchar_bytes;
+
+  // First, try to expand at separation markers %=.
+  int num_separators = 0;
+  for (int i = startitem; i < curitem; i++) {
+    if (stl_items[i].type == Separate) {
+      num_separators += 1;
+    }
+  }
+  if (num_separators > 0) {
+    int standard_spaces = added_cells / num_separators;
+    int final_spaces = added_cells - standard_spaces * (num_separators - 1);
+    int cumulated_dislocation = 0;
+
+    for (int i = startitem; i < curitem; i++) {
+      stl_items[i].start += cumulated_dislocation;
+
+      if (stl_items[i].type == Separate) {
+        int dislocation = --num_separators > 0 ? standard_spaces : final_spaces;
+        dislocation *= fillchar_bytes;
+        cumulated_dislocation += dislocation;
+
+        char *start = stl_items[i].start;
+        char *seploc = start + dislocation;
+        STRMOVE(seploc, start);
+        for (char *s = start; s < seploc;) {
+          schar_get_adv(&s, fillchar);
+        }
+      }
+    }
+
+    *width += added_cells;
+    *out_p += added_bytes;
+
+    // Add filler characters to the right.
+  } else if (padding == kPaddingRight) {
+    for (; added_cells > 0; added_cells--) {
+      schar_get_adv(out_p, fillchar);
+    }
+
+    *width += added_cells;
+
+    // Shift everything to the right and prepend with filler characters.
+  } else if (padding == kPaddingLeft) {
+    // Move the group to the right
+    memmove(start_p + added_bytes, start_p, (size_t)(*out_p - start_p));
+
+    // Prepend the fill characters
+    for (; added_cells > 0; added_cells--) {
+      schar_get_adv(&start_p, fillchar);
+    }
+
+    // Adjust item start positions
+    for (int n = startitem; n < curitem; n++) {
+      stl_items[n].start += added_bytes;
+    }
+
+    *width += added_cells;
+    *out_p += added_bytes;
+  }
 }
 
 /// Build a string from the status line items in "fmt".
@@ -909,7 +1002,6 @@ int build_statuscol_str(win_T *wp, linenr_T lnum, linenr_T relnum, char *buf, st
 /// @param wp  The window to build a statusline for
 /// @param out  The output buffer to write the statusline to
 ///             Note: This should not be NameBuff
-/// @param outlen  The length of the output buffer
 /// @param fmt  The statusline format string
 /// @param opt_idx  Index of the option corresponding to "fmt"
 /// @param opt_scope  The scope corresponding to "opt_idx"
@@ -920,20 +1012,19 @@ int build_statuscol_str(win_T *wp, linenr_T lnum, linenr_T relnum, char *buf, st
 /// @param stcp  Status column attributes (can be NULL)
 ///
 /// @return  The final width of the statusline
-int build_stl_str_hl(win_T *wp, char *out, size_t outlen, char *fmt, OptIndex opt_idx,
-                     int opt_scope, schar_T fillchar, int maxwidth, stl_hlrec_t **hltab,
-                     size_t *hltab_len, StlClickRecord **tabtab, statuscol_T *stcp)
+int build_stl_str_hl(win_T *wp, CharBuf out, char *fmt, OptIndex opt_idx, int opt_scope,
+                     schar_T fillchar, int maxwidth, stl_hlrec_t **hltab, size_t *hltab_len,
+                     StlClickRecord **tabtab, statuscol_T *stcp)
 {
   static size_t stl_items_len = 20;  // Initial value, grows as needed.
   static stl_item_t *stl_items = NULL;
   static int *stl_groupitems = NULL;
   static stl_hlrec_t *stl_hltab = NULL;
   static StlClickRecord *stl_tabtab = NULL;
-  static int *stl_separator_locations = NULL;
+  static int curitem = 0;
 
 #define TMPLEN 70
   char buf_tmp[TMPLEN];
-  char win_tmp[TMPLEN];
   char *usefmt = fmt;
   const bool save_redraw_not_allowed = redraw_not_allowed;
   const bool save_KeyTyped = KeyTyped;
@@ -957,8 +1048,6 @@ int build_stl_str_hl(win_T *wp, char *out, size_t outlen, char *fmt, OptIndex op
     // end of the list.
     stl_hltab = xmalloc(sizeof(stl_hlrec_t) * (stl_items_len + 1));
     stl_tabtab = xmalloc(sizeof(StlClickRecord) * (stl_items_len + 1));
-
-    stl_separator_locations = xmalloc(sizeof(int) * stl_items_len);
   }
 
   // If "fmt" was set insecurely it needs to be evaluated in the sandbox.
@@ -975,7 +1064,7 @@ int build_stl_str_hl(win_T *wp, char *out, size_t outlen, char *fmt, OptIndex op
     };
     set_var(S_LEN("g:statusline_winid"), &tv, false);
 
-    usefmt = eval_to_string_safe(fmt + 2, use_sandbox);
+    usefmt = eval_to_string_safe(fmt + 2, use_sandbox, false);
     if (usefmt == NULL) {
       usefmt = fmt;
     }
@@ -1016,34 +1105,40 @@ int build_stl_str_hl(win_T *wp, char *out, size_t outlen, char *fmt, OptIndex op
   int groupdepth = 0;
   int evaldepth = 0;
 
-  int curitem = 0;
-  int foldsignitem = -1;
+  int curr_hl_pos = -1;
+
+  // nvim_eval_statusline() can be called from inside a {-expression item so
+  // this may be a recursive call. Keep track of the start index into "stl_items".
+  // During post-processing only treat items filled in a certain recursion level.
+  int evalstart = curitem;
+
   bool prevchar_isflag = true;
   bool prevchar_isitem = false;
 
   // out_p is the current position in the output buffer
-  char *out_p = out;
+  char *out_p = out.data;
 
   // out_end_p is the last valid character in the output buffer
   // Note: The null termination character must occur here or earlier,
   //       so any user-visible characters must occur before here.
-  char *out_end_p = (out + outlen) - 1;
+  char *out_end_p = (out.data + out.size) - 1;
+
+#define MAY_GROW_STL_ITEMS_LEN() \
+  do { \
+    if (curitem == (int)stl_items_len) { \
+      size_t new_len = stl_items_len * 3 / 2; \
+      stl_items = xrealloc(stl_items, sizeof(stl_item_t) * new_len); \
+      stl_groupitems = xrealloc(stl_groupitems, sizeof(int) * new_len); \
+      stl_hltab = xrealloc(stl_hltab, sizeof(stl_hlrec_t) * (new_len + 1)); \
+      stl_tabtab = xrealloc(stl_tabtab, sizeof(StlClickRecord) * (new_len + 1)); \
+      stl_items_len = new_len; \
+    } \
+  } while (0)
 
   // Proceed character by character through the statusline format string
   // fmt_p is the current position in the input buffer
   for (char *fmt_p = usefmt; *fmt_p != NUL;) {
-    if (curitem == (int)stl_items_len) {
-      size_t new_len = stl_items_len * 3 / 2;
-
-      stl_items = xrealloc(stl_items, sizeof(stl_item_t) * new_len);
-      stl_groupitems = xrealloc(stl_groupitems, sizeof(int) * new_len);
-      stl_hltab = xrealloc(stl_hltab, sizeof(stl_hlrec_t) * (new_len + 1));
-      stl_tabtab = xrealloc(stl_tabtab, sizeof(StlClickRecord) * (new_len + 1));
-      stl_separator_locations =
-        xrealloc(stl_separator_locations, sizeof(int) * new_len);
-
-      stl_items_len = new_len;
-    }
+    MAY_GROW_STL_ITEMS_LEN();
 
     if (*fmt_p != '%') {
       prevchar_isflag = prevchar_isitem = false;
@@ -1080,13 +1175,9 @@ int build_stl_str_hl(win_T *wp, char *out, size_t outlen, char *fmt, OptIndex op
       continue;
     }
 
-    // STL_SEPARATE: Separation between items, filled with white space.
+    // STL_SEPARATE: Separation between items, filled with fillchars.
     if (*fmt_p == STL_SEPARATE) {
       fmt_p++;
-      // Ignored when we are inside of a grouping
-      if (groupdepth > 0) {
-        continue;
-      }
       stl_items[curitem].type = Separate;
       stl_items[curitem++].start = out_p;
       continue;
@@ -1108,13 +1199,17 @@ int build_stl_str_hl(win_T *wp, char *out, size_t outlen, char *fmt, OptIndex op
         continue;
       }
       groupdepth--;
+      if (stl_items[stl_groupitems[groupdepth]].type != Group) {
+        // it's possible to break assumptions with %{%...%}, which doesn't check syntax
+        continue;
+      }
 
       // Determine how long the group is.
       // Note: We set the current output position to null
       //       so `vim_strsize` will work.
       char *t = stl_items[stl_groupitems[groupdepth]].start;
       *out_p = NUL;
-      ptrdiff_t group_len = vim_strsize(t);
+      int group_len = vim_strsize(t);
 
       // If the group contained internal items
       // and the group did not have a minimum width,
@@ -1124,13 +1219,13 @@ int build_stl_str_hl(win_T *wp, char *out, size_t outlen, char *fmt, OptIndex op
       //       Otherwise there would be no reason to do this step.
       if (curitem > stl_groupitems[groupdepth] + 1
           && stl_items[stl_groupitems[groupdepth]].minwid == 0) {
-        // remove group if all items are empty and highlight group
-        // doesn't change
         int group_start_userhl = 0;
         int group_end_userhl = 0;
         int n;
+        // remove group if all items are empty and highlight group
+        // doesn't change
         for (n = stl_groupitems[groupdepth] - 1; n >= 0; n--) {
-          if (stl_items[n].type == Highlight) {
+          if (stl_items[n].type == Highlight || stl_items[n].type == HighlightCombining) {
             group_start_userhl = group_end_userhl = stl_items[n].minwid;
             break;
           }
@@ -1139,7 +1234,7 @@ int build_stl_str_hl(win_T *wp, char *out, size_t outlen, char *fmt, OptIndex op
           if (stl_items[n].type == Normal) {
             break;
           }
-          if (stl_items[n].type == Highlight) {
+          if (stl_items[n].type == Highlight || stl_items[n].type == HighlightCombining) {
             group_end_userhl = stl_items[n].minwid;
           }
         }
@@ -1149,8 +1244,8 @@ int build_stl_str_hl(win_T *wp, char *out, size_t outlen, char *fmt, OptIndex op
           group_len = 0;
           for (n = stl_groupitems[groupdepth] + 1; n < curitem; n++) {
             // do not use the highlighting from the removed group
-            if (stl_items[n].type == Highlight) {
-              stl_items[n].type = Empty;
+            if (stl_items[n].type == Highlight || stl_items[n].type == HighlightCombining) {
+              stl_items[n].type = Disabled;
             }
             // adjust the start position of TabPage to the next
             // item position
@@ -1161,79 +1256,38 @@ int build_stl_str_hl(win_T *wp, char *out, size_t outlen, char *fmt, OptIndex op
         }
       }
 
-      // If the group is longer than it is allowed to be
-      // truncate by removing bytes from the start of the group text.
-      if (group_len > stl_items[stl_groupitems[groupdepth]].maxwid) {
-        // { Determine the number of bytes to remove
+      int maxwid = stl_items[stl_groupitems[groupdepth]].maxwid;
+      int minwid = stl_items[stl_groupitems[groupdepth]].minwid;
+      StlPadding padding = minwid < 0 ? kPaddingRight : kPaddingLeft;
+      minwid = abs(minwid);
 
-        // Find the first character that should be included.
-        int n = 0;
-        while (group_len >= stl_items[stl_groupitems[groupdepth]].maxwid) {
-          group_len -= ptr2cells(t + n);
-          n += utfc_ptr2len(t + n);
-        }
-        // }
+      // If the group is longer than it is allowed to be truncate by removing
+      // bytes from the start of the group text. Don't truncate when item is a
+      // 'statuscolumn' fold item to ensure correctness of the mouse clicks.
+      if (group_len > maxwid && stl_items[stl_groupitems[groupdepth]].type != HighlightFold) {
+        stl_truncate(&group_len, minwid, maxwid, fillchar, stl_items,
+                     stl_groupitems[groupdepth] + 1, &curitem, t, &out_p);
 
-        // Prepend the `<` to indicate that the output was truncated.
-        *t = '<';
-
-        // { Move the truncated output
-        memmove(t + 1, t + n, (size_t)(out_p - (t + n)));
-        out_p = out_p - n + 1;
-        // Fill up space left over by half a double-wide char.
-        while (++group_len < stl_items[stl_groupitems[groupdepth]].minwid) {
-          schar_get_adv(&out_p, fillchar);
-        }
-        // }
-
-        // correct the start of the items for the truncation
-        for (int idx = stl_groupitems[groupdepth] + 1; idx < curitem; idx++) {
-          // Shift everything back by the number of removed bytes
-          // Minus one for the leading '<' added above.
-          stl_items[idx].start -= n - 1;
-
-          // If the item was partially or completely truncated, set its
-          // start to the start of the group
-          if (stl_items[idx].start < t) {
-            stl_items[idx].start = t;
-          }
-        }
         // If the group is shorter than the minimum width, add padding characters.
-      } else if (abs(stl_items[stl_groupitems[groupdepth]].minwid) > group_len) {
-        ptrdiff_t min_group_width = stl_items[stl_groupitems[groupdepth]].minwid;
-        // If the group is left-aligned, add characters to the right.
-        if (min_group_width < 0) {
-          min_group_width = 0 - min_group_width;
-          while (group_len++ < min_group_width && out_p < out_end_p) {
-            schar_get_adv(&out_p, fillchar);
-          }
-          // If the group is right-aligned, shift everything to the right and
-          // prepend with filler characters.
-        } else {
-          // { Move the group to the right
-          group_len = (min_group_width - group_len) * (int)schar_len(fillchar);
-          memmove(t + group_len, t, (size_t)(out_p - t));
-          if (out_p + group_len >= (out_end_p + 1)) {
-            group_len = out_end_p - out_p;
-          }
-          out_p += group_len;
-          // }
+      } else if (minwid > group_len) {
+        stl_expand(&group_len, minwid, padding, (int)(out_end_p - out_p), fillchar, stl_items,
+                   stl_groupitems[groupdepth] + 1, curitem, t, &out_p);
+      }
 
-          // Adjust item start positions
-          for (int n = stl_groupitems[groupdepth] + 1; n < curitem; n++) {
-            stl_items[n].start += group_len;
-          }
-
-          // Prepend the fill characters
-          for (; group_len > 0; group_len--) {
-            schar_get_adv(&t, fillchar);
-          }
+      // Deactivate separation/truncation markers for wrapping item groups and top-level.
+      for (int n = stl_groupitems[groupdepth] + 1; n < curitem; n++) {
+        if (stl_items[n].type == Separate || stl_items[n].type == Trunc) {
+          stl_items[n].type = Disabled;
         }
       }
+
       continue;
     }
+
     int minwid = 0;
     int maxwid = 9999;
+    int foldsignitem = -1;        // Start of fold or sign item
+    bool left_align_num = false;  // Number item for should be left-aligned
     bool left_align = false;
 
     // Denotes that numbers should be left-padded with zeros
@@ -1257,6 +1311,7 @@ int build_stl_str_hl(win_T *wp, char *out, size_t outlen, char *fmt, OptIndex op
     // User highlight groups override the min width field
     // to denote the styling to use.
     if (*fmt_p == STL_USER_HL) {
+      curr_hl_pos = curitem;
       stl_items[curitem].type = Highlight;
       stl_items[curitem].start = out_p;
       stl_items[curitem].minwid = minwid > 9 ? 1 : minwid;
@@ -1268,24 +1323,17 @@ int build_stl_str_hl(win_T *wp, char *out, size_t outlen, char *fmt, OptIndex op
     // TABPAGE pairs are used to denote a region that when clicked will
     // either switch to or close a tab.
     //
-    // Ex: tabline=%0Ttab\ zero%X
-    //   This tabline has a TABPAGENR item with minwid `0`,
+    // Ex: tabline=%1Ttab\ one%X
+    //   This tabline has a TABPAGENR item with minwid `1`,
     //   which is then closed with a TABCLOSENR item.
-    //   Clicking on this region with mouse enabled will switch to tab 0.
+    //   Clicking on this region with mouse enabled will switch to tab 1.
     //   Setting the minwid to a different value will switch
     //   to that tab, if it exists
     //
     // Ex: tabline=%1Xtab\ one%X
     //   This tabline has a TABCLOSENR item with minwid `1`,
     //   which is then closed with a TABCLOSENR item.
-    //   Clicking on this region with mouse enabled will close tab 0.
-    //   This is determined by the following formula:
-    //      tab to close = (1 - minwid)
-    //   This is because for TABPAGENR we use `minwid` = `tab number`.
-    //   For TABCLOSENR we store the tab number as a negative value.
-    //   Because 0 is a valid TABPAGENR value, we have to
-    //   start our numbering at `-1`.
-    //   So, `-1` corresponds to us wanting to close tab `0`
+    //   Clicking on this region with mouse enabled will close tab 1.
     //
     // Note: These options are only valid when creating a tabline.
     if (*fmt_p == STL_TABPAGENR || *fmt_p == STL_TABCLOSENR) {
@@ -1335,12 +1383,14 @@ int build_stl_str_hl(win_T *wp, char *out, size_t outlen, char *fmt, OptIndex op
       fmt_p++;
       if (ascii_isdigit(*fmt_p)) {
         maxwid = getdigits_int(&fmt_p, false, 50);
+        if (maxwid <= 0) {  // overflow or an explicit zero
+          maxwid = 50;
+        }
       }
     }
 
-    // Bound the minimum width at 50.
     // Make the number negative to denote left alignment of the item
-    minwid = (minwid > 50 ? 50 : minwid) * (left_align ? -1 : 1);
+    minwid *= left_align ? -1 : 1;
 
     // Denotes the start of a new group
     if (*fmt_p == '(') {
@@ -1354,11 +1404,70 @@ int build_stl_str_hl(win_T *wp, char *out, size_t outlen, char *fmt, OptIndex op
       continue;
     }
 
-    // Denotes end of expanded %{} block
+    // Denotes end of an expanded %{%...%} block
     if (*fmt_p == '}' && evaldepth > 0) {
       fmt_p++;
       evaldepth--;
+      if (groupdepth > 0) {
+        // Look for normal items since the last %{%.
+        // If we find a %{% before any normal item, it must be the start of the current block, since
+        // a nested block would have been marked normal unless it contained normal items itself.
+        bool normal_items = false;
+        for (int i = curitem - 1; i >= evalstart && stl_items[i].type != Expression; i--) {
+          if (stl_items[i].type == Normal || stl_items[i].type == NormalEmpty) {
+            normal_items = true;
+            break;
+          }
+        }
+        if (!normal_items) {
+          // If the expression result contained no normal items, treat the whole result as one.
+          // This prevents a surrounding auto-hiding item group from being hidden.
+          stl_items[curitem].type = Normal;
+          stl_items[curitem].start = out_p;
+          curitem++;
+        }
+      }
       continue;
+    }
+
+    // Denotes a highlight scope
+    if (*fmt_p == STL_HIGHLIGHT) {
+      switch (*(fmt_p + 1)) {
+      case '(':
+        fmt_p += 2;
+        stl_groupitems[groupdepth++] = curitem;
+        stl_items[curitem].type = HighlightScope;
+        stl_items[curitem].start = out_p;
+        stl_items[curitem].minwid = curr_hl_pos;
+        curitem++;
+        continue;
+      case ')':
+        fmt_p += 2;
+        if (groupdepth < 1) {
+          continue;
+        }
+        int scope_start = stl_groupitems[--groupdepth];
+        if (stl_items[scope_start].type != HighlightScope) {
+          // it's possible to break assumptions with %{%...%}, which doesn't check syntax
+          continue;
+        }
+        int hl_pos = stl_items[scope_start].minwid;
+        curr_hl_pos = curitem;
+        stl_items[curitem].type = Highlight;
+        stl_items[curitem].start = out_p;
+        stl_items[curitem].minwid = hl_pos == -1 ? 0 : stl_items[hl_pos].minwid;
+        curitem++;
+        for (int i = hl_pos == -1 ? evalstart : hl_pos + 1; i < scope_start; i++) {
+          MAY_GROW_STL_ITEMS_LEN();
+          if (stl_items[i].type == HighlightCombining) {
+            stl_items[curitem].type = HighlightCombining;
+            stl_items[curitem].start = out_p;
+            stl_items[curitem].minwid = stl_items[i].minwid;
+            curitem++;
+          }
+        }
+        continue;
+      }
     }
 
     // An invalid item was specified.
@@ -1383,12 +1492,13 @@ int build_stl_str_hl(win_T *wp, char *out, size_t outlen, char *fmt, OptIndex op
     switch (opt) {
     case STL_FILEPATH:
     case STL_FULLPATH:
-    case STL_FILENAME:
+    case STL_FILENAME: {
       // Set fillable to false so that ' ' in the filename will not
       // get replaced with the fillchar
       fillable = false;
-      if (buf_spname(wp->w_buffer) != NULL) {
-        xstrlcpy(NameBuff, buf_spname(wp->w_buffer), MAXPATHL);
+      char *name = buf_spname(wp->w_buffer);
+      if (name != NULL) {
+        xstrlcpy(NameBuff, name, MAXPATHL);
       } else {
         char *t = (opt == STL_FULLPATH) ? wp->w_buffer->b_ffname
                                         : wp->w_buffer->b_fname;
@@ -1401,15 +1511,18 @@ int build_stl_str_hl(win_T *wp, char *out, size_t outlen, char *fmt, OptIndex op
         str = path_tail(NameBuff);
       }
       break;
+    }
+
     case STL_VIM_EXPR:     // '{'
     {
       char *block_start = fmt_p - 1;
       bool reevaluate = (*fmt_p == '%');
-      itemisflag = true;
 
       if (reevaluate) {
         fmt_p++;
       }
+      // %0{} keeps the result verbatim
+      itemisflag = zeropad ? false : true;
 
       // Attempt to copy the expression to evaluate into
       // the output buffer as a null-terminated string.
@@ -1422,10 +1535,10 @@ int build_stl_str_hl(win_T *wp, char *out, size_t outlen, char *fmt, OptIndex op
         break;
       }
       fmt_p++;
-      if (reevaluate) {
-        out_p[-1] = 0;  // remove the % at the end of %{% expr %}
+      if (reevaluate && out_p > out.data) {
+        out_p[-1] = NUL;  // remove the % at the end of %{% expr %}
       } else {
-        *out_p = 0;
+        *out_p = NUL;
       }
 
       // Move our position in the output buffer
@@ -1437,25 +1550,25 @@ int build_stl_str_hl(win_T *wp, char *out, size_t outlen, char *fmt, OptIndex op
       // Store the current buffer number as a string variable
       vim_snprintf(buf_tmp, sizeof(buf_tmp), "%d", curbuf->b_fnum);
       set_internal_string_var("g:actual_curbuf", buf_tmp);
-      vim_snprintf(win_tmp, sizeof(win_tmp), "%d", curwin->handle);
-      set_internal_string_var("g:actual_curwin", win_tmp);
+      vim_snprintf(buf_tmp, sizeof(buf_tmp), "%d", curwin->handle);
+      set_internal_string_var("g:actual_curwin", buf_tmp);
 
       buf_T *const save_curbuf = curbuf;
       win_T *const save_curwin = curwin;
-      const int save_VIsual_active = VIsual_active;
+      const int save_VIsual_active = Visual.active;
       curwin = wp;
       curbuf = wp->w_buffer;
       // Visual mode is only valid in the current window.
       if (curwin != save_curwin) {
-        VIsual_active = false;
+        Visual.active = false;
       }
 
       // Note: The result stored in `t` is unused.
-      str = eval_to_string_safe(out_p, use_sandbox);
+      str = eval_to_string_safe(out_p, use_sandbox, false);
 
       curwin = save_curwin;
       curbuf = save_curbuf;
-      VIsual_active = save_VIsual_active;
+      Visual.active = save_VIsual_active;
 
       // Remove the variable we just stored
       do_unlet(S_LEN("g:actual_curbuf"), true);
@@ -1465,7 +1578,7 @@ int build_stl_str_hl(win_T *wp, char *out, size_t outlen, char *fmt, OptIndex op
 
       // Check if the evaluated result is a number.
       // If so, convert the number to an int and free the string.
-      if (str != NULL && *str != 0) {
+      if (!zeropad && str != NULL && *str != NUL) {
         if (*skipdigits(str) == NUL) {
           num = atoi(str);
           XFREE_CLEAR(str);
@@ -1475,7 +1588,7 @@ int build_stl_str_hl(win_T *wp, char *out, size_t outlen, char *fmt, OptIndex op
 
       // If the output of the expression needs to be evaluated
       // replace the %{} block with the result of evaluation
-      if (reevaluate && str != NULL && *str != 0
+      if (reevaluate && str != NULL && *str != NUL
           && strchr(str, '%') != NULL
           && evaldepth < MAX_STL_EVAL_DEPTH) {
         size_t parsed_usefmt = (size_t)(block_start - usefmt);
@@ -1499,18 +1612,30 @@ int build_stl_str_hl(win_T *wp, char *out, size_t outlen, char *fmt, OptIndex op
         usefmt = new_fmt;
         fmt_p = usefmt + parsed_usefmt;
         evaldepth++;
+        stl_items[curitem].type = Expression;
+        stl_items[curitem].start = out_p;
+        curitem++;
         continue;
       }
       break;
     }
 
     case STL_LINE:
-      // Overload %l with v:lnum for 'statuscolumn'
-      if (stcp != NULL) {
-        if (wp->w_p_nu && !get_vim_var_nr(VV_VIRTNUM)) {
-          num = (int)get_vim_var_nr(VV_LNUM);
+      // Overload %l with v:(re)lnum for 'statuscolumn'. Place a sign when 'signcolumn'
+      // is set to "number". Take care of alignment for 'number' + 'relativenumber'.
+      if (stcp != NULL && (wp->w_p_nu || wp->w_p_rnu) && get_vim_var_nr(VV_VIRTNUM) == 0) {
+        if (wp->w_maxscwidth == SCL_NUM && stcp->sattrs[0].text[0]) {
+          goto stcsign;
         }
-      } else {
+        int relnum = (int)get_vim_var_nr(VV_RELNUM);
+        num = (!wp->w_p_rnu || (wp->w_p_nu && relnum == 0)) ? (int)get_vim_var_nr(VV_LNUM) : relnum;
+        left_align_num = wp->w_p_rnu && wp->w_p_nu && relnum == 0;
+        if (!left_align_num) {
+          stl_items[curitem].type = Separate;
+          stl_items[curitem++].start = out_p;
+          MAY_GROW_STL_ITEMS_LEN();
+        }
+      } else if (stcp == NULL) {
         num = (wp->w_buffer->b_ml.ml_flags & ML_EMPTY) ? 0 : wp->w_cursor.lnum;
       }
       break;
@@ -1537,14 +1662,14 @@ int build_stl_str_hl(win_T *wp, char *out, size_t outlen, char *fmt, OptIndex op
     }
 
     case STL_PERCENTAGE:
-      num = ((wp->w_cursor.lnum * 100) / wp->w_buffer->b_ml.ml_line_count);
+      num = calc_percentage(wp->w_cursor.lnum, wp->w_buffer->b_ml.ml_line_count);
       break;
 
     case STL_ALTPERCENT:
       // Store the position percentage in our temporary buffer.
       // Note: We cannot store the value in `num` because
       //       `get_rel_pos` can return a named position. Ex: "Top"
-      get_rel_pos(wp, buf_tmp, TMPLEN);
+      (void)get_rel_pos(wp, buf_tmp, TMPLEN);
       str = buf_tmp;
       break;
 
@@ -1556,23 +1681,15 @@ int build_stl_str_hl(win_T *wp, char *out, size_t outlen, char *fmt, OptIndex op
 
     case STL_ARGLISTSTAT:
       fillable = false;
-
-      // Note: This is important because `append_arg_number` starts appending
-      //       at the end of the null-terminated string.
-      //       Setting the first byte to null means it will place the argument
-      //       number string at the beginning of the buffer.
-      buf_tmp[0] = 0;
-
-      // Note: The call will only return true if it actually
-      //       appended data to the `buf_tmp` buffer.
-      if (append_arg_number(wp, buf_tmp, (int)sizeof(buf_tmp))) {
+      buf_tmp[0] = NUL;
+      if (append_arg_number(wp, buf_tmp, sizeof(buf_tmp)) > 0) {
         str = buf_tmp;
       }
       break;
 
     case STL_KEYMAP:
       fillable = false;
-      if (get_keymap_str(wp, "<%s>", buf_tmp, TMPLEN)) {
+      if (get_keymap_str(wp, "<%s>", buf_tmp, TMPLEN) > 0) {
         str = buf_tmp;
       }
       break;
@@ -1609,16 +1726,9 @@ int build_stl_str_hl(win_T *wp, char *out, size_t outlen, char *fmt, OptIndex op
 
     case STL_ROFLAG:
     case STL_ROFLAG_ALT:
-      // Overload %r with v:relnum for 'statuscolumn'
-      if (stcp != NULL) {
-        if (wp->w_p_rnu && !get_vim_var_nr(VV_VIRTNUM)) {
-          num = (int)get_vim_var_nr(VV_RELNUM);
-        }
-      } else {
-        itemisflag = true;
-        if (wp->w_buffer->b_p_ro) {
-          str = (opt == STL_ROFLAG_ALT) ? ",RO" : _("[RO]");
-        }
+      itemisflag = true;
+      if (wp->w_buffer->b_p_ro) {
+        str = (opt == STL_ROFLAG_ALT) ? ",RO" : _("[RO]");
       }
       break;
 
@@ -1632,53 +1742,49 @@ int build_stl_str_hl(win_T *wp, char *out, size_t outlen, char *fmt, OptIndex op
 
     case STL_FOLDCOL:    // 'C' for 'statuscolumn'
     case STL_SIGNCOL: {  // 's' for 'statuscolumn'
+stcsign:
       if (stcp == NULL) {
         break;
       }
-      bool fold = opt == STL_FOLDCOL;
-      int fdc = fold ? compute_foldcolumn(wp, 0) : 0;
-      int width = fold ? fdc > 0 : wp->w_scwidth;
+      int fdc = opt == STL_FOLDCOL ? compute_foldcolumn(wp, 0) : 0;
+      int width = opt == STL_FOLDCOL ? fdc > 0 : opt == STL_SIGNCOL ? wp->w_scwidth : 1;
 
       if (width <= 0) {
         break;
       }
       foldsignitem = curitem;
+      lnum = (linenr_T)get_vim_var_nr(VV_LNUM);
 
-      char *p = NULL;
-      if (fold) {
-        schar_T fold_buf[10];
-        fill_foldcolumn(wp, stcp->foldinfo, (linenr_T)get_vim_var_nr(VV_LNUM),
-                        0, fdc, NULL, fold_buf);
-        stl_items[curitem].minwid = -((stcp->use_cul ? HLF_CLF : HLF_FC) + 1);
+      if (fdc > 0) {
+        schar_T fold_buf[9];
+        fill_foldcolumn(wp, stcp->foldinfo, stcp->lnum, 0, fdc, get_vim_var_nr(VV_VIRTNUM) < 0,
+                        NULL, stcp->fold_vcol, fold_buf);
+        stl_items[curitem].minwid = -(use_cursor_line_highlight(wp, lnum) ? HLF_CLF : HLF_FC);
         size_t buflen = 0;
         // TODO(bfredl): this is very backwards. we must support schar_T
         // being used directly in 'statuscolumn'
         for (int i = 0; i < fdc; i++) {
-          buflen += schar_get(out_p + buflen, fold_buf[i]);
+          buflen += schar_get(buf_tmp + buflen, fold_buf[i]);
         }
-        p = out_p;
       }
 
-      char buf[SIGN_WIDTH * MAX_SCHAR_SIZE];
-      size_t buflen = 0;
-      varnumber_T virtnum = get_vim_var_nr(VV_VIRTNUM);
+      size_t signlen = 0;
       for (int i = 0; i < width; i++) {
-        if (!fold) {
-          SignTextAttrs *sattr = virtnum ? NULL : &stcp->sattrs[i];
-          p = "  ";
-          if (sattr && sattr->text[0]) {
-            describe_sign_text(buf, sattr->text);
-            p = buf;
+        stl_items[curitem].start = out_p + signlen;
+        if (fdc == 0) {
+          SignTextAttrs sattr = stcp->sattrs[i];
+          if (sattr.text[0] && get_vim_var_nr(VV_VIRTNUM) == 0) {
+            signlen += describe_sign_text(buf_tmp + signlen, sattr.text);
+            stl_items[curitem].minwid = -(stcp->sign_cul_id ? stcp->sign_cul_id : sattr.hl_id);
+          } else {
+            buf_tmp[signlen++] = ' ';
+            buf_tmp[signlen++] = ' ';
+            buf_tmp[signlen] = NUL;
+            stl_items[curitem].minwid = 0;
           }
-          stl_items[curitem].minwid = -(sattr && sattr->text[0]
-                                        ? (stcp->sign_cul_id ? stcp->sign_cul_id : sattr->hl_id)
-                                        : (stcp->use_cul ? HLF_CLS : HLF_SC) + 1);
         }
-        stl_items[curitem].type = Highlight;
-        stl_items[curitem].start = out_p + buflen;
-        xstrlcpy(buf_tmp + buflen, p, TMPLEN - buflen);
-        buflen += strlen(p);
-        curitem++;
+        stl_items[curitem++].type = fdc > 0 ? HighlightFold : HighlightSign;
+        MAY_GROW_STL_ITEMS_LEN();
       }
       str = buf_tmp;
       break;
@@ -1746,17 +1852,23 @@ int build_stl_str_hl(win_T *wp, char *out, size_t outlen, char *fmt, OptIndex op
       }
       break;
 
+    case STL_HIGHLIGHT_COMB:
     case STL_HIGHLIGHT: {
-      // { The name of the highlight is surrounded by `#`
+      // { The name of the highlight is surrounded by `#` or `$`
       char *t = fmt_p;
-      while (*fmt_p != '#' && *fmt_p != NUL) {
+      while (*fmt_p != opt && *fmt_p != NUL) {
         fmt_p++;
       }
       // }
 
       // Create a highlight item based on the name
-      if (*fmt_p == '#') {
-        stl_items[curitem].type = Highlight;
+      if (*fmt_p == opt) {
+        if (opt == STL_HIGHLIGHT) {
+          curr_hl_pos = curitem;
+          stl_items[curitem].type = Highlight;
+        } else {
+          stl_items[curitem].type = HighlightCombining;
+        }
         stl_items[curitem].start = out_p;
         stl_items[curitem].minwid = -syn_name2id_len(t, (size_t)(fmt_p - t));
         curitem++;
@@ -1769,6 +1881,7 @@ int build_stl_str_hl(win_T *wp, char *out, size_t outlen, char *fmt, OptIndex op
     // If we made it this far, the item is normal and starts at
     // our current position in the output buffer.
     // Non-normal items would have `continued`.
+    assert(curitem < (int)stl_items_len);
     stl_items[curitem].start = out_p;
     stl_items[curitem].type = Normal;
 
@@ -1851,7 +1964,6 @@ int build_stl_str_hl(win_T *wp, char *out, size_t outlen, char *fmt, OptIndex op
 
       // For a 'statuscolumn' sign or fold item, add an item to reset the highlight group
       if (foldsignitem >= 0) {
-        foldsignitem = -1;
         stl_items[curitem].type = Highlight;
         stl_items[curitem].start = out_p;
         stl_items[curitem].minwid = 0;
@@ -1884,7 +1996,7 @@ int build_stl_str_hl(win_T *wp, char *out, size_t outlen, char *fmt, OptIndex op
       // Note: The `*` means we take the width as one of the arguments
       *t++ = '*';
       *t++ = base == kNumBaseHexadecimal ? 'X' : 'd';
-      *t = 0;
+      *t = NUL;
       // }
 
       // { Determine how many characters the number will take up when printed
@@ -1927,21 +2039,17 @@ int build_stl_str_hl(win_T *wp, char *out, size_t outlen, char *fmt, OptIndex op
         *t++ = '%';
         // Use the same base as the first number
         *t = t[-3];
-        *++t = 0;
+        *++t = NUL;
         // }
 
-        vim_snprintf(out_p, remaining_buf_len, nstr, 0, num, n);
+        out_p += vim_snprintf_safelen(out_p, remaining_buf_len, nstr, 0, num, n);
       } else {
-        vim_snprintf(out_p, remaining_buf_len, nstr, minwid, num);
+        out_p += vim_snprintf_safelen(out_p, remaining_buf_len, nstr, minwid, num);
       }
-
-      // Advance the output buffer position to the end of the
-      // number we just printed
-      out_p += strlen(out_p);
 
       // Otherwise, there was nothing to print so mark the item as empty
     } else {
-      stl_items[curitem].type = Empty;
+      stl_items[curitem].type = NormalEmpty;
     }
 
     if (num >= 0 || (!itemisflag && str && *str)) {
@@ -1956,10 +2064,16 @@ int build_stl_str_hl(win_T *wp, char *out, size_t outlen, char *fmt, OptIndex op
 
     // Item processed, move to the next
     curitem++;
+    // For a 'statuscolumn' number item that is left aligned, add a separator item.
+    if (left_align_num) {
+      MAY_GROW_STL_ITEMS_LEN();
+      stl_items[curitem].type = Separate;
+      stl_items[curitem++].start = out_p;
+    }
   }
+#undef MAY_GROW_STL_ITEMS_LEN
 
   *out_p = NUL;
-  int itemcnt = curitem;
 
   // Free the format buffer if we allocated it internally
   if (usefmt != fmt) {
@@ -1969,169 +2083,31 @@ int build_stl_str_hl(win_T *wp, char *out, size_t outlen, char *fmt, OptIndex op
   // We have now processed the entire statusline format string.
   // What follows is post-processing to handle alignment and highlighting.
 
-  int width = vim_strsize(out);
+  int width = vim_strsize(out.data);
   if (maxwidth > 0 && width > maxwidth && (!stcp || width > MAX_STCWIDTH)) {
     // Result is too long, must truncate somewhere.
-    int item_idx = 0;
-    char *trunc_p;
-
-    // If there are no items, truncate from beginning
-    if (itemcnt == 0) {
-      trunc_p = out;
-
-      // Otherwise, look for the truncation item
-    } else {
-      // Default to truncating at the first item
-      trunc_p = stl_items[0].start;
-      item_idx = 0;
-
-      for (int i = 0; i < itemcnt; i++) {
-        if (stl_items[i].type == Trunc) {
-          // Truncate at %< stl_items.
-          trunc_p = stl_items[i].start;
-          item_idx = i;
-          break;
-        }
-      }
-    }
-
-    // If the truncation point we found is beyond the maximum
-    // length of the string, truncate the end of the string.
-    if (width - vim_strsize(trunc_p) >= maxwidth) {
-      // Walk from the beginning of the
-      // string to find the last character that will fit.
-      trunc_p = out;
-      width = 0;
-      while (true) {
-        width += ptr2cells(trunc_p);
-        if (width >= maxwidth) {
-          break;
-        }
-
-        // Note: Only advance the pointer if the next
-        //       character will fit in the available output space
-        trunc_p += utfc_ptr2len(trunc_p);
-      }
-
-      // Ignore any items in the statusline that occur after
-      // the truncation point
-      for (int i = 0; i < itemcnt; i++) {
-        if (stl_items[i].start > trunc_p) {
-          for (int j = i; j < itemcnt; j++) {
-            if (stl_items[j].type == ClickFunc) {
-              XFREE_CLEAR(stl_items[j].cmd);
-            }
-          }
-          itemcnt = i;
-          break;
-        }
-      }
-
-      // Truncate the output
-      *trunc_p++ = '>';
-      *trunc_p = 0;
-
-      // Truncate at the truncation point we found
-    } else {
-      // { Determine how many bytes to remove
-      int trunc_len = 0;
-      while (width >= maxwidth) {
-        width -= ptr2cells(trunc_p + trunc_len);
-        trunc_len += utfc_ptr2len(trunc_p + trunc_len);
-      }
-      // }
-
-      // { Truncate the string
-      char *trunc_end_p = trunc_p + trunc_len;
-      STRMOVE(trunc_p + 1, trunc_end_p);
-
-      // Put a `<` to mark where we truncated at
-      *trunc_p = '<';
-      // }
-
-      // { Change the start point for items based on
-      //  their position relative to our truncation point
-
-      // Note: The offset is one less than the truncation length because
-      //       the truncation marker `<` is not counted.
-      int item_offset = trunc_len - 1;
-
-      for (int i = item_idx; i < itemcnt; i++) {
-        // Items starting at or after the end of the truncated section need
-        // to be moved backwards.
-        if (stl_items[i].start >= trunc_end_p) {
-          stl_items[i].start -= item_offset;
-        } else {
-          // Anything inside the truncated area is set to start
-          // at the `<` truncation character.
-          stl_items[i].start = trunc_p;
-        }
-      }
-      // }
-
-      if (width + 1 < maxwidth) {
-        // Advance the pointer to the end of the string
-        trunc_p = trunc_p + strlen(trunc_p);
-      }
-
-      // Fill up for half a double-wide character.
-      while (++width < maxwidth) {
-        schar_get_adv(&trunc_p, fillchar);
-      }
-    }
-    width = maxwidth;
+    stl_truncate(&width, 0, maxwidth, fillchar, stl_items, evalstart, &curitem, out.data, &out_p);
 
     // If there is room left in our statusline, and room left in our buffer,
-    // add characters at the separate marker (if there is one) to
-    // fill up the available space.
-  } else if (width < maxwidth
-             && strlen(out) + (size_t)(maxwidth - width) + 1 < outlen) {
-    // Find how many separators there are, which we will use when
-    // figuring out how many groups there are.
-    int num_separators = 0;
-    for (int i = 0; i < itemcnt; i++) {
-      if (stl_items[i].type == Separate) {
-        // Create an array of the start location for each separator mark.
-        stl_separator_locations[num_separators] = i;
-        num_separators++;
-      }
-    }
-
-    // If we have separated groups, then we deal with it now
-    if (num_separators) {
-      int standard_spaces = (maxwidth - width) / num_separators;
-      int final_spaces = (maxwidth - width) -
-                         standard_spaces * (num_separators - 1);
-
-      for (int l = 0; l < num_separators; l++) {
-        int dislocation = (l == (num_separators - 1)) ? final_spaces : standard_spaces;
-        dislocation *= (int)schar_len(fillchar);
-        char *start = stl_items[stl_separator_locations[l]].start;
-        char *seploc = start + dislocation;
-        STRMOVE(seploc, start);
-        for (char *s = start; s < seploc;) {
-          schar_get_adv(&s, fillchar);
-        }
-
-        for (int item_idx = stl_separator_locations[l] + 1;
-             item_idx < itemcnt;
-             item_idx++) {
-          stl_items[item_idx].start += dislocation;
-        }
-      }
-
-      width = maxwidth;
-    }
+    // add characters at the separation markers (if there are any) to fill up the available space.
+  } else if (width < maxwidth) {
+    stl_expand(&width, maxwidth, kPaddingNone, (int)(out_end_p - out_p), fillchar, stl_items,
+               evalstart, curitem, out.data, &out_p);
   }
 
   // Store the info about highlighting.
   if (hltab != NULL) {
     *hltab = stl_hltab;
     stl_hlrec_t *sp = stl_hltab;
-    for (int l = 0; l < itemcnt; l++) {
-      if (stl_items[l].type == Highlight) {
+    for (int l = evalstart; l < curitem; l++) {
+      if (stl_items[l].type == Highlight || stl_items[l].type == HighlightCombining
+          || stl_items[l].type == HighlightFold || stl_items[l].type == HighlightSign) {
         sp->start = stl_items[l].start;
         sp->userhl = stl_items[l].minwid;
+        unsigned type = stl_items[l].type;
+        sp->item = type == HighlightSign ? STL_SIGNCOL : type ==
+                   HighlightFold ? STL_FOLDCOL : type ==
+                   HighlightCombining ? STL_HIGHLIGHT_COMB : 0;
         sp++;
       }
     }
@@ -2139,14 +2115,14 @@ int build_stl_str_hl(win_T *wp, char *out, size_t outlen, char *fmt, OptIndex op
     sp->userhl = 0;
   }
   if (hltab_len) {
-    *hltab_len = (size_t)itemcnt;
+    *hltab_len = (size_t)(curitem - evalstart);
   }
 
   // Store the info about tab pages labels.
   if (tabtab != NULL) {
     *tabtab = stl_tabtab;
     StlClickRecord *cur_tab_rec = stl_tabtab;
-    for (int l = 0; l < itemcnt; l++) {
+    for (int l = evalstart; l < curitem; l++) {
       if (stl_items[l].type == TabPage) {
         cur_tab_rec->start = stl_items[l].start;
         if (stl_items[l].minwid == 0) {
@@ -2178,16 +2154,20 @@ int build_stl_str_hl(win_T *wp, char *out, size_t outlen, char *fmt, OptIndex op
     cur_tab_rec->def.func = NULL;
   }
 
+  // Restore `curitem` to previous recursion level.
+  curitem = evalstart;
+
   redraw_not_allowed = save_redraw_not_allowed;
 
   // Check for an error.  If there is one the display will be messed up and
-  // might loop redrawing.  Avoid that by making the corresponding option
-  // empty.
+  // might loop redrawing.  Avoid that by setting the option to its default.
   // TODO(Bram): find out why using called_emsg_before makes tests fail, does it
   // matter?
   // if (called_emsg > called_emsg_before)
   if (opt_idx != kOptInvalid && did_emsg > did_emsg_before) {
-    set_option_direct(opt_idx, STATIC_CSTR_AS_OPTVAL(""), opt_scope, SID_ERROR);
+    Object def = get_option_default(opt_idx, opt_scope);
+    set_option_direct(opt_idx, def, opt_scope, SID_ERROR);
+    optval_free_read(opt_idx, def);
   }
 
   // A user function may reset KeyTyped, restore it.

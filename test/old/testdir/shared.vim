@@ -35,12 +35,20 @@ func PythonProg()
   if has('unix')
     " We also need the job feature or the pkill command to make sure the server
     " can be stopped.
-    if !(executable('python') && (has('job') || executable('pkill')))
+    if !(has('job') || executable('pkill'))
       return ''
     endif
-    let s:python = 'python'
+    if executable('python3')
+      let s:python = 'python3'
+    elseif executable('python')
+      let s:python = 'python'
+    else
+      return ''
+    end
   elseif has('win32')
     " Use Python Launcher for Windows (py.exe) if available.
+    " NOTE: if you get a "Python was not found" error, disable the Python
+    " shortcuts in "Windows menu / Settings / Manage App Execution Aliases".
     if executable('py.exe')
       let s:python = 'py.exe'
     elseif executable('python.exe')
@@ -64,7 +72,7 @@ func RunCommand(cmd)
     let job = job_start(a:cmd, {"stoponexit": "hup"})
     call job_setoptions(job, {"stoponexit": "kill"})
   elseif has('win32')
-    exe 'silent !start cmd /c start "test_channel" ' . a:cmd
+    exe 'silent !start cmd /D /c start "test_channel" ' . a:cmd
   else
     exe 'silent !' . a:cmd . '&'
   endif
@@ -74,8 +82,8 @@ endfunc
 " Read the port number from the Xportnr file.
 func GetPort()
   let l = []
-  " with 200 it sometimes failed
-  for i in range(400)
+  " with 200 it sometimes failed, with 400 is rarily failed
+  for i in range(600)
     try
       let l = readfile("Xportnr")
     catch
@@ -118,6 +126,8 @@ func RunServer(cmd, testfunc, args)
     endif
 
     call call(function(a:testfunc), [port])
+  catch /E901.*Address family for hostname not supported/
+    throw 'Skipped: Invalid network setup ("' .. v:exception .. '" in ' .. v:throwpoint .. ')'
   catch
     call assert_report('Caught exception: "' . v:exception . '" in ' . v:throwpoint)
   finally
@@ -203,11 +213,11 @@ func s:WaitForCommon(expr, assert, timeout)
       call remove(v:errors, -1)
     endif
 
-    sleep 10m
+    sleep 1m
     if exists('*reltimefloat')
       let slept = float2nr(reltimefloat(reltime(start)) * 1000)
     else
-      let slept += 10
+      let slept += 1
     endif
   endwhile
 
@@ -245,17 +255,21 @@ endfunc
 
 " Get $VIMPROG to run the Vim executable.
 " The Makefile writes it as the first line in the "vimcmd" file.
+" Falls back to the Vim executable in the src directory.
 " Nvim: uses $NVIM_TEST_ARG0.
 func GetVimProg()
-  if empty($NVIM_TEST_ARG0)
-    " Assume the script was sourced instead of running "make".
-    return v:progpath
+  if !empty($NVIM_TEST_ARG0)
+    if has('win32')
+      return substitute($NVIM_TEST_ARG0, '/', '\\', 'g')
+    else
+      return $NVIM_TEST_ARG0
+    endif
   endif
-  if has('win32')
-    return substitute($NVIM_TEST_ARG0, '/', '\\', 'g')
-  else
-    return $NVIM_TEST_ARG0
-  endif
+  " echo 'Cannot read the "vimcmd" file, falling back to ../vim.'
+
+  " Probably the script was sourced instead of running "make".
+  " We assume Vim was just build in the src directory then.
+  return v:progpath
 endfunc
 
 let g:valgrind_cnt = 1
@@ -339,7 +353,7 @@ func RunVimPiped(before, after, arguments, pipecmd)
 
   let $NVIM_LOG_FILE = exists($NVIM_LOG_FILE) ? $NVIM_LOG_FILE : 'Xnvim.log'
   " Nvim does not support -Z flag, remove it.
-  exe "silent !" . a:pipecmd . cmd . args . ' ' . a:arguments->substitute('-Z', '', 'g')
+  exe "silent !" .. a:pipecmd .. ' ' ..  cmd .. args .. ' ' .. a:arguments->substitute('-Z', '', 'g')
 
   if len(a:before) > 0
     call delete('Xbefore.vim')

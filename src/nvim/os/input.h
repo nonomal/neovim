@@ -5,10 +5,5 @@
 
 #include "nvim/api/private/defs.h"  // IWYU pragma: keep
 #include "nvim/event/defs.h"  // IWYU pragma: keep
-#include "nvim/macros_defs.h"
 
-EXTERN bool used_stdin INIT( = false);
-
-#ifdef INCLUDE_GENERATED_DECLARATIONS
-# include "os/input.h.generated.h"
-#endif
+#include "os/input.h.generated.h"

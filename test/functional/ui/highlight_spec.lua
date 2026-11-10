@@ -3,6 +3,7 @@ local n = require('test.functional.testnvim')()
 local Screen = require('test.functional.ui.screen')
 local os = require('os')
 
+local describe, it, before_each, after_each = t.describe, t.it, t.before_each, t.after_each
 local clear, feed, insert = n.clear, n.feed, n.insert
 local command, exec = n.command, n.exec
 local eval = n.eval
@@ -32,7 +33,6 @@ describe('highlight: `:syntax manual`', function()
   before_each(function()
     clear()
     screen = Screen.new(20, 5)
-    screen:attach()
     -- syntax highlight for vimscript's "echo"
   end)
 
@@ -93,7 +93,6 @@ describe('highlight defaults', function()
       [100] = { foreground = Screen.colors.Red, background = Screen.colors.WebGreen },
       [101] = { italic = true },
     }
-    screen:attach()
   end)
 
   it('window status bar', function()
@@ -243,7 +242,10 @@ describe('highlight defaults', function()
 
   it('Cursor after `:hi clear|syntax reset` #6508', function()
     command('highlight clear|syntax reset')
-    eq('guifg=bg guibg=fg', eval([[matchstr(execute('hi Cursor'), '\v(gui|cterm).*$')]]))
+    eq(
+      'cterm=reverse guifg=bg guibg=fg',
+      eval([[matchstr(execute('hi Cursor'), '\v(gui|cterm).*$')]])
+    )
   end)
 
   it('Whitespace highlight', function()
@@ -303,7 +305,6 @@ describe('highlight', function()
 
   it('Visual', function()
     local screen = Screen.new(45, 5)
-    screen:attach()
     insert([[
       line1 foo bar
     abcdefghijklmnopqrs
@@ -312,11 +313,11 @@ describe('highlight', function()
     feed('gg')
     command('vsplit')
 
-    -- Non-blinking block cursor: does NOT highlight char-at-cursor.
+    -- Visual highlighting does not depend on 'guicursor'.
     command('set guicursor=a:block-blinkon0')
     feed('V')
     screen:expect([[
-      {17:  }^l{17:ine1 foo bar}       │{17:  line1 foo bar}       |
+      {17:  ^line1 foo bar}       │{17:  line1 foo bar}       |
       abcdefghijklmnopqrs   │abcdefghijklmnopqrs   |
       ABCDEFGHIJKLMNOPQRS   │ABCDEFGHIJKLMNOPQRS   |
       {3:[No Name] [+]          }{2:[No Name] [+]         }|
@@ -325,14 +326,14 @@ describe('highlight', function()
 
     feed('<Esc>$vhhh')
     screen:expect([[
-        line1 foo^ {17:bar}       │  line1 foo{17: bar}       |
+        line1 foo{17:^ bar}       │  line1 foo{17: bar}       |
       abcdefghijklmnopqrs   │abcdefghijklmnopqrs   |
       ABCDEFGHIJKLMNOPQRS   │ABCDEFGHIJKLMNOPQRS   |
       {3:[No Name] [+]          }{2:[No Name] [+]         }|
       {5:-- VISUAL --}                                 |
     ]])
 
-    -- Vertical cursor: highlights char-at-cursor. #8983
+    -- Non-blinking block cursor with blinkon0 does not affect Visual highlighting either. #8983
     command('set guicursor=a:block-blinkon175')
     screen:expect([[
         line1 foo{17:^ bar}       │  line1 foo{17: bar}       |
@@ -426,9 +427,89 @@ describe('highlight', function()
     ]])
   end)
 
+  it('blockwise Visual highlight with virtualedit=block #34235', function()
+    local screen = Screen.new(45, 5)
+    command('set virtualedit=block')
+    insert('foobar\nfoo')
+    feed('0<C-V>k$')
+    screen:expect([[
+      {17:foobar^ }                                      |
+      {17:foo    }                                      |
+      {1:~                                            }|*2
+      {5:-- VISUAL BLOCK --}                           |
+    ]])
+    feed('10l')
+    screen:expect([[
+      {17:foobar          ^ }                            |
+      {17:foo              }                            |
+      {1:~                                            }|*2
+      {5:-- VISUAL BLOCK --}                           |
+    ]])
+  end)
+
+  it("is updated with H/L and 'scrolloff' #36059", function()
+    local screen = Screen.new(40, 10)
+    exec([[
+      call setline(1, map(range(1, 100), "'line ' .. v:val"))
+      set scrolloff=2 nostartofline
+      call cursor(50, 1)
+    ]])
+    feed('z<CR>V')
+    screen:expect([[
+      line 48                                 |
+      line 49                                 |
+      {17:^line 50}                                 |
+      line 51                                 |
+      line 52                                 |
+      line 53                                 |
+      line 54                                 |
+      line 55                                 |
+      line 56                                 |
+      {5:-- VISUAL LINE --}                       |
+    ]])
+    feed('L')
+    screen:expect([[
+      line 48                                 |
+      line 49                                 |
+      {17:line 50}                                 |
+      {17:line 51}                                 |
+      {17:line 52}                                 |
+      {17:line 53}                                 |
+      {17:^line 54}                                 |
+      line 55                                 |
+      line 56                                 |
+      {5:-- VISUAL LINE --}                       |
+    ]])
+    feed('<Esc>V')
+    screen:expect([[
+      line 48                                 |
+      line 49                                 |
+      line 50                                 |
+      line 51                                 |
+      line 52                                 |
+      line 53                                 |
+      {17:^line 54}                                 |
+      line 55                                 |
+      line 56                                 |
+      {5:-- VISUAL LINE --}                       |
+    ]])
+    feed('H')
+    screen:expect([[
+      line 48                                 |
+      line 49                                 |
+      {17:^line 50}                                 |
+      {17:line 51}                                 |
+      {17:line 52}                                 |
+      {17:line 53}                                 |
+      {17:line 54}                                 |
+      line 55                                 |
+      line 56                                 |
+      {5:-- VISUAL LINE --}                       |
+    ]])
+  end)
+
   it('cterm=standout gui=standout', function()
     local screen = Screen.new(20, 5)
-    screen:attach()
     screen:add_extra_attr_ids {
       [100] = {
         foreground = Screen.colors.Blue1,
@@ -454,7 +535,6 @@ describe('highlight', function()
 
   it('strikethrough', function()
     local screen = Screen.new(25, 6)
-    screen:attach()
     feed_command('syntax on')
     feed_command('syn keyword TmpKeyword foo')
     feed_command('hi! Awesome cterm=strikethrough gui=strikethrough')
@@ -490,7 +570,6 @@ describe('highlight', function()
         background = Screen.colors.Yellow,
       },
     }
-    screen:attach()
     feed_command('syntax on')
     feed_command('hi! Underlined cterm=underline gui=underline')
     feed_command('syn keyword Underlined foobar')
@@ -532,7 +611,6 @@ describe('highlight', function()
 
   it('guisp (special/undercurl)', function()
     local screen = Screen.new(25, 10)
-    screen:attach()
     feed_command('syntax on')
     feed_command('syn keyword TmpKeyword neovim')
     feed_command('syn keyword TmpKeyword1 special')
@@ -585,7 +663,6 @@ describe('highlight', function()
 
   it("'diff', syntax and extmark #23722", function()
     local screen = Screen.new(25, 10)
-    screen:attach()
     exec([[
       new
       call setline(1, ['', '01234 6789'])
@@ -596,13 +673,12 @@ describe('highlight', function()
     ]])
     screen:expect(
       [[
-      {1:  }^                       |
+      {1:  }{5:^                       }|
       {1:  }{2:01}{3:234 67}{2:89}{5:             }|
       {4:~                        }|*2
       {7:[No Name] [+]            }|
+      {1:  }{6:-----------------------}|*2
       {1:  }                       |
-      {1:  }{6:-----------------------}|
-      {4:~                        }|
       {8:[No Name]                }|
                                |
     ]],
@@ -631,7 +707,6 @@ describe("'listchars' highlight", function()
   before_each(function()
     clear()
     screen = Screen.new(20, 5)
-    screen:attach()
   end)
 
   it("'cursorline' and 'cursorcolumn'", function()
@@ -812,7 +887,7 @@ describe("'listchars' highlight", function()
     feed('lllvj')
     screen:expect([[
       {19:>-------.}a{17:bcd}{103:*}{100:¬}     |
-      {103:>-------.}{17:a}^bcd{19:.}Lorem{1:>}|
+      {103:>-------.}{17:a^b}cd{19:.}Lorem{1:>}|
       {1:¬}                   |
       {1:~                   }|
       -- VISUAL --        |
@@ -820,7 +895,7 @@ describe("'listchars' highlight", function()
     feed('<esc>V')
     screen:expect([[
       {19:>-------.}abcd{19:*}{1:¬}     |
-      {103:>-------.}{17:a}^b{17:cd}{103:.}{17:Lorem}{1:>}|
+      {103:>-------.}{17:a^bcd}{103:.}{17:Lorem}{1:>}|
       {1:¬}                   |
       {1:~                   }|
       -- VISUAL LINE --   |
@@ -873,7 +948,6 @@ describe('CursorLine and CursorLineNr highlights', function()
       [100] = { background = Screen.colors.LightRed },
       [101] = { foreground = Screen.colors.SlateBlue, background = Screen.colors.Grey90 },
     }
-    screen:attach()
 
     command('filetype on')
     command('syntax on')
@@ -906,7 +980,6 @@ describe('CursorLine and CursorLineNr highlights', function()
       [102] = { foreground = Screen.colors.Grey0, background = Screen.colors.Grey100 },
       [103] = { foreground = Screen.colors.Yellow1, background = Screen.colors.Grey100 },
     }
-    screen:attach()
 
     feed_command('set wrap cursorline')
     feed_command('set showbreak=>>>')
@@ -949,6 +1022,80 @@ describe('CursorLine and CursorLineNr highlights', function()
     ]])
   end)
 
+  it("'cursorlineopt' global assignments keep the local highlight", function()
+    local screen = Screen.new(20, 5)
+    screen:add_extra_attr_ids {
+      [100] = { background = Screen.colors.Red },
+    }
+    command('highlight CursorLine guibg=Red gui=NONE')
+    command('setlocal cursorline cursorlineopt=both')
+    api.nvim_buf_set_lines(0, 0, -1, true, { 'example' })
+    screen:expect([[
+      {100:^example             }|
+      {1:~                   }|*3
+                          |
+    ]])
+    command('setglobal cursorlineopt=number')
+    eq('both', eval('&l:cursorlineopt'))
+    eq('number', eval('&g:cursorlineopt'))
+    command('redraw!')
+    screen:expect {
+      grid = [[
+        {100:^example             }|
+        {1:~                   }|*3
+                            |
+      ]],
+      unchanged = true,
+    }
+  end)
+
+  it('follows a conceal-aware reflowed cursor line (#14409)', function()
+    local screen = Screen.new(20, 4)
+    local ns = api.nvim_create_namespace('conceal_wrap_cursorline')
+    command('set wrap conceallevel=2 concealcursor= cursorline scrolloff=0 noshowmode')
+    api.nvim_buf_set_lines(0, 0, -1, true, {
+      ('a'):rep(5) .. 'HIDDEN' .. ('b'):rep(14),
+      'line2',
+    })
+    api.nvim_buf_set_extmark(0, ns, 0, 5, { end_col = 11, conceal = '' })
+
+    api.nvim_win_set_cursor(0, { 2, 0 })
+    local concealed = [[
+      aaaaabbbbbbbbbbbbbb |
+      {21:^line2               }|
+      {1:~                   }|
+                          |
+    ]]
+    screen:expect(concealed)
+
+    api.nvim_win_set_cursor(0, { 1, 0 })
+    local revealed = [[
+      {21:^aaaaaHIDDENbbbbbbbbb}|
+      {21:bbbbb               }|
+      line2               |
+                          |
+    ]]
+    screen:expect(revealed)
+
+    command('set concealcursor=n')
+    local concealed_cursor = [[
+      {21:^aaaaabbbbbbbbbbbbbb }|
+      line2               |
+      {1:~                   }|
+                          |
+    ]]
+    screen:expect(concealed_cursor)
+    local changedtick = api.nvim_buf_get_changedtick(0)
+    feed('i')
+    screen:expect(revealed)
+    feed('<Esc>')
+    screen:expect(concealed_cursor)
+    eq(changedtick, api.nvim_buf_get_changedtick(0))
+
+    api.nvim_win_set_cursor(0, { 2, 0 })
+    screen:expect(concealed)
+  end)
+
   it("'cursorlineopt' screenline", function()
     local screen = Screen.new(20, 5)
     screen:add_extra_attr_ids {
@@ -957,7 +1104,6 @@ describe('CursorLine and CursorLineNr highlights', function()
       [102] = { foreground = Screen.colors.Black, background = Screen.colors.Grey100 },
       [103] = { foreground = Screen.colors.WebGreen, background = Screen.colors.Red },
     }
-    screen:attach()
 
     command('set wrap cursorline cursorlineopt=screenline')
     command('set showbreak=>>>')
@@ -995,7 +1141,8 @@ describe('CursorLine and CursorLineNr highlights', function()
                           |
     ]])
 
-    -- CursorLineNr should not apply to line number when 'cursorlineopt' does not contain "number"
+    -- A dry run adding "number" must not enable CursorLineNr.
+    api.nvim_set_option_value('cursorlineopt', 'number', { operation = 'append', dry_run = true })
     command('set relativenumber numberwidth=2')
     screen:expect([[
       {101:0 }{102:øøøøøøøøøøøø^øøøøøø}|
@@ -1057,25 +1204,84 @@ describe('CursorLine and CursorLineNr highlights', function()
       {101:  }{100:>>>}aaaaaaaaaaaa   |
                           |
     ]])
+  end)
 
-    command('inoremap <F2> <Cmd>call cursor(1, 1)<CR>')
+  -- oldtest: Test_cursorline_screenline_resize()
+  it("'cursorlineopt' screenline is updated on window resize", function()
+    local screen = Screen.new(75, 8)
+    exec([[
+      50vnew
+      call setline(1, repeat('xyz ', 30))
+      setlocal number cursorline cursorlineopt=screenline
+      normal! $
+    ]])
+    screen:expect([[
+      {8:  1 }xyz xyz xyz xyz xyz xyz xyz xyz xyz xyz xyz xy│                        |
+      {8:    }z xyz xyz xyz xyz xyz xyz xyz xyz xyz xyz xyz │{1:~                       }|
+      {8:    }{21:xyz xyz xyz xyz xyz xyz xyz^                   }│{1:~                       }|
+      {1:~                                                 }│{1:~                       }|*3
+      {3:[No Name] [+]                                      }{2:[No Name]               }|
+                                                                                 |
+    ]])
+    command('vertical resize -4')
+    screen:expect([[
+      {8:  1 }xyz xyz xyz xyz xyz xyz xyz xyz xyz xyz xy│                            |
+      {8:    }z xyz xyz xyz xyz xyz xyz xyz xyz xyz xyz │{1:~                           }|
+      {8:    }{21:xyz xyz xyz xyz xyz xyz xyz xyz xyz^       }│{1:~                           }|
+      {1:~                                             }│{1:~                           }|*3
+      {3:[No Name] [+]                                  }{2:[No Name]                   }|
+                                                                                 |
+    ]])
+    command('set cpoptions+=n')
+    screen:expect([[
+      {8:  1 }xyz xyz xyz xyz xyz xyz xyz xyz xyz xyz xy│                            |
+      z xyz xyz xyz xyz xyz xyz xyz xyz xyz xyz xyz │{1:~                           }|
+      {21:xyz xyz xyz xyz xyz xyz xyz xyz^               }│{1:~                           }|
+      {1:~                                             }│{1:~                           }|*3
+      {3:[No Name] [+]                                  }{2:[No Name]                   }|
+                                                                                 |
+    ]])
+  end)
+
+  -- oldtest: Test_cursorline_screenline_update()
+  it("'cursorlineopt' screenline is updated on various movements", function()
+    local screen = Screen.new(75, 8)
+    exec([[
+      func TestRetab()
+        let w = winwidth(0)
+        call cursor([1, w + 1, 0, w + 1])
+        call line('w0')
+        retab 8
+      endfunc
+
+      call setline(1, repeat('xyz ', 30))
+      set cursorline cursorlineopt=screenline tabstop=8
+      inoremap <F2> <Cmd>call cursor(1, 1)<CR>
+      inoremap <F3> <Cmd>call TestRetab()<CR>
+    ]])
+
     feed('A')
     screen:expect([[
-      {103:0 }øøøøøøøøøøøøøøøøøø|
-      {101:  }{100:>>>}{102:øøøøøøøøøøøø^   }|
-      {101:1 }aaaaaaaaaaaaaaaaaa|
-      {101:  }{100:>>>}aaaaaaaaaaaa   |
-      {5:-- INSERT --}        |
+      xyz xyz xyz xyz xyz xyz xyz xyz xyz xyz xyz xyz xyz xyz xyz xyz xyz xyz xyz|
+      {21: xyz xyz xyz xyz xyz xyz xyz xyz xyz xyz xyz ^                              }|
+      {1:~                                                                          }|*5
+      {5:-- INSERT --}                                                               |
     ]])
-
     feed('<F2>')
     screen:expect([[
-      {103:0 }{102:^øøøøøøøøøøøøøøøøøø}|
-      {101:  }{100:>>>}øøøøøøøøøøøø   |
-      {101:1 }aaaaaaaaaaaaaaaaaa|
-      {101:  }{100:>>>}aaaaaaaaaaaa   |
-      {5:-- INSERT --}        |
+      {21:^xyz xyz xyz xyz xyz xyz xyz xyz xyz xyz xyz xyz xyz xyz xyz xyz xyz xyz xyz}|
+       xyz xyz xyz xyz xyz xyz xyz xyz xyz xyz xyz                               |
+      {1:~                                                                          }|*5
+      {5:-- INSERT --}                                                               |
     ]])
+    feed('<F3>')
+    screen:expect([[
+      xyz xyz xyz xyz xyz xyz xyz xyz xyz xyz xyz xyz xyz xyz xyz xyz xyz xyz xyz|
+      {21:^ xyz xyz xyz xyz xyz xyz xyz xyz xyz xyz xyz                               }|
+      {1:~                                                                          }|*5
+      {5:-- INSERT --}                                                               |
+    ]])
+    feed('<Esc>')
   end)
 
   -- oldtest: Test_cursorline_after_yank()
@@ -1085,7 +1291,6 @@ describe('CursorLine and CursorLineNr highlights', function()
       [100] = { background = Screen.colors.LightRed },
       [101] = { foreground = Screen.colors.SlateBlue, background = Screen.colors.Grey90 },
     }
-    screen:attach()
     command('set cursorline relativenumber')
     command('call setline(1, ["","1","2","3",""])')
     feed('Gy3k')
@@ -1113,13 +1318,12 @@ describe('CursorLine and CursorLineNr highlights', function()
       [100] = { foreground = Screen.colors.SlateBlue, background = Screen.colors.Grey90 },
       [101] = { background = Screen.colors.LightRed },
     }
-    screen:attach()
     command('set cursorline')
     command('call setline(1, repeat(["abc"], 50))')
     feed('V<C-f>zbkkjk')
     screen:expect([[
       {17:abc}                                               |
-      ^a{17:bc}                                               |
+      {17:^abc}                                               |
       abc                                               |*2
       {5:-- VISUAL LINE --}                                 |
     ]])
@@ -1128,7 +1332,6 @@ describe('CursorLine and CursorLineNr highlights', function()
   -- oldtest: Test_cursorline_callback()
   it('is updated if cursor is moved up from timer vim-patch:8.2.4591', function()
     local screen = Screen.new(50, 8)
-    screen:attach()
     exec([[
       call setline(1, ['aaaaa', 'bbbbb', 'ccccc', 'ddddd'])
       set cursorline
@@ -1137,30 +1340,25 @@ describe('CursorLine and CursorLineNr highlights', function()
       func Func(timer)
         call cursor(2, 1)
       endfunc
-
-      call timer_start(300, 'Func')
     ]])
-    screen:expect({
-      grid = [[
+    screen:expect([[
       aaaaa                                             |
       bbbbb                                             |
       ccccc                                             |
       {21:^ddddd                                             }|
       {1:~                                                 }|*3
                                                         |
-    ]],
-      timeout = 100,
-    })
-    screen:expect({
-      grid = [[
+    ]])
+    command([[call timer_start(300, 'Func')]])
+    screen:expect_unchanged(false, 100)
+    screen:expect([[
       aaaaa                                             |
       {21:^bbbbb                                             }|
       ccccc                                             |
       ddddd                                             |
       {1:~                                                 }|*3
                                                         |
-    ]],
-    })
+    ]])
   end)
 
   it('with split windows in diff mode', function()
@@ -1169,7 +1367,6 @@ describe('CursorLine and CursorLineNr highlights', function()
       [100] = { background = Screen.colors.Plum1, underline = true },
       [101] = { background = Screen.colors.Red1, bold = true, underline = true },
     }
-    screen:attach()
 
     command('hi CursorLine ctermbg=red ctermfg=white guibg=red guifg=white')
     command('set cursorline')
@@ -1184,7 +1381,7 @@ describe('CursorLine and CursorLineNr highlights', function()
     command('windo diffthis')
     screen:expect([[
       {7:  }{9:line 1 some text       }│{7:  }{9:^line 1 some text      }|
-      {7:  }{4:line 2 mo}{27:Re text!}{4:      }│{7:  }{4:line 2 mo}{27:re text}{4:      }|
+      {7:  }{4:line 2 mo}{27:R}{4:e text}{27:!}{4:      }│{7:  }{4:line 2 mo}{27:r}{4:e text      }|
       {7:  }{22:extra line!            }│{7:  }{23:----------------------}|
       {7:  }extra line!            │{7:  }extra line!           |*2
       {7:  }last line ...          │{7:  }last line ...         |
@@ -1196,7 +1393,7 @@ describe('CursorLine and CursorLineNr highlights', function()
     feed('jjjjj')
     screen:expect([[
       {7:  }line 1 some text       │{7:  }line 1 some text      |
-      {7:  }{4:line 2 mo}{27:Re text!}{4:      }│{7:  }{4:line 2 mo}{27:re text}{4:      }|
+      {7:  }{4:line 2 mo}{27:R}{4:e text}{27:!}{4:      }│{7:  }{4:line 2 mo}{27:r}{4:e text      }|
       {7:  }{22:extra line!            }│{7:  }{23:----------------------}|
       {7:  }extra line!            │{7:  }extra line!           |*2
       {7:  }last line ...          │{7:  }last line ...         |
@@ -1212,7 +1409,7 @@ describe('CursorLine and CursorLineNr highlights', function()
     feed('kkkk')
     screen:expect([[
       {7:  }line 1 some text       │{7:  }line 1 some text      |
-      {7:  }{100:line 2 mo}{101:Re text!}{100:      }│{7:  }{100:^line 2 mo}{101:re text}{100:      }|
+      {7:  }{100:line 2 mo}{101:R}{100:e text}{101:!}{100:      }│{7:  }{100:^line 2 mo}{101:r}{100:e text      }|
       {7:  }{22:extra line!            }│{7:  }{23:----------------------}|
       {7:  }extra line!            │{7:  }extra line!           |*2
       {7:  }last line ...          │{7:  }last line ...         |
@@ -1229,7 +1426,6 @@ describe('CursorLine and CursorLineNr highlights', function()
     screen:add_extra_attr_ids {
       [100] = { foreground = Screen.colors.Black, bold = true, background = Screen.colors.Grey100 },
     }
-    screen:attach()
 
     command('hi CursorLine guibg=red guifg=white')
     command('hi CursorLineNr guibg=white guifg=black gui=bold')
@@ -1260,6 +1456,34 @@ describe('CursorLine and CursorLineNr highlights', function()
                                                         |
     ]])
   end)
+
+  it('CursorLine overlays hl group linked to Normal', function()
+    local screen = Screen.new(50, 12)
+    screen:add_extra_attr_ids({
+      [101] = { background = Screen.colors.Grey90, foreground = Screen.colors.Grey100 },
+      [102] = { background = Screen.colors.DarkGray, foreground = Screen.colors.WebGreen },
+    })
+    command('hi Normal guibg=black guifg=white')
+    command('hi def link Test Normal')
+    feed('ifoo bar<ESC>')
+    feed(':call matchadd("Test", "bar")<cr>')
+    command('set cursorline')
+    screen:expect([[
+      {21:foo }{101:ba^r}{21:                                           }|
+      {1:~                                                 }|*10
+      :call matchadd("Test", "bar")                     |
+    ]])
+    api.nvim_buf_set_lines(0, 0, -1, false, { 'aaaaa', 'bbbbb' })
+    command('hi AAA guifg=Green guibg=DarkGrey ctermfg=Green ctermbg=DarkGrey')
+    fn.matchadd('AAA', 'aaaaa')
+    command('setlocal winhighlight=Normal:NormalFloat')
+    screen:expect([[
+      {102:aaaa^a}{21:                                             }|
+      {4:bbbbb                                             }|
+      {11:~                                                 }|*9
+      :call matchadd("Test", "bar")                     |
+    ]])
+  end)
 end)
 
 describe('CursorColumn highlight', function()
@@ -1270,7 +1494,6 @@ describe('CursorColumn highlight', function()
     screen:add_extra_attr_ids {
       [100] = { background = Screen.colors.Blue1 },
     }
-    screen:attach()
   end)
 
   it('is updated when pressing "i" on a TAB character', function()
@@ -1308,6 +1531,24 @@ describe('CursorColumn highlight', function()
     ]])
   end)
 
+  -- oldtest: Test_cursorcolumn_virtualedit()
+  it('is correct with operator on empty line and virtualedit', function()
+    exec([[
+      set virtualedit=all
+      set cursorcolumn
+      call setline(1, ['', '', ''])
+      call cursor(3, 1)
+    ]])
+    screen:expect([[
+      {21: }                                                 |*2
+      ^                                                  |
+      {1:~                                                 }|*4
+                                                        |
+    ]])
+    feed('<Del>')
+    screen:expect_unchanged()
+  end)
+
   -- oldtest: Test_cursorcolumn_callback()
   it('is updated if cursor is moved from timer', function()
     exec([[
@@ -1318,30 +1559,25 @@ describe('CursorColumn highlight', function()
       func Func(timer)
         call cursor(1, 1)
       endfunc
-
-      call timer_start(300, 'Func')
     ]])
-    screen:expect({
-      grid = [[
+    screen:expect([[
       aaaa{21:a}                                             |
       bbbb{21:b}                                             |
       cccc{21:c}                                             |
       dddd^d                                             |
       {1:~                                                 }|*3
                                                         |
-    ]],
-      timeout = 100,
-    })
-    screen:expect({
-      grid = [[
+    ]])
+    command([[call timer_start(300, 'Func')]])
+    screen:expect_unchanged(false, 100)
+    screen:expect([[
       ^aaaaa                                             |
       {21:b}bbbb                                             |
       {21:c}cccc                                             |
       {21:d}dddd                                             |
       {1:~                                                 }|*3
                                                         |
-    ]],
-    })
+    ]])
   end)
 
   it('is not shown on current line with virtualedit', function()
@@ -1384,6 +1620,100 @@ describe('CursorColumn highlight', function()
                                                         |
     ]])
   end)
+
+  it('is updated with completion active #39153', function()
+    command('set autocomplete cursorcolumn')
+    feed('iasdf<CR>')
+    screen:expect([[
+      {21:a}sdf                                              |
+      ^                                                  |
+      {1:~                                                 }|*5
+      {5:-- INSERT --}                                      |
+    ]])
+    feed('a')
+    screen:expect([[
+      a{21:s}df                                              |
+      a^                                                 |
+      {4:asdf           }{1:                                   }|
+      {1:~                                                 }|*4
+      {5:-- INSERT --}                                      |
+    ]])
+    feed('s')
+    screen:expect([[
+      as{21:d}f                                              |
+      as^                                                |
+      {4:asdf           }{1:                                   }|
+      {1:~                                                 }|*4
+      {5:-- INSERT --}                                      |
+    ]])
+    feed('d')
+    screen:expect([[
+      asd{21:f}                                              |
+      asd^                                               |
+      {4:asdf           }{1:                                   }|
+      {1:~                                                 }|*4
+      {5:-- INSERT --}                                      |
+    ]])
+    feed('f')
+    screen:expect([[
+      asdf{21: }                                             |
+      asdf^                                              |
+      {4:asdf           }{1:                                   }|
+      {1:~                                                 }|*4
+      {5:-- INSERT --}                                      |
+    ]])
+    feed('g')
+    screen:expect([[
+      asdf {21: }                                            |
+      asdfg^                                             |
+      {1:~                                                 }|*5
+      {5:-- INSERT --}                                      |
+    ]])
+    feed(' ')
+    screen:expect([[
+      asdf  {21: }                                           |
+      asdfg ^                                            |
+      {1:~                                                 }|*5
+      {5:-- INSERT --}                                      |
+    ]])
+    feed('<BS>')
+    screen:expect([[
+      asdf {21: }                                            |
+      asdfg^                                             |
+      {1:~                                                 }|*5
+      {5:-- INSERT --}                                      |
+    ]])
+    feed('<BS>')
+    screen:expect([[
+      asdf{21: }                                             |
+      asdf^                                              |
+      {4:asdf           }{1:                                   }|
+      {1:~                                                 }|*4
+      {5:-- INSERT --}                                      |
+    ]])
+    feed('<BS>')
+    screen:expect([[
+      asd{21:f}                                              |
+      asd^                                               |
+      {4:asdf           }{1:                                   }|
+      {1:~                                                 }|*4
+      {5:-- INSERT --}                                      |
+    ]])
+    feed('h')
+    screen:expect([[
+      asdf{21: }                                             |
+      asdh^                                              |
+      {1:~                                                 }|*5
+      {5:-- INSERT --}                                      |
+    ]])
+    feed('<Esc>')
+    screen:expect([[
+      asd{21:f}                                              |
+      asd^h                                              |
+      {1:~                                                 }|*5
+                                                        |
+    ]])
+  end)
 end)
 
 describe('ColorColumn highlight', function()
@@ -1397,7 +1727,6 @@ describe('ColorColumn highlight', function()
       [101] = { background = Screen.colors.LightRed },
       [102] = { foreground = Screen.colors.Blue1, bold = true, background = Screen.colors.LightRed },
     }
-    screen:attach()
   end)
 
   -- oldtest: Test_colorcolumn()
@@ -1500,7 +1829,6 @@ describe('MsgSeparator highlight and msgsep fillchar', function()
       [12] = { background = Screen.colors.Gray60, bold = true, foreground = tonumber('0x297d4e') },
       [13] = { background = tonumber('0xff4cff'), bold = true, foreground = tonumber('0xb200ff') },
     })
-    screen:attach()
   end)
 
   it('works', function()
@@ -1615,7 +1943,6 @@ describe("'winhighlight' highlight", function()
   before_each(function()
     clear()
     screen = Screen.new(20, 8)
-    screen:attach()
     screen:set_default_attr_ids {
       [0] = { bold = true, foreground = Screen.colors.Blue },
       [1] = { background = Screen.colors.DarkBlue },
@@ -1653,6 +1980,7 @@ describe("'winhighlight' highlight", function()
       [29] = { foreground = Screen.colors.Blue1, background = Screen.colors.Red, bold = true },
       [30] = { background = tonumber('0xff8800') },
       [31] = { background = tonumber('0xff8800'), bold = true, foreground = Screen.colors.Blue },
+      [32] = { bold = true, reverse = true, background = Screen.colors.DarkGreen },
     }
     command('hi Background1 guibg=DarkBlue')
     command('hi Background2 guibg=DarkGreen')
@@ -2021,20 +2349,24 @@ describe("'winhighlight' highlight", function()
   end)
 
   it('can override Tabline', function()
+    screen:add_extra_attr_ids {
+      [100] = { reverse = true, background = Screen.colors.Red, foreground = Screen.colors.Grey100 },
+      [101] = { reverse = true, background = Screen.colors.DarkBlue },
+    }
     command('tabnew')
     command('set winhl=TabLine:Background1,TabLineSel:ErrorMsg')
 
     screen:expect([[
-      {20: No Name] }{15: No Name]}{20:X}|
+      {24: No Name] }{100: No Name]}{24:X}|
       ^                    |
-      {0:~                   }|*5
+      {1:~                   }|*5
                           |
     ]])
     command('tabnext')
     screen:expect([[
-      {21: No Name] }{1: No Name]}{20:X}|
+      {5: No Name] }{101: No Name]}{24:X}|
       ^                    |
-      {0:~                   }|*5
+      {1:~                   }|*5
                           |
     ]])
   end)
@@ -2215,10 +2547,10 @@ describe("'winhighlight' highlight", function()
       some text                               |
       more tex^t                               |
       {0:~                                       }|
-      {3:[No Name]                        }{1:2,9 All}|
+      {3:[No Name]                        }{11:2,9 All}|
       some text                               |
       more text                               |
-      {4:[No Name]                        }{1:1,1 All}|
+      {4:[No Name]                        }{14:1,1 All}|
                                               |
     ]],
     }
@@ -2229,10 +2561,10 @@ describe("'winhighlight' highlight", function()
       some text                               |
       more tex^t                               |
       {0:~                                       }|
-      {3:[No Name]                        }{5:2,9 All}|
+      {3:[No Name]                        }{32:2,9 All}|
       some text                               |
       more text                               |
-      {4:[No Name]                        }{1:1,1 All}|
+      {4:[No Name]                        }{14:1,1 All}|
                                               |
     ]],
     }
@@ -2243,10 +2575,10 @@ describe("'winhighlight' highlight", function()
       some tex^t                               |
       more text                               |
       {0:~                                       }|
-      {3:[No Name]                        }{5:1,9 All}|
+      {3:[No Name]                        }{32:1,9 All}|
       some text                               |
       more text                               |
-      {4:[No Name]                        }{1:1,1 All}|
+      {4:[No Name]                        }{14:1,1 All}|
                                               |
     ]],
     }
@@ -2278,7 +2610,6 @@ describe('highlight namespaces', function()
   before_each(function()
     clear()
     screen = Screen.new(25, 10)
-    screen:attach()
     screen:set_default_attr_ids {
       [1] = { foreground = Screen.colors.Blue, bold = true },
       [2] = { background = Screen.colors.DarkGrey },
@@ -2387,16 +2718,24 @@ describe('highlight namespaces', function()
   end)
 
   it('winhl does not accept invalid value #24586', function()
-    local res = exec_lua([[
-      local curwin = vim.api.nvim_get_current_win()
-      vim.api.nvim_command("set winhl=Normal:Visual")
-      local _, msg = pcall(vim.api.nvim_command,"set winhl='Normal:Wrong'")
-      return { msg, vim.wo[curwin].winhl }
-    ]])
-    eq({
-      'Vim(set):E5248: Invalid character in group name',
-      'Normal:Visual',
-    }, res)
+    command('set winhl=Normal:Visual')
+    for _, cmd in ipairs({
+      [[set winhl='Normal:Wrong']],
+      [[set winhl=Normal:Wrong']],
+      [[set winhl='Normal:Wrong]],
+    }) do
+      local res = exec_lua(
+        [[
+          local _, msg = pcall(vim.api.nvim_command, ...)
+          return { msg, vim.wo.winhl }
+        ]],
+        cmd
+      )
+      eq({
+        'Vim(set):E5248: Invalid character in group name',
+        'Normal:Visual',
+      }, res)
+    end
   end)
 
   it('Normal in set_hl #25474', function()
@@ -2420,10 +2759,8 @@ describe('highlight namespaces', function()
 end)
 
 describe('synIDattr()', function()
-  local screen
   before_each(function()
     clear()
-    screen = Screen.new(50, 7)
     command('highlight Normal ctermfg=252 guifg=#ff0000 guibg=Black')
     -- Salmon #fa8072 Maroon #800000
     command(
@@ -2448,7 +2785,7 @@ describe('synIDattr()', function()
   end)
 
   it('returns gui-color if RGB-capable UI is attached', function()
-    screen:attach({ rgb = true })
+    local _ = Screen.new(50, 7, { rgb = true })
     eq('#ff0000', eval('synIDattr(hlID("Normal"),  "fg")'))
     eq('Black', eval('synIDattr(hlID("Normal"),  "bg")'))
     eq('Salmon', eval('synIDattr(hlID("Keyword"), "fg")'))
@@ -2456,15 +2793,15 @@ describe('synIDattr()', function()
   end)
 
   it('returns #RRGGBB value for fg#/bg#/sp#', function()
-    screen:attach({ rgb = true })
+    local _ = Screen.new(50, 7, { rgb = true })
     eq('#ff0000', eval('synIDattr(hlID("Normal"),  "fg#")'))
     eq('#000000', eval('synIDattr(hlID("Normal"),  "bg#")'))
     eq('#fa8072', eval('synIDattr(hlID("Keyword"), "fg#")'))
     eq('#800000', eval('synIDattr(hlID("Keyword"), "sp#")'))
   end)
 
-  it('returns color number if non-GUI', function()
-    screen:attach({ rgb = false })
+  it('returns color number if non-RGB GUI', function()
+    local _ = Screen.new(50, 7, { rgb = false })
     eq('252', eval('synIDattr(hlID("Normal"), "fg")'))
     eq('79', eval('synIDattr(hlID("Keyword"), "fg")'))
   end)
@@ -2489,10 +2826,8 @@ describe('synIDattr()', function()
 end)
 
 describe('fg/bg special colors', function()
-  local screen
   before_each(function()
     clear()
-    screen = Screen.new(50, 7)
     command('highlight Normal ctermfg=145 ctermbg=16 guifg=#ff0000 guibg=Black')
     command('highlight Visual ctermfg=bg ctermbg=fg guifg=bg guibg=fg guisp=bg')
   end)
@@ -2511,7 +2846,7 @@ describe('fg/bg special colors', function()
   end)
 
   it('resolve to "Normal" values in RGB-capable UI', function()
-    screen:attach({ rgb = true })
+    local _ = Screen.new(50, 7, { rgb = true })
     eq('bg', eval('synIDattr(hlID("Visual"), "fg")'))
     eq(eval('synIDattr(hlID("Normal"), "bg#")'), eval('synIDattr(hlID("Visual"), "fg#")'))
     eq('fg', eval('synIDattr(hlID("Visual"), "bg")'))
@@ -2521,12 +2856,26 @@ describe('fg/bg special colors', function()
   end)
 
   it('resolve after the "Normal" group is modified', function()
-    screen:attach({ rgb = true })
+    local _ = Screen.new(50, 7, { rgb = true })
     local new_guibg = '#282c34'
     local new_guifg = '#abb2bf'
     command('highlight Normal guifg=' .. new_guifg .. ' guibg=' .. new_guibg)
     eq(new_guibg, eval('synIDattr(hlID("Visual"), "fg#")'))
     eq(new_guifg, eval('synIDattr(hlID("Visual"), "bg#")'))
     eq(new_guibg, eval('synIDattr(hlID("Visual"), "sp#")'))
+  end)
+
+  it('changed highlight is reflected in messages before redraw #17832', function()
+    local screen = Screen.new(50, 7, { rgb = true })
+    command('set termguicolors')
+    -- :echomsg in the same request, before the next redraw.
+    command('call nvim_set_hl(0, "MsgArea", {"fg": "Red"}) | echomsg "foo"')
+    screen:expect({
+      grid = [[
+        ^                                                  |
+        {1:~                                                 }|*5
+        {19:foo                                               }|
+      ]],
+    })
   end)
 end)

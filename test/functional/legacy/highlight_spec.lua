@@ -2,20 +2,21 @@ local t = require('test.testutil')
 local n = require('test.functional.testnvim')()
 local Screen = require('test.functional.ui.screen')
 
+local describe, it, before_each = t.describe, t.it, t.before_each
 local clear, feed = n.clear, n.feed
 local expect = n.expect
 local eq = t.eq
+local pcall_err = t.pcall_err
 local poke_eventloop = n.poke_eventloop
-local exc_exec = n.exc_exec
 local feed_command = n.feed_command
 local exec = n.exec
+local command = n.command
 
 before_each(clear)
 
 describe(':highlight', function()
   it('is working', function()
     local screen = Screen.new(35, 10)
-    screen:attach()
     -- Basic test if ":highlight" doesn't crash
     feed_command('set more')
     feed(':highlight<CR>')
@@ -30,8 +31,8 @@ describe(':highlight', function()
                                          |
       TermCursor     {2:xxx} {18:cterm=}reverse   |
                          {18:gui=}reverse     |
-      TermCursorNC   xxx cleared         |
       NonText        {1:xxx} {18:ctermfg=}12      |
+                         {18:gui=}bold        |
       {6:-- More --}^                         |
     ]])
     feed('q')
@@ -58,7 +59,10 @@ describe(':highlight', function()
     feed_command('hi clear')
     feed_command('hi Group3')
     feed('<cr>')
-    eq("Vim(highlight):E475: Invalid argument: cterm='asdf", exc_exec([[hi Crash cterm='asdf]]))
+    eq(
+      "Vim(highlight):E475: Invalid argument: cterm='asdf",
+      pcall_err(command, [[hi Crash cterm='asdf]])
+    )
     feed_command('redir END')
 
     -- Filter ctermfg and ctermbg, the numbers depend on the terminal
@@ -101,7 +105,6 @@ describe('Visual selection highlight', function()
   -- oldtest: Test_visual_sbr()
   it("when 'showbreak' is set", function()
     local screen = Screen.new(60, 6)
-    screen:attach()
     exec([[
       set showbreak=>
       call setline(1, 'Lorem ipsum dolor sit amet, consetetur sadipscing elitr, sed diam nonumy eirmod tempor invidunt ut labore et dolore magna aliquyam erat, sed diam voluptua. At vero eos et accusam et justo duo dolores et ea rebum. Stet clita kasd gubergren, no sea takimata sanctus est Lorem ipsum dolor sit amet.')

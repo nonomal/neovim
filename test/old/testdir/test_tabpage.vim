@@ -688,6 +688,7 @@ func Test_tabs()
 endfunc
 
 func Test_tabpage_cmdheight()
+  CheckScreendump
   CheckRunVimInTerminal
   call writefile([
         \ 'set laststatus=2',
@@ -710,6 +711,7 @@ endfunc
 
 " Test for closing the tab page from a command window
 func Test_tabpage_close_cmdwin()
+  throw 'Skipped: Nvim supports cmdwin freedom #40312'
   tabnew
   call feedkeys("q/:tabclose\<CR>\<Esc>", 'xt')
   call assert_equal(2, tabpagenr('$'))
@@ -943,6 +945,23 @@ func Test_lastused_tabpage()
   tabonly!
 endfunc
 
+" Closing a tab page must keep the last used tab page when it is another one.
+func Test_lastused_tabpage_close()
+  tabonly!
+  tabnew
+  tabnew
+  tabfirst
+  tablast
+  call assert_equal(1, tabpagenr('#'))
+
+  tabclose
+  call assert_equal(1, tabpagenr('#'))
+  call feedkeys("g\<Tab>", "xt")
+  call assert_equal(1, tabpagenr())
+
+  tabonly!
+endfunc
+
 " Test for tabpage allocation failure
 func Test_tabpage_alloc_failure()
   CheckFunction test_alloc_fail
@@ -965,6 +984,64 @@ func Test_tabpage_alloc_failure()
   call assert_fails('tab split', 'E342:')
   call assert_equal(2, winnr('$'))
   call assert_equal(1, tabpagenr('$'))
+endfunc
+
+func Test_tabpage_tabclose()
+  " Default behaviour, move to the right.
+  call s:reconstruct_tabpage_for_test(6)
+  norm! 4gt
+  setl tcl=
+  tabclose
+  call assert_equal("n3", bufname())
+
+  " Move to the left.
+  call s:reconstruct_tabpage_for_test(6)
+  norm! 4gt
+  setl tcl=left
+  tabclose
+  call assert_equal("n1", bufname())
+
+  " Move to the last used tab page.
+  call s:reconstruct_tabpage_for_test(6)
+  norm! 5gt
+  norm! 2gt
+  setl tcl=uselast
+  tabclose
+  call assert_equal("n3", bufname())
+
+  " Same, but the last used tab page is invalid. Move to the right.
+  call s:reconstruct_tabpage_for_test(6)
+  norm! 5gt
+  norm! 3gt
+  setl tcl=uselast
+  tabclose 5
+  tabclose!
+  call assert_equal("n2", bufname())
+
+  " Same, but the last used tab page is invalid. Move to the left.
+  call s:reconstruct_tabpage_for_test(6)
+  norm! 5gt
+  norm! 3gt
+  setl tcl=uselast,left
+  tabclose 5
+  tabclose!
+  call assert_equal("n0", bufname())
+
+  " Move left when moving right is not possible.
+  call s:reconstruct_tabpage_for_test(6)
+  setl tcl=
+  norm! 6gt
+  tabclose
+  call assert_equal("n3", bufname())
+
+  " Move right when moving left is not possible.
+  call s:reconstruct_tabpage_for_test(6)
+  setl tcl=left
+  norm! 1gt
+  tabclose
+  call assert_equal("n0", bufname())
+
+  setl tcl&
 endfunc
 
 " this was giving ml_get errors

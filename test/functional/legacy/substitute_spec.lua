@@ -6,6 +6,7 @@ local t = require('test.testutil')
 local n = require('test.functional.testnvim')()
 local Screen = require('test.functional.ui.screen')
 
+local describe, it, before_each = t.describe, t.it, t.before_each
 local feed, insert = n.feed, n.insert
 local exec = n.exec
 local clear, feed_command, expect = n.clear, n.feed_command, n.expect
@@ -211,7 +212,6 @@ describe(':substitute', function()
 
   it('first char is highlighted with confirmation dialog and empty match', function()
     local screen = Screen.new(60, 8)
-    screen:attach()
     exec([[
       set nohlsearch noincsearch
       call setline(1, ['one', 'two', 'three'])
@@ -221,8 +221,10 @@ describe(':substitute', function()
       {2:o}ne                                                         |
       two                                                         |
       three                                                       |
-      {1:~                                                           }|*4
-      {6:replace with     (y/n/a/q/l/^E/^Y)?}^                         |
+      {1:~                                                           }|*2
+      {3:                                                            }|
+      {6:replace with    ? (y)es/(n)o/(a)ll/(q)uit/(l)ast/scroll up(^}|
+      {6:E)/down(^Y)}^                                                 |
     ]])
   end)
 end)

@@ -1,6 +1,8 @@
 local n = require('test.functional.testnvim')()
+local t = require('test.testutil')
 local Screen = require('test.functional.ui.screen')
 
+local describe, it, before_each = t.describe, t.it, t.before_each
 local clear = n.clear
 local exec = n.exec
 local feed = n.feed
@@ -12,7 +14,15 @@ describe('statusline', function()
 
   before_each(function()
     screen = Screen.new(50, 7)
-    screen:attach()
+    screen:add_extra_attr_ids({
+      [100] = {
+        background = Screen.colors.Red,
+        foreground = Screen.colors.Gray100,
+        reverse = true,
+        bold = true,
+      },
+      [101] = { foreground = Screen.colors.Blue, reverse = true, bold = true },
+    })
   end)
 
   it('is updated in cmdline mode when using window-local statusline vim-patch:8.2.2737', function()
@@ -52,7 +62,7 @@ describe('statusline', function()
     screen:expect([[
       ^                                                  |
       {1:~                                                 }|*4
-      {9:<F}{18:GHI                                             }|
+      {100:<F}{101:GHI                                             }|
                                                         |
     ]])
   end)
@@ -125,5 +135,18 @@ describe('statusline', function()
       {3:[No Name] [+]                          1234       }|
       :                                                 |
     ]])
+  end)
+
+  -- oldtest: Test_statusline_showcmd_nop_map()
+  it('showcmdloc=statusline is redrawn with timeout and <Nop> mapping', function()
+    exec([[
+      set timeoutlen=500 showcmd showcmdloc=statusline laststatus=2
+      nnoremap <space> <nop>
+      nnoremap <space><space> <nop>
+    ]])
+    feed(' ')
+    screen:expect({ any = '<20>', timeout = 400 })
+    vim.uv.sleep(500)
+    screen:expect({ none = '<20>', timeout = 400 })
   end)
 end)

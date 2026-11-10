@@ -2,8 +2,10 @@ local t = require('test.testutil')
 local n = require('test.functional.testnvim')()
 local Screen = require('test.functional.ui.screen')
 
+local describe, it, before_each, pending = t.describe, t.it, t.before_each, t.pending
 local clear = n.clear
 local connect = n.connect
+local get_session = n.get_session
 local eq = t.eq
 local fn = n.fn
 local is_os = t.is_os
@@ -63,6 +65,26 @@ describe('has()', function()
     end
   end)
 
+  it('"terminfo"', function()
+    local version = n.exec_capture('verbose version')
+    local compilation_string = version:match('Compilation: (.*)')
+    -- zig builds currently show only TODO for the compilation string
+    if not compilation_string or compilation_string:match('TODO') then
+      pending('no compilation string present')
+    end
+    -- Looks like "HAVE_UNIBILIUM ", "HAVE_UNIBILIUM=1", "HAVE_UNIBILIUM off", ….
+    -- Capture group returns the "1"/"off"/….
+    local build_flag =
+      vim.trim((compilation_string:match('HAVE_UNIBILIUM([^-]+)') or 'missing'):lower())
+    local is_enabled = not (
+      build_flag == 'missing'
+      or build_flag == 'false'
+      or build_flag == '0'
+      or build_flag == 'off'
+    )
+    eq(is_enabled and 1 or 0, fn.has('terminfo'))
+  end)
+
   it('"wsl"', function()
     local is_wsl = vim.uv.os_uname()['release']:lower():match('microsoft') and true or false
     if is_wsl then
@@ -74,12 +96,12 @@ describe('has()', function()
 
   it('"gui_running"', function()
     eq(0, fn.has('gui_running'))
-    local tui = Screen.new(50, 15)
+    local tui_session = get_session()
     local gui_session = connect(fn.serverstart())
-    local gui = Screen.new(50, 15)
     eq(0, fn.has('gui_running'))
-    tui:attach({ ext_linegrid = true, rgb = true, stdin_tty = true, stdout_tty = true })
-    gui:attach({ ext_multigrid = true, rgb = true }, gui_session)
+    local tui = Screen.new(50, 5, { rgb = true, stdin_tty = true, stdout_tty = true }, tui_session)
+    eq(0, fn.has('gui_running'))
+    local gui = Screen.new(50, 15, { ext_multigrid = true, rgb = true }, gui_session)
     eq(1, fn.has('gui_running'))
     tui:detach()
     eq(1, fn.has('gui_running'))
@@ -91,5 +113,40 @@ describe('has()', function()
     fn.system({ nvim_prog, '-es', '+73cquit' })
     fn.has('python3') -- use a call whose implementation shells out
     eq(73, fn.eval('v:shell_error'))
+  end)
+
+  it('"patch[0-9]\\+"', function()
+    eq(1, fn.has('patch0'))
+    eq(1, fn.has('patch1'))
+  end)
+
+  it('"patch-x.y.z"', function()
+    -- versions older than current v:version always succeed
+    -- unless minor version has 2+ digits
+    eq(1, fn.has('patch-7.4.0'))
+    eq(0, fn.has('patch-7.40.0'))
+    eq(1, fn.has('patch-8.0.0'))
+    eq(0, fn.has('patch-8.00.0'))
+
+    eq(1, fn.has('patch-8.1.0'))
+    eq(1, fn.has('patch-8.1.1'))
+    eq(1, fn.has('patch-8.1.0001'))
+    eq(1, fn.has('patch-8.1.1939'))
+    eq(1, fn.has('patch-8.1.2424'))
+
+    eq(1, fn.has('patch-8.2.0'))
+    eq(1, fn.has('patch-8.2.1'))
+    eq(1, fn.has('patch-8.2.2999'))
+    eq(1, fn.has('patch-8.2.5171'))
+
+    eq(1, fn.has('patch-9.0.1'))
+    eq(1, fn.has('patch-9.0.998'))
+    eq(1, fn.has('patch-9.0.2190'))
+    eq(0, fn.has('patch-9.0.9999'))
+
+    eq(1, fn.has('patch-9.1.0'))
+    eq(1, fn.has('patch-9.1.1'))
+    eq(1, fn.has('patch-9.1.690'))
+    eq(1, fn.has('patch-9.1.1934'))
   end)
 end)

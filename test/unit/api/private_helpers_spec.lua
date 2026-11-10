@@ -1,5 +1,6 @@
 local t = require('test.unit.testutil')
-local itp = t.gen_itp(it)
+local describe = t.describe
+local itp = t.gen_itp(t.it)
 local t_eval = require('test.unit.eval.testutil')
 local api_t = require('test.unit.api.testutil')
 
@@ -18,7 +19,7 @@ local type_key = api_t.type_key
 local obj2lua = api_t.obj2lua
 local func_type = api_t.func_type
 
-local api = cimport('./src/nvim/api/private/t.h', './src/nvim/api/private/converter.h')
+local api = cimport('./src/nvim/api/private/helpers.h', './src/nvim/api/private/converter.h')
 
 describe('vim_to_object', function()
   local vim_to_object = function(l)
@@ -43,9 +44,9 @@ describe('vim_to_object', function()
   simple_test('converts empty string', '')
   simple_test('converts non-empty string', 'foobar')
   simple_test('converts integer 10', { [type_key] = int_type, value = 10 })
-  simple_test('converts empty dictionary', {})
-  simple_test('converts dictionary with scalar values', { test = 10, test2 = true, test3 = 'test' })
-  simple_test('converts dictionary with containers inside', { test = {}, test2 = { 1, 2 } })
+  simple_test('converts empty dict', {})
+  simple_test('converts dict with scalar values', { test = 10, test2 = true, test3 = 'test' })
+  simple_test('converts dict with containers inside', { test = {}, test2 = { 1, 2 } })
   simple_test('converts empty list', { [type_key] = list_type })
   simple_test('converts list with scalar values', { 1, 2, 'test', 'foo' })
   simple_test(

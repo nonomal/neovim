@@ -1,10 +1,17 @@
 local t = require('test.unit.testutil')
-local itp = t.gen_itp(it)
+local describe, before_each = t.describe, t.before_each
+local itp = t.gen_itp(t.it)
 
 local ffi = t.ffi
 local eq = t.eq
+local to_cstr = t.to_cstr
 
-local lib = t.cimport('./src/nvim/mbyte.h', './src/nvim/charset.h', './src/nvim/grid.h')
+local lib = t.cimport(
+  './src/nvim/mbyte.h',
+  './src/nvim/charset.h',
+  './src/nvim/grid.h',
+  './src/nvim/option_vars.h'
+)
 
 describe('mbyte', function()
   -- Convert from bytes to string
@@ -45,12 +52,21 @@ describe('mbyte', function()
     end)
   end
 
-  describe('utfc_ptr2schar_len', function()
+  describe('utfc_ptr2schar', function()
     local function test_seq(seq)
       local firstc = ffi.new('int[1]')
       local buf = ffi.new('char[32]')
-      lib.schar_get(buf, lib.utfc_ptr2schar_len(to_string(seq), #seq, firstc))
-      return { ffi.string(buf), firstc[0] }
+      lib.schar_get(buf, lib.unittest_schar_from_cluster(to_string(seq), firstc))
+      local str = ffi.string(buf)
+      if 1 > 2 then -- for debugging
+        local tbl = {}
+        for i = 1, #str do
+          table.insert(tbl, string.format('0x%02x', string.byte(str, i)))
+        end
+        print('{ ' .. table.concat(tbl, ', ') .. ' }')
+        io.stdout:flush()
+      end
+      return { str, firstc[0] }
     end
 
     local function byte(val)
@@ -63,7 +79,7 @@ describe('mbyte', function()
         eq(byte(c), test_seq { c })
       end
       for c = 128, 255 do
-        eq({ '', c }, test_seq { c })
+        eq({ '', -1 }, test_seq { c })
       end
     end)
 
@@ -74,11 +90,11 @@ describe('mbyte', function()
       eq(byte(0x7f), test_seq { 0x7f, 0x80 })
 
       -- No UTF-8 sequence
-      eq({ '', 0xc2 }, test_seq { 0xc2, 0x7f })
+      eq({ '', -1 }, test_seq { 0xc2, 0x7f })
       -- One UTF-8 character
       eq({ '\xc2\x80', 0x80 }, test_seq { 0xc2, 0x80 })
       -- No UTF-8 sequence
-      eq({ '', 0xc2 }, test_seq { 0xc2, 0xc0 })
+      eq({ '', -1 }, test_seq { 0xc2, 0xc0 })
     end)
 
     itp('3-byte sequences', function()
@@ -88,10 +104,12 @@ describe('mbyte', function()
       eq(byte(0x7f), test_seq { 0x7f, 0xc2, 0x80 })
 
       -- Combining character is U+0300
-      eq({ '\x7f\xcc\x80', 0x7f }, test_seq { 0x7f, 0xcc, 0x80 })
+      eq({ '\x29\xcc\x80', 0x29 }, test_seq { 0x29, 0xcc, 0x80 })
+      -- invalid start byte for combining
+      eq({ '\x7f', 0x7f }, test_seq { 0x7f, 0xcc, 0x80 })
 
       -- No UTF-8 sequence
-      eq({ '', 0xc2 }, test_seq { 0xc2, 0x7f, 0xcc })
+      eq({ '', -1 }, test_seq { 0xc2, 0x7f, 0xcc })
       -- Incomplete combining character
       eq({ '\xc2\x80', 0x80 }, test_seq { 0xc2, 0x80, 0xcc })
 
@@ -102,18 +120,21 @@ describe('mbyte', function()
     itp('4-byte sequences', function()
       -- No following combining character
       eq(byte(0x7f), test_seq { 0x7f, 0x7f, 0xcc, 0x80 })
+      eq(byte(0x29), test_seq { 0x29, 0x29, 0xcc, 0x80 })
       -- No second UTF-8 character
       eq(byte(0x7f), test_seq { 0x7f, 0xc2, 0xcc, 0x80 })
 
       -- Combining character U+0300
-      eq({ '\x7f\xcc\x80', 0x7f }, test_seq { 0x7f, 0xcc, 0x80, 0xcc })
+      eq({ '\x29\xcc\x80', 0x29 }, test_seq { 0x29, 0xcc, 0x80, 0xcc })
 
       -- No UTF-8 sequence
-      eq({ '', 0xc2 }, test_seq { 0xc2, 0x7f, 0xcc, 0x80 })
+      eq({ '', -1 }, test_seq { 0xc2, 0x7f, 0xcc, 0x80 })
       -- No following UTF-8 character
       eq({ '\xc2\x80', 0x80 }, test_seq { 0xc2, 0x80, 0xcc, 0xcc })
       -- Combining character U+0301
-      eq({ '\xc2\x80\xcc\x81', 0x80 }, test_seq { 0xc2, 0x80, 0xcc, 0x81 })
+      eq({ '\xc2\xbc\xcc\x81', 0xbc }, test_seq { 0xc2, 0xbc, 0xcc, 0x81 })
+      -- U+0080 : not a valid start char
+      eq({ '\xc2\x80', 0x80 }, test_seq { 0xc2, 0x80, 0xcc, 0x81 })
 
       -- One UTF-8 character
       eq({ '\xf4\x80\x80\x80', 0x100000 }, test_seq { 0xf4, 0x80, 0x80, 0x80 })
@@ -126,36 +147,36 @@ describe('mbyte', function()
       eq(byte(0x7f), test_seq { 0x7f, 0xc2, 0xcc, 0x80, 0x80 })
 
       -- Combining character U+0300
-      eq({ '\x7f\xcc\x80', 0x7f }, test_seq { 0x7f, 0xcc, 0x80, 0xcc, 0x00 })
+      eq({ '\x29\xcc\x80', 0x29 }, test_seq { 0x29, 0xcc, 0x80, 0xcc, 0x00 })
 
       -- Combining characters U+0300 and U+0301
-      eq({ '\x7f\xcc\x80\xcc\x81', 0x7f }, test_seq { 0x7f, 0xcc, 0x80, 0xcc, 0x81 })
+      eq({ '\x29\xcc\x80\xcc\x81', 0x29 }, test_seq { 0x29, 0xcc, 0x80, 0xcc, 0x81 })
       -- Combining characters U+0300, U+0301, U+0302
       eq(
-        { '\x7f\xcc\x80\xcc\x81\xcc\x82', 0x7f },
-        test_seq { 0x7f, 0xcc, 0x80, 0xcc, 0x81, 0xcc, 0x82 }
+        { '\x29\xcc\x80\xcc\x81\xcc\x82', 0x29 },
+        test_seq { 0x29, 0xcc, 0x80, 0xcc, 0x81, 0xcc, 0x82 }
       )
       -- Combining characters U+0300, U+0301, U+0302, U+0303
       eq(
-        { '\x7f\xcc\x80\xcc\x81\xcc\x82\xcc\x83', 0x7f },
-        test_seq { 0x7f, 0xcc, 0x80, 0xcc, 0x81, 0xcc, 0x82, 0xcc, 0x83 }
+        { '\x29\xcc\x80\xcc\x81\xcc\x82\xcc\x83', 0x29 },
+        test_seq { 0x29, 0xcc, 0x80, 0xcc, 0x81, 0xcc, 0x82, 0xcc, 0x83 }
       )
       -- Combining characters U+0300, U+0301, U+0302, U+0303, U+0304
       eq(
-        { '\x7f\xcc\x80\xcc\x81\xcc\x82\xcc\x83\xcc\x84', 0x7f },
-        test_seq { 0x7f, 0xcc, 0x80, 0xcc, 0x81, 0xcc, 0x82, 0xcc, 0x83, 0xcc, 0x84 }
+        { '\x29\xcc\x80\xcc\x81\xcc\x82\xcc\x83\xcc\x84', 0x29 },
+        test_seq { 0x29, 0xcc, 0x80, 0xcc, 0x81, 0xcc, 0x82, 0xcc, 0x83, 0xcc, 0x84 }
       )
       -- Combining characters U+0300, U+0301, U+0302, U+0303, U+0304, U+0305
       eq(
-        { '\x7f\xcc\x80\xcc\x81\xcc\x82\xcc\x83\xcc\x84\xcc\x85', 0x7f },
-        test_seq { 0x7f, 0xcc, 0x80, 0xcc, 0x81, 0xcc, 0x82, 0xcc, 0x83, 0xcc, 0x84, 0xcc, 0x85 }
+        { '\x29\xcc\x80\xcc\x81\xcc\x82\xcc\x83\xcc\x84\xcc\x85', 0x29 },
+        test_seq { 0x29, 0xcc, 0x80, 0xcc, 0x81, 0xcc, 0x82, 0xcc, 0x83, 0xcc, 0x84, 0xcc, 0x85 }
       )
 
       -- Combining characters U+0300, U+0301, U+0302, U+0303, U+0304, U+0305, U+0306
       eq(
-        { '\x7f\xcc\x80\xcc\x81\xcc\x82\xcc\x83\xcc\x84\xcc\x85\xcc\x86', 0x7f },
+        { '\x29\xcc\x80\xcc\x81\xcc\x82\xcc\x83\xcc\x84\xcc\x85\xcc\x86', 0x29 },
         test_seq {
-          0x7f,
+          0x29,
           0xcc,
           0x80,
           0xcc,
@@ -175,18 +196,18 @@ describe('mbyte', function()
 
       -- Only three following combining characters U+0300, U+0301, U+0302
       eq(
-        { '\x7f\xcc\x80\xcc\x81\xcc\x82', 0x7f },
-        test_seq { 0x7f, 0xcc, 0x80, 0xcc, 0x81, 0xcc, 0x82, 0xc2, 0x80, 0xcc, 0x84, 0xcc, 0x85 }
+        { '\x29\xcc\x80\xcc\x81\xcc\x82', 0x29 },
+        test_seq { 0x29, 0xcc, 0x80, 0xcc, 0x81, 0xcc, 0x82, 0xc2, 0x80, 0xcc, 0x84, 0xcc, 0x85 }
       )
 
       -- No UTF-8 sequence
-      eq({ '', 0xc2 }, test_seq { 0xc2, 0x7f, 0xcc, 0x80, 0x80 })
+      eq({ '', -1 }, test_seq { 0xc2, 0x7f, 0xcc, 0x80, 0x80 })
       -- No following UTF-8 character
-      eq({ '\xc2\x80', 0x80 }, test_seq { 0xc2, 0x80, 0xcc, 0xcc, 0x80 })
+      eq({ '\xc2\xbc', 0xbc }, test_seq { 0xc2, 0xbc, 0xcc, 0xcc, 0x80 })
       -- Combining character U+0301
-      eq({ '\xc2\x80\xcc\x81', 0x80 }, test_seq { 0xc2, 0x80, 0xcc, 0x81, 0x7f })
+      eq({ '\xc2\xbc\xcc\x81', 0xbc }, test_seq { 0xc2, 0xbc, 0xcc, 0x81, 0x7f })
       -- Combining character U+0301
-      eq({ '\xc2\x80\xcc\x81', 0x80 }, test_seq { 0xc2, 0x80, 0xcc, 0x81, 0xcc })
+      eq({ '\xc2\xbc\xcc\x81', 0xbc }, test_seq { 0xc2, 0xbc, 0xcc, 0x81, 0xcc })
 
       -- One UTF-8 character
       eq({ '\xf4\x80\x80\x80', 0x100000 }, test_seq { 0xf4, 0x80, 0x80, 0x80, 0x7f })
@@ -205,8 +226,6 @@ describe('mbyte', function()
   end)
 
   describe('utf_cp_bounds_len', function()
-    local to_cstr = t.to_cstr
-
     local tests = {
       {
         name = 'for valid string',
@@ -271,6 +290,111 @@ describe('mbyte', function()
         table.insert(e_offsets, result.end_off)
       end
       eq(expected_offsets, { b = b_offsets, e = e_offsets })
+    end)
+  end)
+
+  describe('utf_ptr2cells', function()
+    local function check(str, expected)
+      -- TODO: rework a better test structure for the new world
+      -- of bounded and unbounded CharInfo iterators
+      eq(expected, lib.utf_ptr2cells(to_cstr(str)))
+      -- this a bit of a cop-out (string not cluster), but see above
+      eq(expected, lib.mb_string2cells_len(to_cstr(str), #str))
+    end
+
+    itp('gives a spacing mark its own cell', function()
+      check('ำ', 1)
+      check('ท', 1)
+      check('ทำ', 2)
+      check('का', 2)
+    end)
+
+    itp('gives the halfwidth katakana sound marks their own cell', function()
+      check('ｶ', 1)
+      check('ｶﾞ', 2)
+      check('ﾊﾟ', 2) -- U+FF9F, the semi-voiced mark
+    end)
+
+    itp('does not widen clusters of non-spacing marks', function()
+      check('ท่', 1)
+      check('é', 1) -- decomposed, so the acute joins the cluster
+    end)
+
+    itp('clamps to the maximum cells per cluster', function()
+      check('ทำำ', 2)
+    end)
+
+    itp('leaves double-width and illegal bytes alone', function()
+      check('漢', 2)
+      eq(4, lib.utf_ptr2cells(to_cstr('\xff'))) -- illegal byte, shown as <ff>
+    end)
+  end)
+
+  itp('utf_head_off', function()
+    local function check(str, expected_glyphs)
+      local len = #str
+      local cstr = to_cstr(str)
+      local breaks = { 0 } -- SOT
+      local pos = 0
+      local mb_glyphs = {}
+      while pos < len do
+        local clen = lib.utfc_ptr2len(cstr + pos)
+        if clen == 0 then
+          eq(0, string.byte(str, pos + 1)) -- only NUL bytes can has length zery
+          clen = 1 -- but skip it, otherwise we get stuck
+        end
+        if clen > 1 then
+          table.insert(mb_glyphs, string.sub(str, pos + 1, pos + clen))
+        end
+        pos = pos + clen
+        table.insert(breaks, pos)
+      end
+      eq(len, breaks[#breaks]) -- include EOT as break
+      -- we could also send in breaks, but this is more human readable
+      eq(expected_glyphs, mb_glyphs)
+
+      for i = 1, #breaks - 1 do
+        local start, next = breaks[i], breaks[i + 1]
+
+        for p = start, next - 1 do
+          eq(p - start, lib.utf_head_off(cstr, cstr + p))
+        end
+      end
+      eq(0, lib.utf_head_off(cstr, cstr + len)) -- NUL byte is safe
+    end
+    -- stylua doesn't like ZWJ chars..
+    -- stylua: ignore start
+    check('hej och hå 🧑‍🌾!', { 'å', '🧑‍🌾' })
+
+    -- emoji (various kinds of combinations, use g8 to see them)
+    check("🏳️‍⚧️🧑‍🌾❤️😂🏴‍☠️", {"🏳️‍⚧️", "🧑‍🌾", "❤️", "😂", "🏴‍☠️"})
+    check('🏳️‍⚧️xy🧑‍🌾\r❤️😂å🏴‍☠️', { '🏳️‍⚧️', '🧑‍🌾', '❤️', '😂', 'å', '🏴‍☠️', '' })
+    check('🏳️‍⚧️\000🧑‍🌾\000❤️\000😂\000å\000🏴‍☠️\000', { '🏳️‍⚧️', '🧑‍🌾', '❤️', '😂', 'å', '🏴‍☠️', '' })
+    check('\195🏳️‍⚧️\198🧑‍🌾\165❤️\168\195😂\255🏴‍☠️\129\165', { '🏳️‍⚧️', '🧑‍🌾', '❤️', '😂', '🏴‍☠️', '' })
+
+    check('🇦🅱️ 🇦🇽 🇦🇨🇦 🇲🇽🇹🇱',{'🇦', '🅱️', '🇦🇽', '🇦🇨', '🇦', '🇲🇽', '🇹🇱'})
+    check('🏴󠁧󠁢󠁳󠁣󠁴󠁿🏴󠁧󠁢󠁷󠁬󠁳󠁿', {'🏴󠁧󠁢󠁳󠁣󠁴󠁿', '🏴󠁧󠁢󠁷󠁬󠁳󠁿'})
+
+    check('å\165ü\195aëq\168β\000\169本\255', {'å', 'ü', 'ë', 'β', '本'})
+
+    lib.p_arshape = true -- default
+    check('سلام', { 'س', 'لا', 'م' })
+    lib.p_arshape = false
+    check('سلام', { 'س', 'ل', 'ا', 'م' })
+
+    check('L̓̉̑̒̌̚ơ̗̌̒̄̀ŕ̈̈̎̐̕è̇̅̄̄̐m̖̟̟̅̄̚', {'L̓̉̑̒̌̚', 'ơ̗̌̒̄̀', 'ŕ̈̈̎̐̕', 'è̇̅̄̄̐', 'm̖̟̟̅̄̚'})
+    -- stylua: ignore end
+  end)
+
+  describe('utf_fold', function()
+    itp('does not crash with surrogates #30527', function()
+      eq(0xddfb, lib.utf_fold(0xddfb)) -- low surrogate, invalid as a character
+      eq(0xd800, lib.utf_fold(0xd800)) -- high surrogate, invalid as a character
+    end)
+
+    itp("doesn't crash on invalid codepoints", function()
+      eq(9000000, lib.utf_fold(9000000))
+      eq(0, lib.utf_fold(0))
     end)
   end)
 end)

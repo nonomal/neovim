@@ -1,6 +1,8 @@
 local n = require('test.functional.testnvim')()
+local t = require('test.testutil')
 local Screen = require('test.functional.ui.screen')
 
+local describe, it, before_each = t.describe, t.it, t.before_each
 local clear = n.clear
 local command = n.command
 local feed = n.feed
@@ -11,7 +13,6 @@ describe('update_menu notification', function()
   before_each(function()
     clear()
     screen = Screen.new()
-    screen:attach()
   end)
 
   local function expect_sent(expected)

@@ -1,3 +1,5 @@
+--- @class (private) vim.InspectModule
+--- @overload fun(root: any, options?: vim.inspect.Opts): string
 local inspect = {
   _VERSION = 'inspect.lua 3.1.0',
   _URL = 'http://github.com/kikito/inspect.lua',
@@ -46,12 +48,65 @@ local char = string.char
 local gsub = string.gsub
 local fmt = string.format
 
+local sbavailable, stringbuffer = pcall(require, 'string.buffer')
+local buffnew
+local puts
+local render
+
+if sbavailable then
+  buffnew = stringbuffer.new
+  --- @param buf string.buffer
+  --- @param str string
+  puts = function(buf, str)
+    buf:put(str)
+  end
+  --- @param buf string.buffer
+  render = function(buf)
+    return buf:get()
+  end
+else
+  buffnew = function()
+    return { n = 0 }
+  end
+  --- @param buf { [integer]: string, n: integer }
+  --- @param str string
+  puts = function(buf, str)
+    buf.n = buf.n + 1
+    buf[buf.n] = str
+  end
+  --- @param buf string[]
+  render = function(buf)
+    return table.concat(buf)
+  end
+end
+
+-- The constructor, writer and renderer always use the same buffer backend.
+--- @cast puts fun(buf: string.buffer|{ [integer]: string, n: integer }, str: string)
+--- @cast render fun(buf: string.buffer|{ [integer]: string, n: integer }): string
+
+local _rawget
+if rawget then
+  _rawget = rawget
+else
+  --- @generic K, V
+  --- @param t table<K,V>
+  --- @param k K
+  --- @return V?
+  _rawget = function(t, k)
+    return t[k]
+  end
+end
+
+--- @generic K, V
+--- @param t table<K,V>
+--- @return (fun(t: table<K,V>, key?: K): K?, V?), table<K,V>, nil
 local function rawpairs(t)
   return next, t, nil
 end
 
--- Apostrophizes the string if it has quotes, but not aphostrophes
--- Otherwise, it returns a regular quoted string
+--- Apostrophizes the string if it has quotes, but not aphostrophes
+--- Otherwise, it returns a regular quoted string
+--- @param str string
 local function smartQuote(str)
   if match(str, '"') and not match(str, "'") then
     return "'" .. str .. "'"
@@ -79,6 +134,7 @@ for i = 0, 31 do
   end
 end
 
+--- @param str string
 local function escape(str)
   return (
     gsub(
@@ -89,32 +145,16 @@ local function escape(str)
   )
 end
 
--- List of lua keywords
-local luaKeywords = {
-  ['and'] = true,
-  ['break'] = true,
-  ['do'] = true,
-  ['else'] = true,
-  ['elseif'] = true,
-  ['end'] = true,
-  ['false'] = true,
-  ['for'] = true,
-  ['function'] = true,
-  ['goto'] = true,
-  ['if'] = true,
-  ['in'] = true,
-  ['local'] = true,
-  ['nil'] = true,
-  ['not'] = true,
-  ['or'] = true,
-  ['repeat'] = true,
-  ['return'] = true,
-  ['then'] = true,
-  ['true'] = true,
-  ['until'] = true,
-  ['while'] = true,
-}
+local luaKeywords = {}
+for k in
+  ([[ and break do else elseif end false for function goto if
+             in local nil not or repeat return then true until while
+]]):gmatch('%w+')
+do
+  luaKeywords[k] = true
+end
 
+--- @param str any
 local function isIdentifier(str)
   return type(str) == 'string'
     -- identifier must start with a letter and underscore, and be followed by letters, numbers, and underscores
@@ -124,6 +164,9 @@ local function isIdentifier(str)
 end
 
 local flr = math.floor
+
+--- @param k any
+--- @param sequenceLength integer
 local function isSequenceKey(k, sequenceLength)
   return type(k) == 'number' and flr(k) == k and 1 <= k and k <= sequenceLength
 end
@@ -138,6 +181,8 @@ local defaultTypeOrders = {
   ['thread'] = 7,
 }
 
+--- @param a any
+--- @param b any
 local function sortKeys(a, b)
   local ta, tb = type(a), type(b)
 
@@ -154,9 +199,12 @@ local function sortKeys(a, b)
   return dta == dtb and ta < tb or dta < dtb
 end
 
+--- @generic K
+--- @param t table<K,any>
+--- @return K[], integer, integer
 local function getKeys(t)
   local seqLen = 1
-  while rawget(t, seqLen) ~= nil do
+  while _rawget(t, seqLen) ~= nil do
     seqLen = seqLen + 1
   end
   seqLen = seqLen - 1
@@ -172,21 +220,31 @@ local function getKeys(t)
   return keys, keysLen, seqLen
 end
 
-local function countCycles(x, cycles)
+--- @param x any
+--- @param cycles table<table,integer>
+--- @param depth number
+local function countCycles(x, cycles, depth)
   if type(x) == 'table' then
     if cycles[x] then
       cycles[x] = cycles[x] + 1
     else
       cycles[x] = 1
-      for k, v in rawpairs(x) do
-        countCycles(k, cycles)
-        countCycles(v, cycles)
+      if depth > 0 then
+        for k, v in rawpairs(x) do
+          countCycles(k, cycles, depth - 1)
+          countCycles(v, cycles, depth - 1)
+        end
+        countCycles(getmetatable(x), cycles, depth - 1)
       end
-      countCycles(getmetatable(x), cycles)
     end
   end
 end
 
+--- @generic T
+--- @param path T[]
+--- @param a T
+--- @param b? T
+--- @return T[]
 local function makePath(path, a, b)
   local newPath = {}
   local len = #path
@@ -200,6 +258,10 @@ local function makePath(path, a, b)
   return newPath
 end
 
+--- @param process fun(item: any, path: any[]): any
+--- @param item any
+--- @param path any[]
+--- @param visited table<any,any>
 local function processRecursive(process, item, path, visited)
   if item == nil then
     return nil
@@ -233,19 +295,25 @@ local function processRecursive(process, item, path, visited)
   return processed
 end
 
-local function puts(buf, str)
-  buf.n = buf.n + 1
-  buf[buf.n] = str
-end
-
+--- @class (private) vim.inspect.Inspector
+--- @field buf string.buffer|{ [integer]: string, n: integer }
+--- @field ids table<any,integer>
+--- @field cycles table<table,integer>
+--- @field depth number
+--- @field level integer
+--- @field newline string
+--- @field indent string
 local Inspector = {}
 
 local Inspector_mt = { __index = Inspector }
 
+--- @param inspector vim.inspect.Inspector
 local function tabify(inspector)
   puts(inspector.buf, inspector.newline .. rep(inspector.indent, inspector.level))
 end
 
+--- @nodoc
+--- @param v any
 function Inspector:getId(v)
   local id = self.ids[v]
   local ids = self.ids
@@ -257,6 +325,8 @@ function Inspector:getId(v)
   return tostring(id)
 end
 
+--- @nodoc
+--- @param v any
 function Inspector:putValue(v)
   local buf = self.buf
   local tv = type(v)
@@ -340,6 +410,31 @@ function Inspector:putValue(v)
   end
 end
 
+--- @inlinedoc
+--- @class vim.inspect.Opts
+---
+--- Maximum table nesting depth. Deeper tables are shown as `{...}`.
+--- (default: unlimited)
+--- @field depth? integer
+---
+--- String used for line breaks.
+--- (default: `"\n"`)
+--- @field newline? string
+---
+--- String repeated for each level of indentation.
+--- (default: `"  "`)
+--- @field indent? string
+---
+--- Transforms values, keys, and metatables before formatting. Return a replacement value,
+--- or `nil` to omit a table entry. {path} lists the keys leading to {item}, with
+--- `vim.inspect.KEY` appended for keys or `vim.inspect.METATABLE` for metatables.
+--- The root has an empty path.
+--- @field process? fun(item: any, path: any[]): any
+
+--- @nodoc
+--- @param root any
+--- @param options? vim.inspect.Opts
+--- @return string
 function inspect.inspect(root, options)
   options = options or {}
 
@@ -353,10 +448,10 @@ function inspect.inspect(root, options)
   end
 
   local cycles = {}
-  countCycles(root, cycles)
+  countCycles(root, cycles, depth)
 
   local inspector = setmetatable({
-    buf = { n = 0 },
+    buf = buffnew(),
     ids = {},
     cycles = cycles,
     depth = depth,
@@ -367,10 +462,18 @@ function inspect.inspect(root, options)
 
   inspector:putValue(root)
 
-  return table.concat(inspector.buf)
+  return render(inspector.buf)
 end
 
 setmetatable(inspect, {
+  --- Gets a human-readable representation of the given object.
+  ---
+  --- @see |vim.print()|
+  --- @see https://github.com/kikito/inspect.lua
+  --- @see https://github.com/mpeterv/vinspect
+  --- @param root any
+  --- @param options? vim.inspect.Opts
+  --- @return string
   __call = function(_, root, options)
     return inspect.inspect(root, options)
   end,

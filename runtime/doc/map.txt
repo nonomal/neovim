@@ -1,10 +1,11 @@
 *map.txt*       Nvim
 
 
-		  VIM REFERENCE MANUAL    by Bram Moolenaar
+		  VIM REFERENCE MANUAL	  by Bram Moolenaar
 
 
-Key mapping, abbreviations and user-defined commands.
+==============================================================================
+Key mapping, abbreviations and user-defined commands
 
 This subject is introduced in sections |05.3|, |24.7| and |40.1| of the user
 manual.
@@ -12,7 +13,7 @@ manual.
                                       Type |gO| to see the table of contents.
 
 ==============================================================================
-1. Key mapping				*key-mapping* *mapping* *macro*
+1. Key mapping				*keybind* *key-mapping* *mapping*
 
 Key mapping is used to change the meaning of typed keys.  The most common use
 is to define a sequence of commands for a function key.  Example: >
@@ -66,6 +67,8 @@ modes.
 			where the map command applies.  Disallow mapping of
 			{rhs}, to avoid nested and recursive mappings.  Often
 			used to redefine a command.
+			Note: Keys in {rhs} also won't trigger abbreviation,
+			with the exception of |i_CTRL-]| and |c_CTRL-]|.
 			Note: When <Plug> appears in the {rhs} this part is
 			always applied even if remapping is disallowed.
 
@@ -84,8 +87,10 @@ modes.
 			Remove the mapping of {lhs} for the modes where the
 			map command applies.  The mapping may remain defined
 			for other modes where it applies.
-			It also works when {lhs} matches the {rhs} of a
-			mapping. This is for when an abbreviation applied.
+			If no mapping with {lhs} exists, it also works when
+			{lhs} matches the {rhs} of a mapping (see
+			|vim.keymap.del()| to avoid that).  This is for
+			when an abbreviation applied.
 			Note: Trailing spaces are included in the {lhs}.
 			See |map-trailing-white|.
 
@@ -184,8 +189,7 @@ be effective in the current buffer only.  Example: >
 Then you can map ",w" to something else in another buffer: >
 	:map <buffer>  ,w  /[#&!]<CR>
 The local buffer mappings are used before the global ones.  See <nowait> below
-to make a short local mapping not taking effect when a longer global one
-exists.
+to make a short local mapping take effect when a longer global one exists.
 The "<buffer>" argument can also be used to clear mappings: >
 	:unmap <buffer> ,w
 	:mapclear <buffer>
@@ -292,7 +296,7 @@ Therefore the following is blocked for <expr> mappings:
 If you want the mapping to do any of these let the returned characters do
 that, or use a |<Cmd>| mapping instead.
 
-You can use getchar(), it consumes typeahead if there is any. E.g., if you
+You can use getchar(), it consumes typeahead if there is any.  E.g., if you
 have these mappings: >
   inoremap <expr> <C-L> nr2char(getchar())
   inoremap <expr> <C-L>x "foo"
@@ -324,9 +328,8 @@ be seen as a special key.
 
 						*<Cmd>* *:map-cmd*
 The <Cmd> pseudokey begins a "command mapping", which executes the command
-directly without changing modes.  Where you might use ":...<CR>" in the
-{rhs} of a mapping, you can instead use "<Cmd>...<CR>".
-Example: >
+directly without changing modes.  Where you might use ":…<CR>" in the {rhs} of
+a mapping, you can instead use "<Cmd>…<CR>". Example: >
 	noremap x <Cmd>echo mode(1)<CR>
 <
 This is more flexible than `:<C-U>` in Visual and Operator-pending mode, or
@@ -346,7 +349,7 @@ Note:
   |CmdlineEnter| and |CmdlineLeave| events. This helps performance.
 - For the same reason, |keycodes| like <C-R><C-W> are interpreted as plain,
   unmapped keys.
-- The command is not echo'ed, no need for <silent>.
+- The command is not echo'd, no need for <silent>.
 - The {rhs} is not subject to abbreviations nor to other mappings, even if the
   mapping is recursive.
 - In Visual mode you can use `line('v')` and `col('v')` to get one end of the
@@ -354,7 +357,8 @@ Note:
 
 							*E1255* *E1136*
 <Cmd> commands must terminate, that is, they must be followed by <CR> in the
-{rhs} of the mapping definition.  |Command-line| mode is never entered.
+{rhs} of the mapping definition.  |Command-line| mode is never entered.  To use
+a literal "<" in the {rhs}, use |<lt>|.
 
 
 1.3 MAPPING AND MODES					*:map-modes*
@@ -406,12 +410,11 @@ t[nore]map     |  -   |  -  |  -  |  -  |  -  |  -  | yes  |  -   |
 l[nore]map     |  -   | yes | yes |  -  |  -  |  -  |  -   | yes  |
 
 
-    COMMANDS				      MODES ~
-				       Normal  Visual+Select  Operator-pending ~
-:map   :noremap   :unmap   :mapclear	 yes	    yes		   yes
-:nmap  :nnoremap  :nunmap  :nmapclear	 yes	     -		    -
-:vmap  :vnoremap  :vunmap  :vmapclear	  -	    yes		    -
-:omap  :onoremap  :ounmap  :omapclear	  -	     -		   yes
+COMMANDS				Normal	Visual+Select	Op-pending ~
+:map   :noremap   :unmap   :mapclear	yes	yes		yes
+:nmap  :nnoremap  :nunmap  :nmapclear	yes	-		-
+:vmap  :vnoremap  :vunmap  :vmapclear	-	yes		-
+:omap  :onoremap  :ounmap  :omapclear	-	-		yes
 
 :nunmap can also be used outside of a monastery.
 						*mapmode-x* *mapmode-s*
@@ -422,21 +425,19 @@ NOTE: Mapping a printable character in Select mode may confuse the user.  It's
 better to explicitly use :xmap and :smap for printable characters.  Or use
 :sunmap after defining the mapping.
 
-    COMMANDS				      MODES ~
-					  Visual    Select ~
-:vmap  :vnoremap  :vunmap  :vmapclear	    yes      yes
-:xmap  :xnoremap  :xunmap  :xmapclear	    yes       -
-:smap  :snoremap  :sunmap  :smapclear	    -	     yes
+COMMANDS				Visual	Select ~
+:vmap  :vnoremap  :vunmap  :vmapclear	yes	yes
+:xmap  :xnoremap  :xunmap  :xmapclear	yes	-
+:smap  :snoremap  :sunmap  :smapclear	-	yes
 
 			*mapmode-ic* *mapmode-i* *mapmode-c* *mapmode-l*
 Some commands work both in Insert mode and Command-line mode, some not:
 
-    COMMANDS				      MODES ~
-					  Insert  Command-line	Lang-Arg ~
-:map!  :noremap!  :unmap!  :mapclear!	    yes	       yes	   -
-:imap  :inoremap  :iunmap  :imapclear	    yes		-	   -
-:cmap  :cnoremap  :cunmap  :cmapclear	     -	       yes	   -
-:lmap  :lnoremap  :lunmap  :lmapclear	    yes*       yes*	  yes*
+COMMANDS				Insert	Command-line	Lang-Arg ~
+:map!  :noremap!  :unmap!  :mapclear!	yes	yes		-
+:imap  :inoremap  :iunmap  :imapclear	yes	-		-
+:cmap  :cnoremap  :cunmap  :cmapclear	-	yes		-
+:lmap  :lnoremap  :lunmap  :lmapclear	yes*	yes*		yes*
 
 * If 'iminsert' is 1, see |language-mapping| below.
 
@@ -458,7 +459,8 @@ that operates on a function name in the current line: >
 	onoremap <silent> F :<C-U>normal! 0f(hviw<CR>
 The CTRL-U (<C-U>) is used to remove the range that Vim may insert.  The
 Normal mode commands find the first '(' character and select the first word
-before it.  That usually is the function name.
+(usually is the function name) before it.  The operator does not change the
+Visual marks |'<| |'>|. |gv|
 
 To enter a mapping for Normal and Visual mode, but not Operator-pending mode,
 first define it for all three modes, then unmap it for
@@ -483,7 +485,7 @@ it's just used here for this situation.
    The simplest way to load a set of related language mappings is by using the
 'keymap' option.  See |45.5|.
    In Insert mode and in Command-line mode the mappings can be disabled with
-the CTRL-^ command |i_CTRL-^| |c_CTRL-^|. These commands change the value of
+the CTRL-^ command |i_CTRL-^| |c_CTRL-^|.  These commands change the value of
 the 'iminsert' option.  When starting to enter a normal command line (not a
 search pattern) the mappings are disabled until a CTRL-^ is typed.  The state
 last used is remembered for Insert mode and Search patterns separately.  The
@@ -513,6 +515,8 @@ When listing mappings the characters in the first two columns are:
 	t	Terminal-Job
 
 Just before the {rhs} a special character can appear:
+
+	Char	Meaning ~
 	*	indicates that it is not remappable
 	&	indicates that only script-local mappings are remappable
 	@	indicates a buffer-local mapping
@@ -652,13 +656,14 @@ Upper and lowercase differences are ignored.
 
 							*map-comments*
 It is not possible to put a comment after these commands, because the `"`
-character is considered to be part of the {lhs} or {rhs}. However, one can
+character is considered to be part of the {lhs} or {rhs}.  However, one can
 use `|"`, since this starts a new, empty command with a comment.
 
 							*map_bar* *map-bar*
 Since the '|' character is used to separate a map command from the next
 command, you will have to do something special to include  a '|' in {rhs}.
 There are three methods:
+
    use	     works when			   example	~
    <Bar>     always			   :map _l :!ls <Bar> more^M
    \|	     'b' is not in 'cpoptions'	   :map _l :!ls \| more^M
@@ -729,7 +734,7 @@ Multiplying a count
 When you type a count before triggering a mapping, it's like the count was
 typed before the {lhs}.  For example, with this mapping: >
    :map <F4>  3w
-Typing 2<F4> will result in "23w". Thus not moving 2 * 3 words but 23 words.
+Typing 2<F4> will result in "23w".  Thus not moving 2 * 3 words but 23 words.
 If you want to multiply counts use the expression register: >
    :map <F4>  @='3w'<CR>
 The part between quotes is the expression being executed. |@=|
@@ -864,8 +869,8 @@ you must create a mapping that first sets the 'operatorfunc' option and then
 invoke the |g@| operator.  After the user types the {motion} command the
 specified function will be called.
 
-							*g@* *E774* *E775*
-g@{motion}		Call the function set by the 'operatorfunc' option.
+g@{motion}						*g@* *E774* *E775*
+			Call the function set by the 'operatorfunc' option.
 			The '[ mark is positioned at the start of the text
 			moved over by {motion}, the '] mark on the last
 			character of the text.
@@ -1011,7 +1016,7 @@ an additional rule:
 full-id	  In front of the match is a non-keyword character, or this is where
 	  the line or insertion starts.  Exception: When the abbreviation is
 	  only one character, it is not recognized if there is a non-keyword
-	  character in front of it, other than a space or a tab. However, for
+	  character in front of it, other than a space or a tab.  However, for
 	  the command line "'<,'>" (or any other marks) is ignored, as if the
 	  command line starts after it.
 
@@ -1065,8 +1070,8 @@ Just like mappings, abbreviations can be local to a buffer.  This is mostly
 used in a |filetype-plugin| file.  Example for a C plugin file: >
 	:abb <buffer> FF  for (i = 0; i < ; ++i)
 <
-						*:ab* *:abbreviate*
-:ab[breviate]		list all abbreviations.  The character in the first
+:ab[breviate]						*:ab* *:abbreviate*
+			list all abbreviations.  The character in the first
 			column indicates the mode where the abbreviation is
 			used: 'i' for insert mode, 'c' for Command-line
 			mode, '!' for both.  These are the same as for
@@ -1094,52 +1099,44 @@ See |:verbose-cmd| for more information.
 			See |:map-<expr>| for the optional <expr> argument.
 			See |:map-<buffer>| for the optional <buffer> argument.
 
-						*:una* *:unabbreviate*
-:una[bbreviate] [<buffer>] {lhs}
+:una[bbreviate] [<buffer>] {lhs}			*:una* *:unabbreviate*
 			Remove abbreviation for {lhs} from the list.  If none
 			is found, remove abbreviations in which {lhs} matches
 			with the {rhs}.  This is done so that you can even
 			remove abbreviations after expansion.  To avoid
 			expansion insert a CTRL-V (type it twice).
 
-						*:norea* *:noreabbrev*
-:norea[bbrev] [<expr>] [<buffer>] [lhs] [rhs]
+:norea[bbrev] [<expr>] [<buffer>] [lhs] [rhs]		*:norea* *:noreabbrev*
 			same as ":ab", but no remapping for this {rhs}
 
-						*:ca* *:cab* *:cabbrev*
-:ca[bbrev] [<expr>] [<buffer>] [lhs] [rhs]
+:ca[bbrev] [<expr>] [<buffer>] [lhs] [rhs]		*:ca* *:cab* *:cabbrev*
 			same as ":ab", but for Command-line mode only.
 
-						*:cuna* *:cunabbrev*
-:cuna[bbrev] [<buffer>] {lhs}
+:cuna[bbrev] [<buffer>] {lhs}				*:cuna* *:cunabbrev*
 			Same as ":una", but for Command-line mode only.
 
-						*:cnorea* *:cnoreabbrev*
-:cnorea[bbrev] [<expr>] [<buffer>] [lhs] [rhs]
+:cnorea[bbrev] [<expr>] [<buffer>] [lhs] [rhs]		*:cnorea* *:cnoreabbrev*
 			same as ":ab", but for Command-line mode only and no
 			remapping for this {rhs}
 
-						*:ia* *:iabbrev*
-:ia[bbrev] [<expr>] [<buffer>] [lhs] [rhs]
+:ia[bbrev] [<expr>] [<buffer>] [lhs] [rhs]		*:ia* *:iabbrev*
 			same as ":ab", but for Insert mode only.
 
-						*:iuna* *:iunabbrev*
-:iuna[bbrev] [<buffer>] {lhs}
+:iuna[bbrev] [<buffer>] {lhs}				*:iuna* *:iunabbrev*
 			Same as ":una", but for insert mode only.
 
-						*:inorea* *:inoreabbrev*
-:inorea[bbrev] [<expr>] [<buffer>] [lhs] [rhs]
+:inorea[bbrev] [<expr>] [<buffer>] [lhs] [rhs]		*:inorea* *:inoreabbrev*
 			same as ":ab", but for Insert mode only and no
 			remapping for this {rhs}
 
-							*:abc* *:abclear*
-:abc[lear] [<buffer>]	Remove all abbreviations.
+:abc[lear] [<buffer>]					*:abc* *:abclear*
+			Remove all abbreviations.
 
-							*:iabc* *:iabclear*
-:iabc[lear] [<buffer>]	Remove all abbreviations for Insert mode.
+:iabc[lear] [<buffer>]					*:iabc* *:iabclear*
+			Remove all abbreviations for Insert mode.
 
-							*:cabc* *:cabclear*
-:cabc[lear] [<buffer>]	Remove all abbreviations for Command-line mode.
+:cabc[lear] [<buffer>]					*:cabc* *:cabclear*
+			Remove all abbreviations for Command-line mode.
 
 							*using_CTRL-V*
 It is possible to use special characters in the rhs of an abbreviation.
@@ -1260,8 +1257,8 @@ be the user command ":Cc2" without an argument, or the command ":Cc" with
 argument "2".  It is advised to put a space between the command name and the
 argument to avoid these problems.
 
-When using a user-defined command, the command can be abbreviated.  However, if
-an abbreviation is not unique, an error will be issued.  Furthermore, a
+When using a user-defined command, the command can be abbreviated.  However,
+if an abbreviation is not unique, an error will be issued.  Furthermore, a
 built-in command will always take precedence.
 
 Example: >
@@ -1276,8 +1273,8 @@ It is recommended that full names for user-defined commands are used in
 scripts.
 
 :com[mand]						*:com* *:command*
-			List all user-defined commands.  When listing commands,
-			the characters in the first columns are:
+			List all user-defined commands.  When listing
+			commands, the characters in the first columns are:
 			    !	Command has the -bang attribute
 			    "	Command has the -register attribute
 			    |   Command has the -bar attribute
@@ -1292,17 +1289,16 @@ scripts.
 
 							*:command-verbose*
 When 'verbose' is non-zero, listing a command will also display where it was
-last defined and any completion argument. Example: >
+last defined and any completion argument.  Example: >
 
     :verbose command TOhtml
-<	Name	    Args Range Complete  Definition ~
-	TOhtml	    0	 %		 :call Convert2HTML(<line1>, <line2>) ~
-	    Last set from /usr/share/vim/vim-7.0/plugin/tohtml.vim ~
-
+	Name	    Args Range Complete  Definition
+	TOhtml	    0	 %		 :call Convert2HTML(<line1>, <line2>)
+	    Last set from /usr/share/vim/vim-7.0/plugin/tohtml.vim
+<
 See |:verbose-cmd| for more information.
 
-							*E174* *E182*
-:com[mand][!] [{attr}...] {cmd} {repl}
+:com[mand][!] [{attr}...] {cmd} {repl}			*E174* *E182*
 			Define a user command.  The name of the command is
 			{cmd} and its replacement text is {repl}.  The
 			command's attributes (see below) are {attr}.  If the
@@ -1326,10 +1322,10 @@ See |:verbose-cmd| for more information.
 
 Command attributes ~
 							*command-attributes*
-User-defined commands are treated by Nvim just like any other Ex commands.  They
-can have arguments, or have a range specified.  Arguments are subject to
-completion as filenames, buffers, etc.  Exactly how this works depends upon the
-command's attributes, which are specified when the command is defined.
+User-defined commands are treated by Nvim just like any other Ex commands.
+They can have arguments, or have a range specified.  Arguments are subject to
+completion as filenames, buffers, etc.  Exactly how this works depends upon
+the command's attributes, which are specified when the command is defined.
 
 When defining a user command in a script, it will be able to call functions
 local to the script and use mappings local to the script.  When the user
@@ -1348,7 +1344,10 @@ reported if any are supplied).  However, it is possible to specify that the
 command can take arguments, using the -nargs attribute.  Valid cases are:
 
 	-nargs=0    No arguments are allowed (the default)
-	-nargs=1    Exactly one argument is required, it includes spaces
+	-nargs=1    Exactly one argument is required, it includes spaces;
+		    completion treats white spaces as argument separation
+	-nargs=_    Exactly one argument is required, it includes spaces;
+		    completion treats white spaces as part of the argument
 	-nargs=*    Any number of arguments are allowed (0, 1, or many),
 		    separated by white space
 	-nargs=?    0 or 1 arguments are allowed
@@ -1356,7 +1355,23 @@ command can take arguments, using the -nargs attribute.  Valid cases are:
 
 Arguments are considered to be separated by (unescaped) spaces or tabs in this
 context, except when there is one argument, then the white space is part of
-the argument.
+the argument. The difference between the "-nargs=1" and "-nargs=_": >
+
+	func MyComplete(ArgLead, CmdLine, CursorPos)
+	  return ["one value", "two values", "three values"]
+		\->matchfuzzy(a:ArgLead)
+	endfunc
+	:command -nargs=1 -complete=customlist,MyComplete MyCmd1 echo <q-args>
+	:command -nargs=_ -complete=customlist,MyComplete MyCmd2 echo <q-args>
+
+Completing ":MyCmd1 two va<tab>" will complete with: >
+
+	:MyCmd1 two one value
+
+Completing ":MyCmd2 two va<tab>" will complete with: >
+
+	:MyCmd2 two values
+
 
 Note that arguments are used as text, not as expressions.  Specifically,
 "s:var" will use the script-local variable in the script where the command was
@@ -1380,22 +1395,24 @@ completion can be enabled:
 
 	-complete=arglist	file names in argument list
 	-complete=augroup	autocmd groups
+	-complete=breakpoint	|:breakadd| suboptions
 	-complete=buffer	buffer names
-	-complete=behave	:behave suboptions
 	-complete=color		color schemes
 	-complete=command	Ex command (and arguments)
 	-complete=compiler	compilers
+	-complete=diff_buffer	diff buffer names
 	-complete=dir		directory names
+	-complete=dir_in_path	directory names in 'cdpath'
 	-complete=environment	environment variable names
 	-complete=event		autocommand events
 	-complete=expression	Vim expression
 	-complete=file		file and directory names
-	-complete=file_in_path	file and directory names in |'path'|
-	-complete=filetype	filetype names |'filetype'|
+	-complete=file_in_path	file and directory names in 'path'
+	-complete=filetype	filetype names 'filetype'
 	-complete=function	function name
 	-complete=help		help subjects
 	-complete=highlight	highlight groups
-	-complete=history	:history suboptions
+	-complete=history	|:history| suboptions
 	-complete=keymap	keyboard mappings
 	-complete=locale	locale names (as output of locale -a)
 	-complete=lua		Lua expression |:lua|
@@ -1405,9 +1422,16 @@ completion can be enabled:
 	-complete=messages	|:messages| suboptions
 	-complete=option	options
 	-complete=packadd	optional package |pack-add| names
+	-complete=retab		|:retab| suboptions
+	-complete=runtime	file and directory names in 'runtimepath'
+	-complete=scriptnames	sourced script names
 	-complete=shellcmd	Shell command
+	-complete=shellcmdline	First is a shell command and subsequent ones
+				are filenames.  The same behavior as |:!cmd|.
+				To get correct completion, |:command-nargs|
+				should be '*' or '+'
 	-complete=sign		|:sign| suboptions
-	-complete=syntax	syntax file names |'syntax'|
+	-complete=syntax	syntax file names 'syntax'
 	-complete=syntime	|:syntime| suboptions
 	-complete=tag		tags
 	-complete=tag_listfiles	tags, file names are shown when CTRL-D is hit
@@ -1430,24 +1454,38 @@ function with the following signature: >
 
 	:function {func}(ArgLead, CmdLine, CursorPos)
 
-The function need not use all these arguments. The function should provide the
-completion candidates as the return value.
+The function need not use all these arguments.  The function should provide
+the completion candidates as the return value.
 
 For the "custom" argument, the function should return the completion
 candidates one per line in a newline separated string.
 
 For the "customlist" argument, the function should return the completion
-candidates as a Vim List.  Non-string items in the list are ignored.
+candidates as a Vim List.  Each item may be either a string or a |Dictionary|.
+A Dictionary item may have the following keys:
+	word	(required) the text inserted into the command line when the
+		item is selected
+	abbr	alternative text shown in the popup menu in place of "word",
+		when 'wildoptions' contains "pum"; useful when the inserted
+		text and the displayed text should differ
+	kind	short kind text (one or two characters), shown in the popup
+		menu when 'wildoptions' contains "pum"
+	menu	extra text shown after the match in the popup menu
+	info	long description shown in the info popup
+Items that are neither a string nor a Dictionary, and Dictionary items without
+a "word" key, are ignored.  When 'wildoptions' does not contain "pum", only
+"word" is shown.
 
 The function arguments are:
 	ArgLead		the leading portion of the argument currently being
-			completed on
+			completed on; note that this only captures the current
+			space-separated word, even when using "-nargs=1"
 	CmdLine		the entire command line
 	CursorPos	the cursor position in it (byte index)
 The function may use these for determining context.  For the "custom"
 argument, it is not necessary to filter candidates against the (implicit
 pattern in) ArgLead.  Vim will filter the candidates with its regexp engine
-after function return, and this is probably more efficient in most cases. If
+after function return, and this is probably more efficient in most cases.  If
 'wildoptions' contains "fuzzy", then the candidates will be filtered using
 |fuzzy-matching|.  For the "customlist" argument, Vim will not
 filter the returned completion candidates and the user supplied function
@@ -1493,26 +1531,25 @@ Possible attributes are:
 Note that -range=N and -count=N are mutually exclusive - only one should be
 specified.
 
-                                                  *:command-addr*
-It is possible that the special characters in the range like `.`, `$` or `%`
-which by default correspond to the current line, last line and the whole
-buffer, relate to arguments, (loaded) buffers, windows or tab pages.
+					*:command-addr*
+It is possible that the special characters in the range like `.`, `$` or `%` which
+by default correspond to the current line, last line and the whole buffer,
+relate to arguments, (loaded) buffers, windows or tabpages.
 
 Possible values are (second column is the short name used in listing):
-    -addr=lines			Range of lines (this is the default for -range)
+    -addr=lines			Range of lines (the default for -range)
     -addr=arguments	  arg	Range for arguments
     -addr=buffers	  buf	Range for buffers (also not loaded buffers)
     -addr=loaded_buffers  load	Range for loaded buffers
     -addr=windows	  win	Range for windows
-    -addr=tabs		  tab	Range for tab pages
+    -addr=tabs		  tab	Range for tabpages
     -addr=quickfix	  qf	Range for quickfix entries
     -addr=other		  ?	Other kind of range; can use ".", "$" and "%"
-				as with "lines" (this is the default for
-				-count)
+				as with "lines" (the default for -count)
 
 
 Incremental preview ~
-                                                  *:command-preview* {nvim-api}
+					*:command-preview* {nvim-api}
 Commands can show an 'inccommand' (as-you-type) preview by defining a preview
 handler (only from Lua, see |nvim_create_user_command()|).
 
@@ -1536,7 +1573,7 @@ Your command preview routine must implement this protocol:
 3. Add required highlights to the target buffers. If preview buffer is
    provided, add required highlights to the preview buffer as well. All
    highlights must be added to the preview namespace which is provided as an
-   argument to the preview callback (see |nvim_buf_add_highlight()| and
+   argument to the preview callback (see |vim.hl.range()| and
    |nvim_buf_set_extmark()| for help on how to add highlights to a namespace).
 4. Return an integer (0, 1, 2) which controls how Nvim behaves as follows:
    0: No preview is shown.
@@ -1565,13 +1602,12 @@ supports incremental command preview:
 
 	    if start_idx then
 	      -- Highlight the match
-	      vim.api.nvim_buf_add_highlight(
+	      vim.hl.range(
 	        buf,
 	        preview_ns,
 	        'Substitute',
-	        line1 + i - 2,
-	        start_idx - 1,
-	        end_idx
+	        {line1 + i - 2, start_idx - 1},
+	        {line1 + i - 2, end_idx}
 	      )
 
 	      -- Add lines and set highlights in the preview buffer
@@ -1586,13 +1622,12 @@ supports incremental command preview:
 	          false,
 	          { prefix .. line }
 	        )
-	        vim.api.nvim_buf_add_highlight(
+	        vim.hl.range(
 	          preview_buf,
 	          preview_ns,
 	          'Substitute',
-	          preview_buf_line,
-	          #prefix + start_idx - 1,
-	          #prefix + end_idx
+	          {preview_buf_line, #prefix + start_idx - 1},
+	          {preview_buf_line, #prefix + end_idx}
 	        )
 	        preview_buf_line = preview_buf_line + 1
 	      end
@@ -1675,11 +1710,11 @@ The valid escape sequences are
 		command was executed with a ! modifier, otherwise
 		expands to nothing.
 					*<mods>* *<q-mods>* *:command-modifiers*
-	<mods>  The command modifiers, if specified. Otherwise, expands to
-		nothing. Supported modifiers are |:aboveleft|, |:belowright|,
+	<mods>  The command modifiers, if specified.  Otherwise, expands to
+		nothing.  Supported modifiers are |:aboveleft|, |:belowright|,
 		|:botright|, |:browse|, |:confirm|, |:hide|, |:horizontal|,
 		|:keepalt|, |:keepjumps|, |:keepmarks|, |:keeppatterns|,
-		|:leftabove|, |:lockmarks|, |:noautocmd|, |:noswapfile|
+		|:leftabove|, |:lockmarks|, |:noautocmd|, |:noswapfile|,
 		|:rightbelow|, |:sandbox|, |:silent|, |:tab|, |:topleft|,
 		|:unsilent|, |:verbose|, and |:vertical|.
 		Note that |:filter| is not supported.
@@ -1783,9 +1818,9 @@ A more substantial example: >
    :endfunction
    :command -nargs=+ -complete=command Allargs call Allargs(<q-args>)
 
-The command Allargs takes any Vim command(s) as argument and executes it on all
-files in the argument list.  Usage example (note use of the "e" flag to ignore
-errors and the "update" command to write modified buffers): >
+The command Allargs takes any Vim command(s) as argument and executes it on
+all files in the argument list.  Usage example (note use of the "e" flag to
+ignore errors and the "update" command to write modified buffers): >
 	:Allargs %s/foo/bar/ge|update
 This will invoke: >
 	:call Allargs("%s/foo/bar/ge|update")

@@ -1,6 +1,8 @@
 local n = require('test.functional.testnvim')()
+local t = require('test.testutil')
 local Screen = require('test.functional.ui.screen')
 
+local describe, it, before_each = t.describe, t.it, t.before_each
 local clear = n.clear
 local feed = n.feed
 
@@ -10,7 +12,6 @@ describe('digraph', function()
   -- oldtest: Test_entering_digraph()
   it('characters displayed on the screen', function()
     local screen = Screen.new(10, 6)
-    screen:attach()
     feed('i<C-K>')
     screen:expect([[
       {18:^?}           |

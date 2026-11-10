@@ -2,6 +2,7 @@ local t = require('test.testutil')
 local n = require('test.functional.testnvim')()
 local Screen = require('test.functional.ui.screen')
 
+local describe, it, before_each, pending = t.describe, t.it, t.before_each, t.pending
 local clear, feed, insert = n.clear, n.feed, n.insert
 local command, neq = n.command, t.neq
 local api = n.api
@@ -16,7 +17,6 @@ describe('Buffer highlighting', function()
     clear()
     command('syntax on')
     screen = Screen.new(40, 8)
-    screen:attach()
     screen:set_default_attr_ids({
       [1] = { bold = true, foreground = Screen.colors.Blue },
       [2] = { foreground = Screen.colors.Fuchsia }, -- String
@@ -283,9 +283,9 @@ describe('Buffer highlighting', function()
       screen:expect {
         grid = [[
         a {5:longer} example                        |
-        ^in {6:order} to {7:de}{5:monstr}{7:ate}                 |
+        in {6:order} to {7:de}{5:monstr}{7:ate}                 |
         {7:combin}{8:ing}{9: hi}ghlights                    |
-        {9:from }{8:diff}{7:erent} sources                  |
+        {9:from }{8:diff}{7:erent} source^s                  |
         {1:~                                       }|*3
         1 change; before #2  {MATCH:.*}|
       ]],
@@ -578,7 +578,7 @@ describe('Buffer highlighting', function()
   end)
 
   describe('virtual text decorations', function()
-    local id1, id2
+    local id1, id2 ---@type integer, integer
     before_each(function()
       insert([[
         1 + 2
@@ -710,7 +710,7 @@ describe('Buffer highlighting', function()
           0,
           0,
           {
-            ns_id = 1,
+            ns_id = id1,
             priority = 0,
             virt_text = s1,
             -- other details
@@ -730,7 +730,7 @@ describe('Buffer highlighting', function()
           lastline,
           0,
           {
-            ns_id = 1,
+            ns_id = id1,
             priority = 0,
             virt_text = s2,
             -- other details
@@ -752,7 +752,7 @@ describe('Buffer highlighting', function()
         {13:3 +} {11:ERROR:} invalid syntax               |
         {13:5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5}|
         {13:, 5, 5, 5, 5, 5, 5, } Lorem ipsum dolor s|
-        ^x{13: = 4}                                   |
+        {13:^x = 4}                                   |
         {1:~                                       }|*2
         {7:-- VISUAL LINE --}                       |
       ]])
@@ -782,7 +782,7 @@ describe('Buffer highlighting', function()
 
       feed('jvk')
       screen:expect([[
-        ^ {3:=}{2: 3}                                    |
+        {13:^ }{3:=}{2: 3}                                    |
         {13:3} + {11:ERROR:} invalid syntax               |
         5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5|
         , 5, 5, 5, 5, 5, 5,  Lorem ipsum dolor s|
@@ -794,7 +794,7 @@ describe('Buffer highlighting', function()
       feed('o')
       screen:expect([[
         {13: }{3:=}{2: 3}                                    |
-        ^3 + {11:ERROR:} invalid syntax               |
+        {13:^3} + {11:ERROR:} invalid syntax               |
         5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5|
         , 5, 5, 5, 5, 5, 5,  Lorem ipsum dolor s|
         x = 4                                   |
@@ -806,10 +806,10 @@ describe('Buffer highlighting', function()
     it('works with listchars', function()
       command('set list listchars+=eol:$')
       screen:expect([[
-        ^1 + 2{1:$}{3:=}{2: 3}                               |
-        3 +{1:$}{11:ERROR:} invalid syntax               |
+        ^1 + 2{1:$} {3:=}{2: 3}                              |
+        3 +{1:$} {11:ERROR:} invalid syntax              |
         5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5|
-        , 5, 5, 5, 5, 5, 5,{1:-$}Lorem ipsum dolor s|
+        , 5, 5, 5, 5, 5, 5,{1:-$} Lorem ipsum dolor |
         x = 4{1:$}                                  |
         {1:~                                       }|*2
                                                 |
@@ -899,11 +899,15 @@ describe('Buffer highlighting', function()
   end)
 
   it('and virtual text use the same namespace counter', function()
-    eq(1, add_highlight(0, 0, 'String', 0, 0, -1))
-    eq(2, set_virtual_text(0, 0, 0, { { '= text', 'Comment' } }, {}))
-    eq(3, api.nvim_create_namespace('my-ns'))
-    eq(4, add_highlight(0, 0, 'String', 0, 0, -1))
-    eq(5, set_virtual_text(0, 0, 0, { { '= text', 'Comment' } }, {}))
-    eq(6, api.nvim_create_namespace('other-ns'))
+    local base = vim.iter(api.nvim_get_namespaces()):fold(0, function(acc, _, v)
+      return math.max(acc, v)
+    end)
+
+    eq(base + 1, add_highlight(0, 0, 'String', 0, 0, -1))
+    eq(base + 2, set_virtual_text(0, 0, 0, { { '= text', 'Comment' } }, {}))
+    eq(base + 3, api.nvim_create_namespace('my-ns'))
+    eq(base + 4, add_highlight(0, 0, 'String', 0, 0, -1))
+    eq(base + 5, set_virtual_text(0, 0, 0, { { '= text', 'Comment' } }, {}))
+    eq(base + 6, api.nvim_create_namespace('other-ns'))
   end)
 end)

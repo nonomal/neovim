@@ -156,13 +156,13 @@ func Test_perleval()
   call assert_equal(0, perleval('0'))
   call assert_equal(2, perleval('2'))
   call assert_equal(-2, perleval('-2'))
-  if has('float')
-    call assert_equal(2.5, perleval('2.5'))
-  else
-    call assert_equal(2, perleval('2.5'))
-  end
+  call assert_equal(2.5, perleval('2.5'))
 
-  " sandbox call assert_equal(2, perleval('2'))
+  try
+    sandbox call perleval('2')
+    call assert_report('perleval did not fail in the sandbox')
+  catch /^Vim\%((\S\+)\)\=:E48:/
+  endtry
 
   call assert_equal('abc', perleval('"abc"'))
   " call assert_equal("abc\ndef", perleval('"abc\0def"'))
@@ -287,6 +287,7 @@ func Test_000_SvREFCNT()
 endfunc
 
 func Test_set_cursor()
+  throw 'skipped: bug in p5-MsgPack-Raw: https://github.com/jacquesg/p5-MsgPack-Raw/issues/4'
   " Check that setting the cursor position works.
   new
   call setline(1, ['first line', 'second line'])
@@ -316,7 +317,10 @@ VIM::DoCommand('let s ..= "B"')
   perl << trim eof
     VIM::DoCommand('let s ..= "E"')
   eof
-  call assert_equal('ABCDE', s)
+  perl << trimm
+VIM::DoCommand('let s ..= "F"')
+trimm
+  call assert_equal('ABCDEF', s)
 endfunc
 
 " vim: shiftwidth=2 sts=2 expandtab

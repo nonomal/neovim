@@ -6,8 +6,10 @@
 #include <string.h>
 #include <uv.h>
 
+#include "nvim/api/private/defs.h"
 #include "nvim/ascii_defs.h"
 #include "nvim/charset.h"
+#include "nvim/errors.h"
 #include "nvim/eval/typval_defs.h"
 #include "nvim/eval/vars.h"
 #include "nvim/gettext_defs.h"
@@ -22,17 +24,11 @@
 #include "nvim/option_vars.h"
 #include "nvim/strings.h"
 
-#ifdef INCLUDE_GENERATED_DECLARATIONS
-# include "keycodes.c.generated.h"
-#endif
+#include "keycode_names.generated.h"
+#include "keycodes.c.generated.h"
 
 // Some useful tables.
-
-static const struct modmasktable {
-  uint16_t mod_mask;  ///< Bit-mask for particular key modifier.
-  uint16_t mod_flag;  ///< Bit(s) for particular key modifier.
-  char name;  ///< Single letter name of modifier.
-} mod_mask_table[] = {
+const struct modmasktable mod_mask_table[] = {
   { MOD_MASK_ALT,              MOD_MASK_ALT,           'M' },
   { MOD_MASK_META,             MOD_MASK_META,          'T' },
   { MOD_MASK_CTRL,             MOD_MASK_CTRL,          'C' },
@@ -141,212 +137,6 @@ static uint8_t modifier_keys_table[] = {
   NUL
 };
 
-static const struct key_name_entry {
-  int key;              // Special key code or ascii value
-  const char *name;           // Name of key
-} key_names_table[] = {
-  { ' ',               "Space" },
-  { TAB,               "Tab" },
-  { K_TAB,             "Tab" },
-  { NL,                "NL" },
-  { NL,                "NewLine" },     // Alternative name
-  { NL,                "LineFeed" },    // Alternative name
-  { NL,                "LF" },          // Alternative name
-  { CAR,               "CR" },
-  { CAR,               "Return" },      // Alternative name
-  { CAR,               "Enter" },       // Alternative name
-  { K_BS,              "BS" },
-  { K_BS,              "BackSpace" },   // Alternative name
-  { ESC,               "Esc" },
-  { ESC,               "Escape" },      // Alternative name
-  { CSI,               "CSI" },
-  { '|',               "Bar" },
-  { '\\',              "Bslash" },
-  { K_DEL,             "Del" },
-  { K_DEL,             "Delete" },      // Alternative name
-  { K_KDEL,            "kDel" },
-  { K_KDEL,            "KPPeriod" },    // libtermkey name
-  { K_UP,              "Up" },
-  { K_DOWN,            "Down" },
-  { K_LEFT,            "Left" },
-  { K_RIGHT,           "Right" },
-  { K_XUP,             "xUp" },
-  { K_XDOWN,           "xDown" },
-  { K_XLEFT,           "xLeft" },
-  { K_XRIGHT,          "xRight" },
-  { K_KUP,             "kUp" },
-  { K_KUP,             "KP8" },
-  { K_KDOWN,           "kDown" },
-  { K_KDOWN,           "KP2" },
-  { K_KLEFT,           "kLeft" },
-  { K_KLEFT,           "KP4" },
-  { K_KRIGHT,          "kRight" },
-  { K_KRIGHT,          "KP6" },
-
-  { K_F1,              "F1" },
-  { K_F2,              "F2" },
-  { K_F3,              "F3" },
-  { K_F4,              "F4" },
-  { K_F5,              "F5" },
-  { K_F6,              "F6" },
-  { K_F7,              "F7" },
-  { K_F8,              "F8" },
-  { K_F9,              "F9" },
-  { K_F10,             "F10" },
-
-  { K_F11,             "F11" },
-  { K_F12,             "F12" },
-  { K_F13,             "F13" },
-  { K_F14,             "F14" },
-  { K_F15,             "F15" },
-  { K_F16,             "F16" },
-  { K_F17,             "F17" },
-  { K_F18,             "F18" },
-  { K_F19,             "F19" },
-  { K_F20,             "F20" },
-
-  { K_F21,             "F21" },
-  { K_F22,             "F22" },
-  { K_F23,             "F23" },
-  { K_F24,             "F24" },
-  { K_F25,             "F25" },
-  { K_F26,             "F26" },
-  { K_F27,             "F27" },
-  { K_F28,             "F28" },
-  { K_F29,             "F29" },
-  { K_F30,             "F30" },
-
-  { K_F31,             "F31" },
-  { K_F32,             "F32" },
-  { K_F33,             "F33" },
-  { K_F34,             "F34" },
-  { K_F35,             "F35" },
-  { K_F36,             "F36" },
-  { K_F37,             "F37" },
-  { K_F38,             "F38" },
-  { K_F39,             "F39" },
-  { K_F40,             "F40" },
-
-  { K_F41,             "F41" },
-  { K_F42,             "F42" },
-  { K_F43,             "F43" },
-  { K_F44,             "F44" },
-  { K_F45,             "F45" },
-  { K_F46,             "F46" },
-  { K_F47,             "F47" },
-  { K_F48,             "F48" },
-  { K_F49,             "F49" },
-  { K_F50,             "F50" },
-
-  { K_F51,             "F51" },
-  { K_F52,             "F52" },
-  { K_F53,             "F53" },
-  { K_F54,             "F54" },
-  { K_F55,             "F55" },
-  { K_F56,             "F56" },
-  { K_F57,             "F57" },
-  { K_F58,             "F58" },
-  { K_F59,             "F59" },
-  { K_F60,             "F60" },
-
-  { K_F61,             "F61" },
-  { K_F62,             "F62" },
-  { K_F63,             "F63" },
-
-  { K_XF1,             "xF1" },
-  { K_XF2,             "xF2" },
-  { K_XF3,             "xF3" },
-  { K_XF4,             "xF4" },
-
-  { K_HELP,            "Help" },
-  { K_UNDO,            "Undo" },
-  { K_INS,             "Insert" },
-  { K_INS,             "Ins" },         // Alternative name
-  { K_KINS,            "kInsert" },
-  { K_KINS,            "KP0" },
-  { K_HOME,            "Home" },
-  { K_KHOME,           "kHome" },
-  { K_KHOME,           "KP7" },
-  { K_XHOME,           "xHome" },
-  { K_ZHOME,           "zHome" },
-  { K_END,             "End" },
-  { K_KEND,            "kEnd" },
-  { K_KEND,            "KP1" },
-  { K_XEND,            "xEnd" },
-  { K_ZEND,            "zEnd" },
-  { K_PAGEUP,          "PageUp" },
-  { K_PAGEDOWN,        "PageDown" },
-  { K_KPAGEUP,         "kPageUp" },
-  { K_KPAGEUP,         "KP9" },
-  { K_KPAGEDOWN,       "kPageDown" },
-  { K_KPAGEDOWN,       "KP3" },
-  { K_KORIGIN,         "kOrigin" },
-  { K_KORIGIN,         "KP5" },
-
-  { K_KPLUS,           "kPlus" },
-  { K_KPLUS,           "KPPlus" },
-  { K_KMINUS,          "kMinus" },
-  { K_KMINUS,          "KPMinus" },
-  { K_KDIVIDE,         "kDivide" },
-  { K_KDIVIDE,         "KPDiv" },
-  { K_KMULTIPLY,       "kMultiply" },
-  { K_KMULTIPLY,       "KPMult" },
-  { K_KENTER,          "kEnter" },
-  { K_KENTER,          "KPEnter" },
-  { K_KPOINT,          "kPoint" },
-  { K_KCOMMA,          "kComma" },
-  { K_KCOMMA,          "KPComma" },
-  { K_KEQUAL,          "kEqual" },
-  { K_KEQUAL,          "KPEquals" },
-
-  { K_K0,              "k0" },
-  { K_K1,              "k1" },
-  { K_K2,              "k2" },
-  { K_K3,              "k3" },
-  { K_K4,              "k4" },
-  { K_K5,              "k5" },
-  { K_K6,              "k6" },
-  { K_K7,              "k7" },
-  { K_K8,              "k8" },
-  { K_K9,              "k9" },
-
-  { '<',               "lt" },
-
-  { K_MOUSE,           "Mouse" },
-  { K_LEFTMOUSE,       "LeftMouse" },
-  { K_LEFTMOUSE_NM,    "LeftMouseNM" },
-  { K_LEFTDRAG,        "LeftDrag" },
-  { K_LEFTRELEASE,     "LeftRelease" },
-  { K_LEFTRELEASE_NM,  "LeftReleaseNM" },
-  { K_MOUSEMOVE,       "MouseMove" },
-  { K_MIDDLEMOUSE,     "MiddleMouse" },
-  { K_MIDDLEDRAG,      "MiddleDrag" },
-  { K_MIDDLERELEASE,   "MiddleRelease" },
-  { K_RIGHTMOUSE,      "RightMouse" },
-  { K_RIGHTDRAG,       "RightDrag" },
-  { K_RIGHTRELEASE,    "RightRelease" },
-  { K_MOUSEDOWN,       "ScrollWheelUp" },
-  { K_MOUSEUP,         "ScrollWheelDown" },
-  { K_MOUSELEFT,       "ScrollWheelRight" },
-  { K_MOUSERIGHT,      "ScrollWheelLeft" },
-  { K_MOUSEDOWN,       "MouseDown" },   // OBSOLETE: Use
-  { K_MOUSEUP,         "MouseUp" },     // ScrollWheelXXX instead
-  { K_X1MOUSE,         "X1Mouse" },
-  { K_X1DRAG,          "X1Drag" },
-  { K_X1RELEASE,       "X1Release" },
-  { K_X2MOUSE,         "X2Mouse" },
-  { K_X2DRAG,          "X2Drag" },
-  { K_X2RELEASE,       "X2Release" },
-  { K_DROP,            "Drop" },
-  { K_ZERO,            "Nul" },
-  { K_SNR,             "SNR" },
-  { K_PLUG,            "Plug" },
-  { K_IGNORE,          "Ignore" },
-  { K_COMMAND,         "Cmd" },
-  { 0,                 NULL }
-  // NOTE: When adding a long name update MAX_KEY_NAME_LEN.
-};
-
 static struct mousetable {
   int pseudo_code;            // Code for pseudo mouse event
   int button;                 // Which mouse button is it?
@@ -423,6 +213,25 @@ int simplify_key(const int key, int *modifiers)
   return key;
 }
 
+/// Inverse of simplify_key().
+int unsimplify_key(const int c, int *modifiers)
+  FUNC_ATTR_WARN_UNUSED_RESULT FUNC_ATTR_NONNULL_ALL
+{
+  if (!IS_SPECIAL(c)) {
+    return c;
+  }
+
+  for (int i = 0; modifier_keys_table[i] != NUL; i += MOD_KEYS_ENTRY_SIZE) {
+    if (KEY2TERMCAP0(c) == (int)modifier_keys_table[i + 1]
+        && (int)KEY2TERMCAP1(c) == (int)modifier_keys_table[i + 2]) {
+      *modifiers |= modifier_keys_table[i];
+      return TERMCAP2KEY(modifier_keys_table[i + 3], modifier_keys_table[i + 4]);
+    }
+  }
+
+  return c;
+}
+
 /// Change <xKey> to <Key>
 int handle_x_keys(const int key)
   FUNC_ATTR_CONST FUNC_ATTR_WARN_UNUSED_RESULT
@@ -464,10 +273,11 @@ int handle_x_keys(const int key)
   return key;
 }
 
-/// @return  a string which contains the name of the given key when the given modifiers are down.
-char *get_special_key_name(int c, int modifiers)
+/// Gets a key "chord" (key + modifiers) as a string, and optionally as structured `data`.
+char *get_special_key(int c, int modifiers, struct keychord *data)
 {
   static char string[MAX_KEY_NAME_LEN + 1];
+  bool is_ascii_ctrl = false;
 
   string[0] = '<';
   int idx = 1;
@@ -479,17 +289,7 @@ char *get_special_key_name(int c, int modifiers)
 
   // Translate shifted special keys into unshifted keys and set modifier.
   // Same for CTRL and ALT modifiers.
-  if (IS_SPECIAL(c)) {
-    for (int i = 0; modifier_keys_table[i] != 0; i += MOD_KEYS_ENTRY_SIZE) {
-      if (KEY2TERMCAP0(c) == (int)modifier_keys_table[i + 1]
-          && (int)KEY2TERMCAP1(c) == (int)modifier_keys_table[i + 2]) {
-        modifiers |= modifier_keys_table[i];
-        c = TERMCAP2KEY(modifier_keys_table[i + 3],
-                        modifier_keys_table[i + 4]);
-        break;
-      }
-    }
-  }
+  c = unsimplify_key(c, &modifiers);
 
   // try to find the key in the special key table
   int table_idx = find_special_key_in_table(c);
@@ -498,18 +298,16 @@ char *get_special_key_name(int c, int modifiers)
   // extract modifiers.
   if (c > 0
       && utf_char2len(c) == 1) {
-    if (table_idx < 0
-        && (!vim_isprintc(c) || (c & 0x7f) == ' ')
-        && (c & 0x80)) {
-      c &= 0x7f;
-      modifiers |= MOD_MASK_ALT;
-      // try again, to find the un-alted key in the special key table
-      table_idx = find_special_key_in_table(c);
-    }
     if (table_idx < 0 && !vim_isprintc(c) && c < ' ') {
       c += '@';
       modifiers |= MOD_MASK_CTRL;
+
+      is_ascii_ctrl = true;
     }
+  }
+
+  if (data) {
+    data->mods = 0;
   }
 
   // translate the modifier into a string
@@ -518,39 +316,93 @@ char *get_special_key_name(int c, int modifiers)
         == mod_mask_table[i].mod_flag) {
       string[idx++] = mod_mask_table[i].name;
       string[idx++] = '-';
+
+      if (data) {
+        data->mods |= mod_mask_table[i].mod_flag;
+      }
     }
   }
 
   if (table_idx < 0) {          // unknown special key, may output t_xx
     if (IS_SPECIAL(c)) {
+      if (data) {
+        data->key_alt = (String){ NULL, 0 };
+        data->key = (String){ &string[idx], 4 };
+      }
+
       string[idx++] = 't';
       string[idx++] = '_';
       string[idx++] = (char)(uint8_t)KEY2TERMCAP0(c);
       string[idx++] = (char)(uint8_t)KEY2TERMCAP1(c);
     } else {
       // Not a special key, only modifiers, output directly.
-      if (utf_char2len(c) > 1) {
-        idx += utf_char2bytes(c, string + idx);
-      } else if (vim_isprintc(c)) {
+      int len = utf_char2len(c);
+      if (len == 1 && vim_isprintc(c)) {
+        if (data) {
+          if ('A' <= c && c <= 'Z') {
+            data->key_mem = (char)c + 32;
+            data->key = (String){ &data->key_mem, 1 };
+            if (!is_ascii_ctrl) {
+              data->mods |= MOD_MASK_SHIFT;
+            }
+            data->key_alt = (String){ &string[idx], (size_t)len };
+          } else {
+            data->key_alt = (String){ NULL, 0 };
+            data->key = (String){ &string[idx], (size_t)len };
+          }
+        }
+
         string[idx++] = (char)(uint8_t)c;
+      } else if (len > 1) {
+        if (data) {
+          data->key = (String){ &string[idx], (size_t)len };
+          data->key_alt = (String){ NULL, 0 };
+        }
+
+        idx += utf_char2bytes(c, string + idx);
       } else {
         char *s = transchar(c);
+
+        if (data) {
+          data->key_mem = (char)c;
+          data->key = (String){ &data->key_mem, 1 };
+          data->key_alt = (String){ &string[idx], strlen(s) };
+        }
+
         while (*s) {
           string[idx++] = *s++;
         }
       }
     }
   } else {            // use name of special key
-    size_t len = strlen(key_names_table[table_idx].name);
+    const String *s = &key_names_table[table_idx].name;
 
-    if ((int)len + idx + 2 <= MAX_KEY_NAME_LEN) {
-      STRCPY(string + idx, key_names_table[table_idx].name);
-      idx += (int)len;
+    if (data) {
+      if (0 <= c && c <= 0x7f) {
+        data->key_mem = (char)c;
+        data->key = (String){ &data->key_mem, 1 };
+        data->key_alt = *s;
+      } else {
+        data->key = *s;
+        data->key_alt = (String){ NULL, 0 };
+      }
+    }
+
+    if ((int)s->size + idx + 2 <= MAX_KEY_NAME_LEN) {
+      memcpy(string + idx, s->data, s->size);
+      idx += (int)s->size;
     }
   }
   string[idx++] = '>';
   string[idx] = NUL;
+
   return string;
+}
+
+/// @return  String representing the key "chord" (key + modifiers).
+char *get_special_key_name(int c, int modifiers)
+{
+  return get_special_key(c, modifiers, NULL);
 }
 
 /// Try translating a <> name ("keycode").
@@ -792,17 +644,13 @@ static int extract_modifiers(int key, int *modp, const bool simplify, bool *cons
 /// @return  the index when found, -1 when not found.
 int find_special_key_in_table(int c)
 {
-  int i;
-
-  for (i = 0; key_names_table[i].name != NULL; i++) {
-    if (c == key_names_table[i].key) {
-      break;
+  for (int i = 0; i < (int)ARRAY_SIZE(key_names_table); i++) {
+    if (c == key_names_table[i].key && !key_names_table[i].is_alt) {
+      return i;
     }
   }
-  if (key_names_table[i].name == NULL) {
-    i = -1;
-  }
-  return i;
+
+  return -1;
 }
 
 /// Find the special key with the given name
@@ -820,20 +668,13 @@ int get_special_key_code(const char *name)
     return TERMCAP2KEY((uint8_t)name[2], (uint8_t)name[3]);
   }
 
-  for (int i = 0; key_names_table[i].name != NULL; i++) {
-    const char *const table_name = key_names_table[i].name;
-    int j;
-    for (j = 0; ascii_isident((uint8_t)name[j]) && table_name[j] != NUL; j++) {
-      if (TOLOWER_ASC(table_name[j]) != TOLOWER_ASC((uint8_t)name[j])) {
-        break;
-      }
-    }
-    if (!ascii_isident((uint8_t)name[j]) && table_name[j] == NUL) {
-      return key_names_table[i].key;
-    }
+  const char *name_end = name;
+  while (ascii_isident(*name_end)) {
+    name_end++;
   }
 
-  return 0;
+  int idx = get_special_key_code_hash(name, (size_t)(name_end - name));
+  return idx >= 0 ? key_names_table[idx].key : 0;
 }
 
 /// Look up the given mouse code to return the relevant information in the other arguments.
@@ -850,14 +691,19 @@ int get_mouse_button(int code, bool *is_click, bool *is_drag)
   return 0;         // Shouldn't get here
 }
 
-/// Replace any terminal code strings with the equivalent internal representation.
+/// Encode `<key>` notation into Nvim's internal key representation. (Does NOT process raw terminal
+/// escape sequences, despite the legacy "termcode" terminology.)
 ///
-/// Used for the "from" and "to" part of a mapping, and the "to" part of a menu command.
-/// Any strings like "<C-UP>" are also replaced, unless `special` is false.
-/// K_SPECIAL by itself is replaced by K_SPECIAL KS_SPECIAL KE_FILLER.
+/// Parses keycode notation like `<C-Up>`, `<CR>`, `<Esc>`, `<F1>`, `<Leader>`, `<SID>`, and emits
+/// the corresponding K_SPECIAL byte sequences. Used for the lhs/rhs of mappings, the rhs of menu
+/// commands, and feedkeys input. K_SPECIAL by itself is replaced by K_SPECIAL KS_SPECIAL KE_FILLER.
+///
+/// Also handles `<C-v>` / backslash literal escapes (per 'cpoptions'), `<Leader>`/`<LocalLeader>`
+/// expansion, `<SID>` script-id substitution, and (unless REPTERM_NO_SIMPLIFY) simplifications like
+/// `<C-H>` => 0x08.
 ///
 /// When "flags" has REPTERM_FROM_PART, trailing <C-v> is included, otherwise it is removed (to make
-/// ":map xx ^V" map xx to nothing). When cpo_val contains CPO_BSLASH, a backslash can be used in
+/// ":map xx ^V" map xx to nothing). When cpo_val contains kCpoBslash, a backslash can be used in
 /// place of <C-v>. All other <C-v> characters are removed.
 ///
 /// @param[in]  from  What characters to replace.
@@ -872,7 +718,7 @@ int get_mouse_button(int code, bool *is_click, bool *is_drag)
 ///                    REPTERM_NO_SPECIAL   do not accept <key> notation
 ///                    REPTERM_NO_SIMPLIFY  do not simplify <C-H> into 0x08, etc.
 /// @param[out]  did_simplify  set when some <C-H> code was simplified, unless it is NULL.
-/// @param[in]  cpo_val  The value of 'cpoptions' to use. Only CPO_BSLASH matters.
+/// @param[in]  cpo_val  The value of 'cpoptions' to use. Only kCpoBslash matters.
 ///
 /// @return  The same as what `*bufp` is set to.
 char *replace_termcodes(const char *const from, const size_t from_len, char **const bufp,
@@ -884,7 +730,7 @@ char *replace_termcodes(const char *const from, const size_t from_len, char **co
   const char *const end = from + from_len - 1;
 
   // backslash is a special character
-  const bool do_backslash = (vim_strchr(cpo_val, CPO_BSLASH) == NULL);
+  const bool do_backslash = (vim_strchr(cpo_val, kCpoBslash) == NULL);
   const bool do_special = !(flags & REPTERM_NO_SPECIAL);
 
   bool allocated = (*bufp == NULL);
@@ -916,7 +762,7 @@ char *replace_termcodes(const char *const from, const size_t from_len, char **co
           result[dlen++] = (char)K_SPECIAL;
           result[dlen++] = (char)KS_EXTRA;
           result[dlen++] = KE_SNR;
-          snprintf(result + dlen, buf_len - dlen, "%" PRId64, (int64_t)sid);
+          snprintf(result + dlen, buf_len - dlen, "%" PRIdSCID, sid);
           dlen += strlen(result + dlen);
           result[dlen++] = '_';
           continue;
@@ -1060,7 +906,8 @@ char *vim_strsave_escape_ks(char *p)
 
 /// Remove escaping from K_SPECIAL characters.  Reverse of
 /// vim_strsave_escape_ks().  Works in-place.
-void vim_unescape_ks(char *p)
+/// Returns the number of bytes in the unescaped string.
+size_t vim_unescape_ks(char *p)
 {
   uint8_t *s = (uint8_t *)p;
   uint8_t *d = (uint8_t *)p;
@@ -1074,4 +921,5 @@ void vim_unescape_ks(char *p)
     }
   }
   *d = NUL;
+  return (size_t)((char *)d - p);
 }

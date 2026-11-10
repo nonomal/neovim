@@ -410,8 +410,8 @@ msgstr " Kompletigo difinita de uzanto (^U^N^P)"
 msgid " Omni completion (^O^N^P)"
 msgstr " Kompletigo Omni (^O^N^P)"
 
-msgid " Spelling suggestion (s^N^P)"
-msgstr " Sugesto de literumo (s^N^P)"
+msgid " Spelling suggestion (^S^N^P)"
+msgstr " Sugesto de literumo (^S^N^P)"
 
 msgid " Keyword Local completion (^N^P)"
 msgstr " Kompletigo loka de ŝlosilvorto (^N/^P)"
@@ -950,8 +950,8 @@ msgid "E146: Regular expressions can't be delimited by letters"
 msgstr "E146: Ne eblas limigi regulesprimon per literoj"
 
 #, c-format
-msgid "replace with %s (y/n/a/q/l/^E/^Y)?"
-msgstr "ĉu anstataŭigi per %s (y/n/a/q/l/^E/^Y)?"
+msgid "replace with %s? (y)es/(n)o/(a)ll/(q)uit/(l)ast/scroll up(^E)/down(^Y)"
+msgstr "ĉu anstataŭigi per %s? (y)es/(n)o/(a)ll/(q)uit/(l)ast/scroll up(^E)/down(^Y)"
 
 msgid "(Interrupted) "
 msgstr "(Interrompita) "
@@ -1009,16 +1009,16 @@ msgid "E478: Don't panic!"
 msgstr "E478: Ne paniku!"
 
 #, c-format
-msgid "E661: Sorry, no '%s' help for %s"
-msgstr "E661: Bedaŭrinde estas neniu helpo '%s' por %s"
+msgid "E661: No '%s' help for %s"
+msgstr "E661: Neniu helpo '%s' por %s"
 
 #, c-format
-msgid "E149: Sorry, no help for %s"
-msgstr "E149: Bedaŭrinde estas neniu helpo por %s"
+msgid "E149: No help for %s"
+msgstr "E149: Neniu helpo por %s"
 
 #, c-format
-msgid "Sorry, help file \"%s\" not found"
-msgstr "Bedaŭrinde, la helpdosiero \"%s\" ne troveblas"
+msgid "Help file \"%s\" not found"
+msgstr "La helpdosiero \"%s\" ne troveblas"
 
 #, c-format
 msgid "E151: No match: %s"
@@ -3504,12 +3504,8 @@ msgstr "E773: Buklo de simbolaj ligiloj por \"%s\""
 msgid "E325: ATTENTION"
 msgstr "E325: ATENTO"
 
-msgid ""
-"\n"
-"Found a swap file by the name \""
-msgstr ""
-"\n"
-"Trovis permutodosieron .swp kun la nomo \""
+msgid "Found a swap file by the name \""
+msgstr "Trovis permutodosieron .swp kun la nomo \""
 
 msgid "While opening file \""
 msgstr "Dum malfermo de dosiero \""
@@ -3531,8 +3527,8 @@ msgstr ""
 msgid "(2) An edit session for this file crashed.\n"
 msgstr "(2) Redakta seanco de tiu dosiero kolapsis.\n"
 
-msgid "    If this is the case, use \":recover\" or \"vim -r "
-msgstr "    Se veras, uzu \":recover\" aŭ \"vim -r "
+msgid "    If this is the case, use \":recover\" or \"nvim -r "
+msgstr "    Se veras, uzu \":recover\" aŭ \"nvim -r "
 
 msgid ""
 "\"\n"
@@ -4188,12 +4184,8 @@ msgstr ""
 "\n"
 "Ne eblas plenumi ŝelon sh\n"
 
-msgid ""
-"\n"
-"shell returned "
-msgstr ""
-"\n"
-"ŝelo liveris "
+msgid "shell returned "
+msgstr "ŝelo liveris "
 
 msgid ""
 "\n"
@@ -5032,12 +5024,12 @@ msgstr "E763: Signoj de vorto malsamas tra literumaj dosieroj"
 msgid "E783: duplicate char in MAP entry"
 msgstr "E783: ripetita signo en rikordo MAP"
 
-msgid "Sorry, no suggestions"
-msgstr "Bedaŭrinde ne estas sugestoj"
+msgid "No suggestions"
+msgstr "Ne estas sugestoj"
 
 #, c-format
-msgid "Sorry, only %ld suggestions"
-msgstr "Bedaŭrinde estas nur %ld sugestoj"
+msgid "Only %ld suggestions"
+msgstr "Nur %ld sugestoj"
 
 #, c-format
 msgid "Change \"%.*s\" to:"
@@ -6111,10 +6103,6 @@ msgstr "E471: Argumento bezonata"
 
 msgid "E10: \\ should be followed by /, ? or &"
 msgstr "E10: \\ devus esti sekvita de /, ? aŭ &"
-
-msgid "E11: Invalid in command-line window; <CR> executes, CTRL-C quits"
-msgstr ""
-"E11: Nevalida en fenestro de komanda linio; <CR> plenumas, CTRL-C eliras"
 
 msgid "E12: Command not allowed from exrc/vimrc in current dir or tag search"
 msgstr ""

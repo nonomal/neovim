@@ -1,9 +1,11 @@
 local t = require('test.testutil')
 local n = require('test.functional.testnvim')()
 
+local describe, it, before_each = t.describe, t.it, t.before_each
 local clear = n.clear
 local exec_lua = n.exec_lua
 local eq = t.eq
+local matches = t.matches
 local pcall_err = t.pcall_err
 
 describe('xdiff bindings', function()
@@ -12,15 +14,11 @@ describe('xdiff bindings', function()
   end)
 
   describe('can diff text', function()
-    before_each(function()
-      exec_lua [[
-        a1 = 'Hello\n'
-        b1 = 'Helli\n'
+    local a1 = 'Hello\n'
+    local b1 = 'Helli\n'
 
-        a2 = 'Hello\nbye\nfoo\n'
-        b2 = 'Helli\nbye\nbar\nbaz\n'
-      ]]
-    end)
+    local a2 = 'Hello\nbye\nfoo\n'
+    local b2 = 'Helli\nbye\nbar\nbaz\n'
 
     it('with no callback', function()
       eq(
@@ -30,7 +28,9 @@ describe('xdiff bindings', function()
           '+Helli',
           '',
         }, '\n'),
-        exec_lua('return vim.diff(a1, b1)')
+        exec_lua(function()
+          return vim.text.diff(a1, b1)
+        end)
       )
 
       eq(
@@ -44,63 +44,81 @@ describe('xdiff bindings', function()
           '+baz',
           '',
         }, '\n'),
-        exec_lua('return vim.diff(a2, b2)')
+        exec_lua(function()
+          return vim.text.diff(a2, b2)
+        end)
       )
     end)
 
     it('with callback', function()
-      exec_lua([[on_hunk = function(sa, ca, sb, cb)
-          exp[#exp+1] = {sa, ca, sb, cb}
-        end]])
-
       eq(
         { { 1, 1, 1, 1 } },
-        exec_lua [[
-          exp = {}
-          assert(vim.diff(a1, b1, {on_hunk = on_hunk}) == nil)
+        exec_lua(function()
+          local exp = {} --- @type table[]
+          assert(vim.text.diff(a1, b1, {
+            on_hunk = function(...)
+              exp[#exp + 1] = { ... }
+            end,
+          }) == nil)
           return exp
-        ]]
+        end)
       )
 
       eq(
         { { 1, 1, 1, 1 }, { 3, 1, 3, 2 } },
-        exec_lua [[
-          exp = {}
-          assert(vim.diff(a2, b2, {on_hunk = on_hunk}) == nil)
+        exec_lua(function()
+          local exp = {} --- @type table[]
+          assert(vim.text.diff(a2, b2, {
+            on_hunk = function(...)
+              exp[#exp + 1] = { ... }
+            end,
+          }) == nil)
           return exp
-        ]]
+        end)
       )
 
       -- gives higher precedence to on_hunk over result_type
       eq(
         { { 1, 1, 1, 1 }, { 3, 1, 3, 2 } },
-        exec_lua [[
-          exp = {}
-          assert(vim.diff(a2, b2, {on_hunk = on_hunk, result_type='indices'}) == nil)
+        exec_lua(function()
+          local exp = {} --- @type table[]
+          assert(vim.text.diff(a2, b2, {
+            on_hunk = function(...)
+              exp[#exp + 1] = { ... }
+            end,
+            result_type = 'indices',
+          }) == nil)
           return exp
-        ]]
+        end)
       )
     end)
 
     it('with error callback', function()
-      exec_lua [[
-        on_hunk = function(sa, ca, sb, cb)
-          error('ERROR1')
-        end
-      ]]
-
-      eq(
-        [[error running function on_hunk: [string "<nvim>"]:0: ERROR1]],
-        pcall_err(exec_lua, [[vim.diff(a1, b1, {on_hunk = on_hunk})]])
+      t.matches(
+        [[on_hunk: %.%.%./xdiff_spec%.lua%:0%: ERROR1]],
+        pcall_err(exec_lua, function()
+          vim.text.diff(a1, b1, {
+            on_hunk = function()
+              error('ERROR1')
+            end,
+          })
+        end)
       )
     end)
 
     it('with hunk_lines', function()
-      eq({ { 1, 1, 1, 1 } }, exec_lua([[return vim.diff(a1, b1, {result_type = 'indices'})]]))
+      eq(
+        { { 1, 1, 1, 1 } },
+        exec_lua(function()
+          return vim.text.diff(a1, b1, { result_type = 'indices' })
+        end)
+      )
 
       eq(
         { { 1, 1, 1, 1 }, { 3, 1, 3, 2 } },
-        exec_lua([[return vim.diff(a2, b2, {result_type = 'indices'})]])
+        exec_lua(function()
+          return vim.text.diff(a2, b2, { result_type = 'indices' })
+        end)
       )
     end)
 
@@ -143,35 +161,45 @@ describe('xdiff bindings', function()
           '+}',
           '',
         }, '\n'),
-        exec_lua(
-          [[
-          local args = {...}
-          return vim.diff(args[1], args[2], {
-            algorithm = 'patience'
+        exec_lua(function()
+          return vim.text.diff(a, b, {
+            algorithm = 'patience',
           })
-        ]],
-          a,
-          b
-        )
+        end)
       )
     end)
   end)
 
   it('can handle bad args', function()
-    eq([[Expected at least 2 arguments]], pcall_err(exec_lua, [[vim.diff('a')]]))
+    matches([[Expected at least 2 arguments$]], pcall_err(exec_lua, [[vim.text.diff('a')]]))
 
-    eq([[bad argument #1 to 'diff' (expected string)]], pcall_err(exec_lua, [[vim.diff(1, 2)]]))
-
-    eq(
-      [[bad argument #3 to 'diff' (expected table)]],
-      pcall_err(exec_lua, [[vim.diff('a', 'b', true)]])
+    matches(
+      [[bad argument %#1 to '_?diff' %(expected string%)]],
+      pcall_err(exec_lua, [[vim.text.diff(1, 2)]])
     )
 
-    eq([[invalid key: bad_key]], pcall_err(exec_lua, [[vim.diff('a', 'b', { bad_key = true })]]))
+    matches(
+      [[bad argument %#3 to '_?diff' %(expected table%)]],
+      pcall_err(exec_lua, [[vim.text.diff('a', 'b', true)]])
+    )
 
+    matches(
+      [[invalid key: bad_key$]],
+      pcall_err(exec_lua, [[vim.text.diff('a', 'b', { bad_key = true })]])
+    )
+
+    matches(
+      [[on_hunk is not a function$]],
+      pcall_err(exec_lua, [[vim.text.diff('a', 'b', { on_hunk = true })]])
+    )
+  end)
+
+  it('can handle strings with embedded NUL characters (GitHub #30305)', function()
     eq(
-      [[on_hunk is not a function]],
-      pcall_err(exec_lua, [[vim.diff('a', 'b', { on_hunk = true })]])
+      { { 0, 0, 1, 1 }, { 1, 0, 3, 2 } },
+      exec_lua(function()
+        return vim.text.diff('\n', '\0\n\n\nb', { linematch = true, result_type = 'indices' })
+      end)
     )
   end)
 end)

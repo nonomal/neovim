@@ -4,11 +4,13 @@ local t = require('test.testutil')
 local n = require('test.functional.testnvim')()
 local Screen = require('test.functional.ui.screen')
 
+local describe, it, before_each = t.describe, t.it, t.before_each
 local clear = n.clear
 local feed = n.feed
 local fn = n.fn
 local command = n.command
 local eq = t.eq
+local api = n.api
 
 describe('Normal mode', function()
   before_each(clear)
@@ -25,11 +27,10 @@ describe('Normal mode', function()
 
   it('&showcmd does not crash with :startinsert #28419', function()
     local screen = Screen.new(60, 17)
-    screen:attach()
-    fn.termopen(
-      { n.nvim_prog, '--clean', '--cmd', 'startinsert' },
-      { env = { VIMRUNTIME = os.getenv('VIMRUNTIME') } }
-    )
+    fn.jobstart({ n.nvim_prog, '--clean', '--cmd', 'startinsert' }, {
+      term = true,
+      env = { VIMRUNTIME = os.getenv('VIMRUNTIME') },
+    })
     screen:expect({
       grid = [[
         ^                                                            |
@@ -40,5 +41,52 @@ describe('Normal mode', function()
       ]],
       attr_ids = {},
     })
+  end)
+
+  it('replacing with ZWJ emoji sequences', function()
+    local screen = Screen.new(30, 8)
+    api.nvim_buf_set_lines(0, 0, -1, true, { 'abcdefg' })
+    feed('05r🧑‍🌾') -- ZWJ
+    screen:expect([[
+      🧑‍🌾🧑‍🌾🧑‍🌾🧑‍🌾^🧑‍🌾fg                  |
+      {1:~                             }|*6
+                                    |
+    ]])
+
+    feed('2r🏳️‍⚧️') -- ZWJ and variant selectors
+    screen:expect([[
+      🧑‍🌾🧑‍🌾🧑‍🌾🧑‍🌾🏳️‍⚧️^🏳️‍⚧️g                 |
+      {1:~                             }|*6
+                                    |
+    ]])
+  end)
+
+  it('"gk" does not crash with signcolumn=yes in narrow window #31274', function()
+    feed('o<Esc>')
+    command('1vsplit | setlocal signcolumn=yes')
+    feed('gk')
+    n.assert_alive()
+  end)
+
+  it("'] after a forced blockwise exclusive motion", function()
+    n.exec([=[
+      function! Opfunc(type)
+        let g:marks = [getpos("'[")[1:3], getpos("']")[1:3]]
+      endfunction
+      set operatorfunc=Opfunc
+    ]=])
+    fn.setline(1, { 'abcd' })
+    feed('02|g@<C-v>l')
+    eq({ { 1, 2, 0 }, { 1, 3, 0 } }, api.nvim_get_var('marks'))
+    fn.setline(1, { 'ab cd' })
+    feed('0y<C-v>w')
+    eq({ 'ab c' }, fn.getreg('"', 1, 1))
+    eq({ 0, 1, 4, 0 }, fn.getpos("']"))
+    -- With 'selection' exclusive the block is only "b".
+    command('set selection=exclusive')
+    fn.setline(1, { 'abcd' })
+    feed('02|y<C-v>l')
+    eq({ 'b' }, fn.getreg('"', 1, 1))
+    eq({ 0, 1, 2, 0 }, fn.getpos("']"))
   end)
 end)

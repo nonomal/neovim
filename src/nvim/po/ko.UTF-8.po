@@ -381,8 +381,8 @@ msgid " Omni completion (^O^N^P)"
 msgstr " Omni 완성 (^O^N^P)"
 
 #: ../edit.c:96
-msgid " Spelling suggestion (s^N^P)"
-msgstr " 단어 제안 (s^N^P)"
+msgid " Spelling suggestion (^S^N^P)"
+msgstr " 단어 제안 (^S^N^P)"
 
 #: ../edit.c:97
 msgid " Keyword Local completion (^N^P)"
@@ -1221,8 +1221,8 @@ msgstr "E146: 정규표현식은 글자로 구분될 수 없습니다"
 
 #: ../ex_cmds.c:3964
 #, c-format
-msgid "replace with %s (y/n/a/q/l/^E/^Y)?"
-msgstr "%s(으)로 바꿈 (y/n/a/q/l/^E/^Y)?"
+msgid "replace with %s? (y)es/(n)o/(a)ll/(q)uit/(l)ast/scroll up(^E)/down(^Y)"
+msgstr "%s(으)로 바꿈? (y)es/(n)o/(a)ll/(q)uit/(l)ast/scroll up(^E)/down(^Y)"
 
 #: ../ex_cmds.c:4379
 msgid "(Interrupted) "
@@ -1289,18 +1289,18 @@ msgstr "E478: 당황하지 마십시오!"
 
 #: ../ex_cmds.c:4717
 #, c-format
-msgid "E661: Sorry, no '%s' help for %s"
-msgstr "E661: 미안합니다, 도움말 '%s'이(가) %s에 대해 없습니다"
+msgid "E661: No '%s' help for %s"
+msgstr "E661: 도움말 '%s'이(가) %s에 대해 없습니다"
 
 #: ../ex_cmds.c:4719
 #, c-format
-msgid "E149: Sorry, no help for %s"
-msgstr "E149: 미안합니다, %s에 대한 도움말이 없습니다"
+msgid "E149: No help for %s"
+msgstr "E149: %s에 대한 도움말이 없습니다"
 
 #: ../ex_cmds.c:4751
 #, c-format
-msgid "Sorry, help file \"%s\" not found"
-msgstr "미안합니다, 도움말 파일 \"%s\"을(를) 찾을 수 없습니다"
+msgid "Help file \"%s\" not found"
+msgstr "도움말 파일 \"%s\"을(를) 찾을 수 없습니다"
 
 #: ../ex_cmds.c:5323
 #, c-format
@@ -2581,10 +2581,6 @@ msgstr "E471: 인자가 필요합니다"
 #: ../globals.h:998
 msgid "E10: \\ should be followed by /, ? or &"
 msgstr "E10: /, ? 혹은 &는 \\ 뒤에 와야 합니다"
-
-#: ../globals.h:1000
-msgid "E11: Invalid in command-line window; <CR> executes, CTRL-C quits"
-msgstr "E11: 명령줄 창에 잘못됨; <CR> 실행, CTRL-C 끝내기"
 
 #: ../globals.h:1002
 msgid "E12: Command not allowed from exrc/vimrc in current dir or tag search"
@@ -3916,12 +3912,8 @@ msgid "E325: ATTENTION"
 msgstr "E325: 주목"
 
 #: ../memline.c:3222
-msgid ""
-"\n"
-"Found a swap file by the name \""
-msgstr ""
-"\n"
-"Found a swap file by the name \""
+msgid "Found a swap file by the name \""
+msgstr "Found a swap file by the name \""
 
 #: ../memline.c:3226
 msgid "While opening file \""
@@ -3957,8 +3949,8 @@ msgstr ""
 "(2) 파일을 고치다가 죽었었습니다.\n"
 
 #: ../memline.c:3247
-msgid "    If this is the case, use \":recover\" or \"vim -r "
-msgstr "    만약 그렇다면 \":recover\" 혹은 \"vim -r "
+msgid "    If this is the case, use \":recover\" or \"nvim -r "
+msgstr "    만약 그렇다면 \":recover\" 혹은 \"nvim -r "
 
 #: ../memline.c:3249
 msgid ""
@@ -4606,12 +4598,8 @@ msgstr ""
 "Cannot execute shell "
 
 #: ../os/shell.c:439
-msgid ""
-"\n"
-"shell returned "
-msgstr ""
-"\n"
-"shell returned "
+msgid "shell returned "
+msgstr "shell returned "
 
 #: ../os_unix.c:465 ../os_unix.c:471
 msgid ""
@@ -5479,13 +5467,13 @@ msgid "E763: Word characters differ between spell files"
 msgstr "E763: 단어가 spell 파일 간에 다릅니다"
 
 #: ../spell.c:8684
-msgid "Sorry, no suggestions"
-msgstr "죄송, 제안할 게 없습니다"
+msgid "No suggestions"
+msgstr "제안할 게 없습니다"
 
 #: ../spell.c:8687
 #, c-format
-msgid "Sorry, only %<PRId64> suggestions"
-msgstr "죄송, %<PRId64>개만 제안"
+msgid "Only %<PRId64> suggestions"
+msgstr "%<PRId64>개만 제안"
 
 #. for when 'cmdheight' > 1
 #. avoid more prompt

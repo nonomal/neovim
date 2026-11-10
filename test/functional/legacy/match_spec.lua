@@ -1,6 +1,8 @@
 local n = require('test.functional.testnvim')()
+local t = require('test.testutil')
 local Screen = require('test.functional.ui.screen')
 
+local describe, it, before_each = t.describe, t.it, t.before_each
 local clear = n.clear
 local exec = n.exec
 local feed = n.feed
@@ -11,7 +13,6 @@ describe('matchaddpos()', function()
   -- oldtest: Test_matchaddpos_dump()
   it('can add more than 8 match positions vim-patch:9.0.0620', function()
     local screen = Screen.new(60, 14)
-    screen:attach()
     exec([[
       call setline(1, ['1234567890123']->repeat(14))
       call matchaddpos('Search', range(1, 12)->map({i, v -> [v, v]}))
@@ -39,7 +40,6 @@ describe('match highlighting', function()
   -- oldtest: Test_match_in_linebreak()
   it('does not continue in linebreak vim-patch:8.2.3698', function()
     local screen = Screen.new(75, 10)
-    screen:attach()
     exec([=[
       set breakindent linebreak breakat+=]
       call printf('%s]%s', repeat('x', 50), repeat('x', 70))->setline(1)
@@ -55,7 +55,6 @@ describe('match highlighting', function()
 
   it('is shown with incsearch vim-patch:8.2.3940', function()
     local screen = Screen.new(75, 6)
-    screen:attach()
     exec([[
       set incsearch
       call setline(1, range(20))
@@ -82,7 +81,6 @@ describe('match highlighting', function()
 
   it('on a Tab vim-patch:8.2.4062', function()
     local screen = Screen.new(75, 10)
-    screen:attach()
     exec([[
       set linebreak
       call setline(1, "\tix")

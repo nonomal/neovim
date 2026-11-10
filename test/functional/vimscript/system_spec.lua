@@ -4,6 +4,8 @@ local t = require('test.testutil')
 local n = require('test.functional.testnvim')()
 local Screen = require('test.functional.ui.screen')
 
+local describe, it, before_each, after_each, pending, finally =
+  t.describe, t.it, t.before_each, t.after_each, t.pending, t.finally
 local assert_alive = n.assert_alive
 local testprg = n.testprg
 local eq, call, clear, eval, feed_command, feed, api =
@@ -11,8 +13,6 @@ local eq, call, clear, eval, feed_command, feed, api =
 local command = n.command
 local insert = n.insert
 local expect = n.expect
-local exc_exec = n.exc_exec
-local os_kill = n.os_kill
 local pcall_err = t.pcall_err
 local is_os = t.is_os
 
@@ -132,12 +132,16 @@ describe('system()', function()
 
     before_each(function()
       screen = Screen.new()
-      screen:attach()
+      t.write_file('Xmorefile', ('line1\nline2\nline3\n'):rep(10))
+    end)
+
+    after_each(function()
+      os.remove('Xmorefile')
     end)
 
     if is_os('win') then
       local function test_more()
-        eq('root = true', eval([[get(split(system('"more" ".editorconfig"'), "\n"), 0, '')]]))
+        eq('line1', eval([[get(split(system('"more" "Xmorefile"'), "\n"), 0, '')]]))
       end
       local function test_shell_unquoting()
         eval([[system('"ping" "-n" "1" "127.0.0.1"')]])
@@ -161,6 +165,11 @@ describe('system()', function()
         eval([[system('cd "C:\Program Files"')]])
         eq(0, eval('v:shell_error'))
         test_shell_unquoting()
+      end)
+
+      it('spawns child process with UTF-8 codepage', function()
+        command('set shell=cmd.exe')
+        eq('тест\n', eval([[system('echo тест')]]))
       end)
 
       it('with shell=cmd', function()
@@ -198,10 +207,10 @@ describe('system()', function()
       n.set_shell_powershell()
       eq('ああ\n', eval([[system('Write-Output "ああ"')]]))
       -- Sanity test w/ default encoding
-      -- * on Windows, expected to default to Western European enc
+      -- * on Windows, UTF-8 still works.
       -- * on Linux, expected to default to UTF8
       command([[let &shellcmdflag = '-NoLogo -NoProfile -ExecutionPolicy RemoteSigned -Command ']])
-      eq(is_os('win') and '??\n' or 'ああ\n', eval([[system('Write-Output "ああ"')]]))
+      eq('ああ\n', eval([[system('Write-Output "ああ"')]]))
     end)
 
     it('`echo` and waits for its return', function()
@@ -349,7 +358,7 @@ describe('system()', function()
     it('is treated as a buffer id', function()
       command("put ='text in buffer 1'")
       eq('\ntext in buffer 1\n', eval('system("cat", 1)'))
-      eq('Vim(echo):E86: Buffer 42 does not exist', exc_exec('echo system("cat", 42)'))
+      eq('Vim(echo):E86: Buffer 42 does not exist', pcall_err(command, 'echo system("cat", 42)'))
     end)
   end)
 
@@ -376,8 +385,8 @@ describe('system()', function()
     describe('with linefeed characters inside List items', function()
       it('converts linefeed characters to NULs', function()
         eq(
-          'l1\001p2\nline2\001a\001b\nl3',
-          eval([[system('cat -', ["l1\np2", "line2\na\nb", 'l3'])]])
+          '\001l1\001p2\nline2\001a\001b\nl3',
+          eval([[system('cat -', ["\nl1\np2", "line2\na\nb", 'l3'])]])
         )
       end)
     end)
@@ -395,7 +404,7 @@ describe('system()', function()
   it("with a program that doesn't close stdout will exit properly after passing input", function()
     local out = eval(string.format("system('%s', 'clip-data')", testprg('streams-test')))
     assert(out:sub(0, 5) == 'pid: ', out)
-    os_kill(out:match('%d+'))
+    eq(0, vim.uv.kill(assert(tonumber(out:match('%d+'))), 'sigkill'))
   end)
 end)
 
@@ -430,11 +439,6 @@ describe('systemlist()', function()
 
     before_each(function()
       screen = Screen.new()
-      screen:attach()
-    end)
-
-    after_each(function()
-      screen:detach()
     end)
 
     it('`echo` and waits for its return', function()
@@ -503,8 +507,8 @@ describe('systemlist()', function()
     describe('with linefeed characters inside list items', function()
       it('converts linefeed characters to NULs', function()
         eq(
-          { 'l1\np2', 'line2\na\nb', 'l3' },
-          eval([[systemlist('cat -', ["l1\np2", "line2\na\nb", 'l3'])]])
+          { '\nl1\np2', 'line2\na\nb', 'l3' },
+          eval([[systemlist('cat -', ["\nl1\np2", "line2\na\nb", 'l3'])]])
         )
       end)
     end)
@@ -544,7 +548,7 @@ describe('systemlist()', function()
   it("with a program that doesn't close stdout will exit properly after passing input", function()
     local out = eval(string.format("systemlist('%s', 'clip-data')", testprg('streams-test')))
     assert(out[1]:sub(0, 5) == 'pid: ', out)
-    os_kill(out[1]:match('%d+'))
+    eq(0, vim.uv.kill(assert(tonumber(out[1]:match('%d+'))), 'sigkill'))
   end)
 
   it('powershell w/ UTF-8 text #13713', function()
@@ -555,20 +559,47 @@ describe('systemlist()', function()
     n.set_shell_powershell()
     eq({ is_os('win') and 'あ\r' or 'あ' }, eval([[systemlist('Write-Output あ')]]))
     -- Sanity test w/ default encoding
-    -- * on Windows, expected to default to Western European enc
+    -- * on Windows, UTF-8 still works.
     -- * on Linux, expected to default to UTF8
     command([[let &shellcmdflag = '-NoLogo -NoProfile -ExecutionPolicy RemoteSigned -Command ']])
-    eq({ is_os('win') and '?\r' or 'あ' }, eval([[systemlist('Write-Output あ')]]))
+    eq({ is_os('win') and 'あ\r' or 'あ' }, eval([[systemlist('Write-Output あ')]]))
   end)
 end)
 
 describe('shell :!', function()
   before_each(clear)
 
-  it(':{range}! with powershell filter/redirect #16271 #19250', function()
+  it('preserves newlines (including CR) in binary-mode buffer #39424', function()
+    local fname = 'Xbinaryfile'
+    finally(function()
+      os.remove(fname)
+    end)
+
+    t.write_file(fname, '\r\n', true)
+    command('edit ++bin ' .. fname)
+    command('%!cat')
+    command('w')
+    eq('\r\n', t.read_file(fname))
+
+    t.write_file(fname, '\r', true)
+    command('edit ++bin ' .. fname)
+    command('%!cat')
+    command('w')
+    eq('\r', t.read_file(fname))
+  end)
+
+  it(':{range}! works when the first char is NUL #34163', function()
+    api.nvim_buf_set_lines(0, 0, -1, true, { '\0hello', 'hello' })
+    command('%!cat')
+    eq({ '\0hello', 'hello' }, api.nvim_buf_get_lines(0, 0, -1, true))
+  end)
+
+  it(':{range}! with powershell using "commands" filter/redirect #16271 #19250', function()
+    if not n.has_powershell() then
+      return
+    end
     local screen = Screen.new(500, 8)
-    screen:attach()
-    local found = n.set_shell_powershell(true)
+    n.set_shell_powershell()
     insert([[
       3
       1
@@ -577,48 +608,67 @@ describe('shell :!', function()
     if is_os('win') then
       feed(':4verbose %!sort /R<cr>')
       screen:expect {
-        any = [[Executing command: .?& { Get%-Content .* | & sort /R } 2>&1 | %%{ "$_" } | Out%-File .*; exit $LastExitCode"]],
+        any = [[Executing command: " $input | sort /R".*]],
       }
     else
       feed(':4verbose %!sort -r<cr>')
       screen:expect {
-        any = [[Executing command: .?& { Get%-Content .* | & sort %-r } 2>&1 | %%{ "$_" } | Out%-File .*; exit $LastExitCode"]],
+        any = [[Executing command: " $input | sort %-r".*]],
       }
     end
     feed('<CR>')
-    if found then
-      -- Not using fake powershell, so we can test the result.
-      expect([[
-        4
-        3
-        2
-        1]])
+    expect([[
+      4
+      3
+      2
+      1]])
+  end)
+
+  it(':{range}! with powershell using "cmdlets" filter/redirect #16271 #19250', function()
+    if not n.has_powershell() then
+      pending('powershell not found', function() end)
+      return
     end
+    local screen = Screen.new(500, 8)
+    n.set_shell_powershell()
+    insert([[
+      3
+      1
+      4
+      2]])
+    feed(':4verbose %!Sort-Object -Descending<cr>')
+    screen:expect {
+      any = [[Executing command: " $input | Sort%-Object %-Descending".*]],
+    }
+    feed('<CR>')
+    expect([[
+      4
+      3
+      2
+      1]])
   end)
 
   it(':{range}! without redirecting to buffer', function()
     local screen = Screen.new(500, 10)
-    screen:attach()
     insert([[
       3
       1
       4
       2]])
     feed(':4verbose %w !sort<cr>')
-    if is_os('win') then
-      screen:expect {
-        any = [[Executing command: .?sort %< .*]],
-      }
-    else
-      screen:expect {
-        any = [[Executing command: .?%(sort%) %< .*]],
-      }
-    end
+    screen:expect {
+      any = [[Executing command: "sort".*]],
+    }
     feed('<CR>')
+
+    if not n.has_powershell() then
+      return
+    end
+
     n.set_shell_powershell(true)
     feed(':4verbose %w !sort<cr>')
     screen:expect {
-      any = [[Executing command: .?& { Get%-Content .* | & sort }]],
+      any = [[Executing command: " $input | sort".*]],
     }
     feed('<CR>')
     n.expect_exit(command, 'qall!')

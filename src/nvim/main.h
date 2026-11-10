@@ -2,7 +2,6 @@
 
 #include <stdbool.h>
 
-#include "nvim/event/loop.h"
 #include "nvim/types_defs.h"
 
 // Maximum number of commands from + or -c arguments.
@@ -30,6 +29,7 @@ typedef struct {
   char *tagname;                        // tag from -t argument
   char *use_ef;                         // 'errorfile' from -q argument
 
+  bool exmode;                          // "-e"/"-E": Ex mode
   bool input_istext;                    // stdin is text, not executable (-E/-Es)
 
   int no_swap_file;                     // "-n" argument used
@@ -48,6 +48,9 @@ typedef struct {
   bool had_stdin_file;                  // explicit - as a file to edit
 } mparm_T;
 
-#ifdef INCLUDE_GENERATED_DECLARATIONS
-# include "main.h.generated.h"
+#if defined(MSWIN) && !defined(ENABLE_ASAN_UBSAN)
+# define __asan_default_options vim__asan_default_options
+# define __ubsan_default_options vim__ubsan_default_options
 #endif
+
+#include "main.h.generated.h"

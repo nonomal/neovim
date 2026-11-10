@@ -107,6 +107,56 @@ func Test_cursorline_highlight2()
   endtry
 endfunc
 
+func Test_cursorline_fold_sign_independent_of_culopt()
+  " CursorLineFold/CursorLineSign follow 'cursorline', not 'cursorlineopt'.
+  CheckOption cursorlineopt
+  CheckFeature signs
+  CheckFeature folding
+
+  call s:test_windows(10, 20)
+  try
+    call setline(1, repeat(['aaaa'], 5))
+    setl number numberwidth=4 signcolumn=yes foldcolumn=1
+    hi FoldColumn ctermbg=1 guibg=Red
+    hi CursorLineFold ctermbg=2 guibg=Green
+    hi SignColumn ctermbg=3 guibg=Yellow
+    hi CursorLineSign ctermbg=4 guibg=Blue
+
+    setl nocursorline
+    redraw
+    let fold_off = screenattr(1, 1)
+    let sign_off = screenattr(1, 2)
+
+    " 'cursorlineopt' is "line" only: fold/sign on the cursor line still
+    " use CursorLineFold / CursorLineSign.
+    setl cursorline cursorlineopt=line
+    redraw
+    call assert_notequal(fold_off, screenattr(1, 1))
+    call assert_notequal(sign_off, screenattr(1, 2))
+    call assert_equal(fold_off, screenattr(2, 1))
+    call assert_equal(sign_off, screenattr(2, 2))
+
+    setl cursorlineopt=number
+    redraw
+    call assert_notequal(fold_off, screenattr(1, 1))
+    call assert_notequal(sign_off, screenattr(1, 2))
+
+    setl cursorlineopt=both
+    redraw
+    call assert_notequal(fold_off, screenattr(1, 1))
+    call assert_notequal(sign_off, screenattr(1, 2))
+  finally
+    setl number& numberwidth& signcolumn& foldcolumn& cursorline& cursorlineopt&
+    hi clear FoldColumn
+    hi clear CursorLineFold
+    hi clear SignColumn
+    hi clear CursorLineSign
+    hi default link CursorLineFold FoldColumn
+    hi default link CursorLineSign SignColumn
+    call s:close_windows()
+  endtry
+endfunc
+
 func Test_cursorline_screenline()
   CheckScreendump
   CheckOption cursorlineopt
@@ -262,35 +312,75 @@ func Test_cursorline_callback()
 
       call timer_start(300, 'Func')
   END
-  call writefile(lines, 'Xcul_timer')
+  call writefile(lines, 'Xcul_timer', 'D')
 
   let buf = RunVimInTerminal('-S Xcul_timer', #{rows: 8})
   call TermWait(buf, 310)
   call VerifyScreenDump(buf, 'Test_cursorline_callback_1', {})
 
   call StopVimInTerminal(buf)
-  call delete('Xcul_timer')
+endfunc
+
+func Test_cursorline_screenline_resize()
+  CheckScreendump
+
+  let lines =<< trim END
+      50vnew
+      call setline(1, repeat('xyz ', 30))
+      setlocal number cursorline cursorlineopt=screenline
+      normal! $
+  END
+  call writefile(lines, 'Xcul_screenline_resize', 'D')
+
+  let buf = RunVimInTerminal('-S Xcul_screenline_resize', #{rows: 8})
+  call VerifyScreenDump(buf, 'Test_cursorline_screenline_resize_1', {})
+  call term_sendkeys(buf, ":vertical resize -4\<CR>")
+  call VerifyScreenDump(buf, 'Test_cursorline_screenline_resize_2', {})
+  call term_sendkeys(buf, ":set cpoptions+=n\<CR>")
+  call VerifyScreenDump(buf, 'Test_cursorline_screenline_resize_3', {})
+
+  call StopVimInTerminal(buf)
 endfunc
 
 func Test_cursorline_screenline_update()
   CheckScreendump
 
   let lines =<< trim END
+      func TestRetab()
+        let w = winwidth(0)
+        call cursor([1, w + 1, 0, w + 1])
+        call line('w0')
+        retab 8
+      endfunc
+
       call setline(1, repeat('xyz ', 30))
-      set cursorline cursorlineopt=screenline
+      set cursorline cursorlineopt=screenline tabstop=8
       inoremap <F2> <Cmd>call cursor(1, 1)<CR>
+      inoremap <F3> <Cmd>call TestRetab()<CR>
   END
-  call writefile(lines, 'Xcul_screenline')
+  call writefile(lines, 'Xcul_screenline', 'D')
 
   let buf = RunVimInTerminal('-S Xcul_screenline', #{rows: 8})
   call term_sendkeys(buf, "A")
   call VerifyScreenDump(buf, 'Test_cursorline_screenline_1', {})
   call term_sendkeys(buf, "\<F2>")
   call VerifyScreenDump(buf, 'Test_cursorline_screenline_2', {})
+  call term_sendkeys(buf, "\<F3>")
+  call VerifyScreenDump(buf, 'Test_cursorline_screenline_3', {})
   call term_sendkeys(buf, "\<Esc>")
 
   call StopVimInTerminal(buf)
-  call delete('Xcul_screenline')
+endfunc
+
+func Test_cursorline_screenline_zero_width()
+  CheckOption foldcolumn
+
+  set cursorline culopt=screenline winminwidth=1 foldcolumn=1
+  " This used to crash Vim
+  1vnew | redraw
+
+  bwipe!
+  set cursorline& culopt& winminwidth& foldcolumn&
 endfunc
 
 func Test_cursorline_cursorbind_horizontal_scroll()

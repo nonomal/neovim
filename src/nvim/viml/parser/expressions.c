@@ -128,9 +128,7 @@ typedef enum {
   kEOpAssRight = 'r',  ///< Right associativity.
 } ExprOpAssociativity;
 
-#ifdef INCLUDE_GENERATED_DECLARATIONS
-# include "viml/parser/expressions.c.generated.h"
-#endif
+#include "viml/parser/expressions.c.generated.h"
 
 /// Scale number by a given factor
 ///
@@ -1264,21 +1262,12 @@ static bool viml_pexpr_handle_bop(const ParserState *const pstate, ExprASTStack 
                                    || bop_node->type == kExprNodeSubscript)
                                   ? kEOpLvlSubscript
                                   : node_lvl(*bop_node));
-#ifndef NDEBUG
-  const ExprOpAssociativity bop_node_ass = (
-                                            (bop_node->type == kExprNodeCall
-                                             || bop_node->type == kExprNodeSubscript)
-                                            ? kEOpAssLeft
-                                            : node_ass(*bop_node));
-#endif
   do {
     ExprASTNode **new_top_node_p = kv_last(*ast_stack);
     ExprASTNode *new_top_node = *new_top_node_p;
     assert(new_top_node != NULL);
     const ExprOpLvl new_top_node_lvl = node_lvl(*new_top_node);
     const ExprOpAssociativity new_top_node_ass = node_ass(*new_top_node);
-    assert(bop_node_lvl != new_top_node_lvl
-           || bop_node_ass == new_top_node_ass);
     if (top_node_p != NULL
         && ((bop_node_lvl > new_top_node_lvl
              || (bop_node_lvl == new_top_node_lvl
@@ -2417,7 +2406,7 @@ viml_pexpr_parse_valid_colon:
         // Always drop the topmost value:
         //
         // 1. When want_node != kENodeValue topmost item on stack is
-        //    a *finished* left operand, which may as well be "{@a}" which
+        //    a *finished* left operand, which may as well be "[@a]" which
         //    needs not be finished again.
         // 2. Otherwise it is pointing to NULL what nobody wants.
         kv_drop(ast_stack, 1);
@@ -2428,6 +2417,7 @@ viml_pexpr_parse_valid_colon:
             cur_node->children = *top_node_p;
           }
           *top_node_p = cur_node;
+          new_top_node_p = top_node_p;
           goto viml_pexpr_parse_bracket_closing_error;
         }
         if (want_node == kENodeValue) {
@@ -2647,7 +2637,9 @@ viml_pexpr_parse_figure_brace_closing_error:
           ADD_IDENT(do {
             NEW_NODE_WITH_CUR_POS(cur_node,
                                   kExprNodeCurlyBracesIdentifier);
-            cur_node->data.fig.opening_hl_idx = kv_size(*pstate->colors);
+            if (pstate->colors) {
+              cur_node->data.fig.opening_hl_idx = kv_size(*pstate->colors);
+            }
             cur_node->data.fig.type_guesses.allow_lambda = false;
             cur_node->data.fig.type_guesses.allow_dict = false;
             cur_node->data.fig.type_guesses.allow_ident = true;
@@ -3014,8 +3006,7 @@ viml_pexpr_parse_end:
         break;
       case kExprNodeCurlyBracesIdentifier:
         // Until trailing "}" it is impossible to distinguish curly braces
-        // identifier and dictionary, so it must not appear in the stack like
-        // this.
+        // identifier and Dict, so it must not appear in the stack like this.
         abort();
       case kExprNodeInteger:
       case kExprNodeFloat:

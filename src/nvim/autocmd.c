@@ -7,14 +7,15 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "klib/kvec.h"
-#include "nvim/api/private/helpers.h"
-#include "nvim/ascii_defs.h"
+#include "nvim/api/private/converter.h"
 #include "nvim/autocmd.h"
+#include "nvim/autocmd_defs.h"
 #include "nvim/buffer.h"
 #include "nvim/charset.h"
 #include "nvim/cmdexpand_defs.h"
+#include "nvim/context.h"
 #include "nvim/cursor.h"
+#include "nvim/errors.h"
 #include "nvim/eval.h"
 #include "nvim/eval/typval.h"
 #include "nvim/eval/userfunc.h"
@@ -24,24 +25,24 @@
 #include "nvim/ex_docmd.h"
 #include "nvim/ex_eval.h"
 #include "nvim/fileio.h"
-#include "nvim/getchar.h"
-#include "nvim/getchar_defs.h"
 #include "nvim/gettext_defs.h"
 #include "nvim/globals.h"
 #include "nvim/grid.h"
+#include "nvim/grid_defs.h"
 #include "nvim/hashtab.h"
-#include "nvim/highlight.h"
 #include "nvim/highlight_defs.h"
+#include "nvim/input.h"
+#include "nvim/input_defs.h"
 #include "nvim/insexpand.h"
 #include "nvim/lua/executor.h"
 #include "nvim/main.h"
 #include "nvim/map_defs.h"
+#include "nvim/mbyte.h"
 #include "nvim/memory.h"
 #include "nvim/message.h"
 #include "nvim/option.h"
 #include "nvim/option_defs.h"
 #include "nvim/option_vars.h"
-#include "nvim/optionstr.h"
 #include "nvim/os/input.h"
 #include "nvim/os/os.h"
 #include "nvim/os/os_defs.h"
@@ -63,10 +64,8 @@
 #include "nvim/window.h"
 #include "nvim/winfloat.h"
 
-#ifdef INCLUDE_GENERATED_DECLARATIONS
-# include "auevents_name_map.generated.h"
-# include "autocmd.c.generated.h"
-#endif
+#include "auevents_name_map.generated.h"
+#include "autocmd.c.generated.h"
 
 static const char e_autocommand_nesting_too_deep[]
   = N_("E218: Autocommand nesting too deep");
@@ -74,7 +73,6 @@ static const char e_autocommand_nesting_too_deep[]
 // Naming Conventions:
 //  - general autocmd behavior start with au_
 //  - AutoCmd start with aucmd_
-//  - Autocmd.exec stat with aucmd_exec
 //  - AutoPat start with aupat_
 //  - Groups start with augroup_
 //  - Events start with event_
@@ -89,6 +87,10 @@ static const char e_autocommand_nesting_too_deep[]
 
 // Code for automatic commands.
 static AutoPatCmd *active_apc_list = NULL;  // stack of active autocommands
+
+/// Window handle for `ev.win`.  Unlike autocmd_bufnr/_match this needn't be a
+/// global: only au_callback() reads it.
+static handle_T autocmd_winid = 0;
 
 // ID for associating autocmds created via nvim_create_autocmd
 // Used to delete autocmds from nvim_del_autocmd
@@ -109,13 +111,26 @@ static int autocmd_blocked = 0;  // block all autocmds
 static bool autocmd_nested = false;
 static bool autocmd_include_groups = false;
 
-static char *old_termresponse = NULL;
+static bool termresponse_changed = false;
+static uint64_t termresponse_chan_id = 0;
 
 // Map of autocmd group names and ids.
 //  name -> ID
 //  ID -> name
 static Map(String, int) map_augroup_name_to_id = MAP_INIT;
 static Map(int, String) map_augroup_id_to_name = MAP_INIT;
+
+void autocmd_init(void)
+{
+  deferred_events = multiqueue_new_child(main_loop.events);
+}
+
+#ifdef EXITFREE
+void autocmd_free_all_mem(void)
+{
+  multiqueue_free(deferred_events);
+}
+#endif
 
 static void augroup_map_del(int id, const char *name)
 {
@@ -146,6 +161,7 @@ static void au_show_for_all_events(int group, const char *pat)
 }
 
 static void au_show_for_event(int group, event_T event, const char *pat)
+  FUNC_ATTR_NONNULL_ALL
 {
   AutoCmdVec *const acs = &autocmds[(int)event];
   // Return early if there are no autocmds for this event
@@ -153,10 +169,23 @@ static void au_show_for_event(int group, event_T event, const char *pat)
     return;
   }
 
-  char buflocal_pat[BUFLOCAL_PAT_LEN];  // for "<buffer=X>"
-  int patlen;
+  // Empty pattern shows all autocommands for this event
+  int patlen = 0;
   if (*pat != NUL) {
-    patlen = (int)aucmd_pattern_length(pat);
+    patlen = (int)aucmd_span_pattern(pat, &pat);
+    if (patlen == 0) {  // Don't show if it contains only commas
+      return;
+    }
+  }
+
+  char buflocal_pat[BUFLOCAL_PAT_LEN];  // for "<buffer=X>"
+  int last_group = AUGROUP_ERROR;
+  const char *last_group_name = NULL;
+
+  // Loop through all the specified patterns.
+  do {
+    AutoPat *last_ap = NULL;
+    const char *endpat = pat + patlen;
 
     // detect special <buffer[=X]> buffer-local patterns
     if (aupat_is_buflocal(pat, patlen)) {
@@ -165,21 +194,6 @@ static void au_show_for_event(int group, event_T event, const char *pat)
       pat = buflocal_pat;
       patlen = (int)strlen(buflocal_pat);
     }
-
-    if (patlen == 0) {
-      return;
-    }
-    assert(*pat != NUL);
-  } else {
-    pat = NULL;
-    patlen = 0;
-  }
-
-  // Loop through all the specified patterns.
-  while (true) {
-    AutoPat *last_ap = NULL;
-    int last_group = AUGROUP_ERROR;
-    const char *last_group_name = NULL;
 
     for (size_t i = 0; i < kv_size(*acs); i++) {
       AutoCmd *const ac = &kv_A(*acs, i);
@@ -196,7 +210,7 @@ static void au_show_for_event(int group, event_T event, const char *pat)
       // For <buffer[=X]>, this condition works because we normalize
       // all buffer-local patterns.
       if ((group != AUGROUP_ALL && ac->pat->group != group)
-          || (pat != NULL
+          || (patlen
               && (ac->pat->patlen != patlen || strncmp(pat, ac->pat->pat, (size_t)patlen) != 0))) {
         continue;
       }
@@ -219,14 +233,14 @@ static void au_show_for_event(int group, event_T event, const char *pat)
         // show the group name, if it's not the default group
         if (ac->pat->group != AUGROUP_DEFAULT) {
           if (last_group_name == NULL) {
-            msg_puts_attr(get_deleted_augroup(), HL_ATTR(HLF_E));
+            msg_puts_hl(get_deleted_augroup(), HLF_E, false);
           } else {
-            msg_puts_attr(last_group_name, HL_ATTR(HLF_T));
+            msg_puts_hl(last_group_name, HLF_T, false);
           }
           msg_puts("  ");
         }
         // show the event name
-        msg_puts_attr(event_nr2name(event), HL_ATTR(HLF_T));
+        msg_puts_hl(event_nr2name(event), HLF_T, false);
       }
 
       // Show pattern only if it changed.
@@ -238,8 +252,8 @@ static void au_show_for_event(int group, event_T event, const char *pat)
           return;
         }
 
-        msg_col = 4;
-        msg_outtrans(ac->pat->pat, 0);
+        msg_advance(4);
+        msg_outtrans(ac->pat->pat, 0, false);
       }
 
       if (got_int) {
@@ -249,29 +263,29 @@ static void au_show_for_event(int group, event_T event, const char *pat)
       if (msg_col >= 14) {
         msg_putchar('\n');
       }
-      msg_col = 14;
+      msg_advance(14);
       if (got_int) {
         return;
       }
 
-      char *exec_to_string = aucmd_exec_to_string(ac, ac->exec);
+      char *handler_str = aucmd_handler_to_string(ac);
       if (ac->desc != NULL) {
         size_t msglen = 100;
         char *msg = xmallocz(msglen);
-        if (ac->exec.type == CALLABLE_CB) {
-          msg_puts_attr(exec_to_string, HL_ATTR(HLF_8));
-          snprintf(msg, msglen, " [%s]", ac->desc);
+        if (ac->handler_cmd) {
+          snprintf(msg, msglen, "%s [%s]", handler_str, ac->desc);
         } else {
-          snprintf(msg, msglen, "%s [%s]", exec_to_string, ac->desc);
+          msg_puts_hl(handler_str, HLF_8, false);
+          snprintf(msg, msglen, " [%s]", ac->desc);
         }
-        msg_outtrans(msg, 0);
+        msg_outtrans(msg, 0, false);
         XFREE_CLEAR(msg);
-      } else if (ac->exec.type == CALLABLE_CB) {
-        msg_puts_attr(exec_to_string, HL_ATTR(HLF_8));
+      } else if (ac->handler_cmd) {
+        msg_outtrans(handler_str, 0, false);
       } else {
-        msg_outtrans(exec_to_string, 0);
+        msg_puts_hl(handler_str, HLF_8, false);
       }
-      XFREE_CLEAR(exec_to_string);
+      XFREE_CLEAR(handler_str);
       if (p_verbose > 0) {
         last_set_msg(ac->script_ctx);
       }
@@ -281,17 +295,8 @@ static void au_show_for_event(int group, event_T event, const char *pat)
       }
     }
 
-    // If a pattern is provided, find next pattern. Otherwise exit after single iteration.
-    if (pat != NULL) {
-      pat = aucmd_next_pattern(pat, (size_t)patlen);
-      patlen = (int)aucmd_pattern_length(pat);
-      if (patlen == 0) {
-        break;
-      }
-    } else {
-      break;
-    }
-  }
+    patlen = (int)aucmd_span_pattern(endpat, &pat);
+  } while (patlen);
 }
 
 // Delete autocommand.
@@ -303,7 +308,11 @@ static void aucmd_del(AutoCmd *ac)
     xfree(ac->pat);
   }
   ac->pat = NULL;
-  aucmd_exec_free(&ac->exec);
+  if (ac->handler_cmd) {
+    XFREE_CLEAR(ac->handler_cmd);
+  } else {
+    callback_free(&ac->handler_fn);
+  }
   XFREE_CLEAR(ac->desc);
 
   au_need_clean = true;
@@ -416,6 +425,17 @@ int augroup_add(const char *name)
   return next_id;
 }
 
+void augroup_del_by_id(int id)
+{
+  char *name = id <= 0 ? NULL : augroup_name(id);
+  if (name == NULL) {
+    semsg(_("E367: No such group id: %d"), id);
+  } else {
+    // NB: this can still error, but the error might be "semantic" like "-- Deleted --"
+    augroup_del(name, id, false);
+  }
+}
+
 /// Delete the augroup that matches name.
 /// @param stupid_legacy_mode bool: This parameter determines whether to run the augroup
 ///     deletion in the same fashion as `:augroup! {name}` where if there are any remaining
@@ -427,11 +447,18 @@ int augroup_add(const char *name)
 ///     I did not consider this good behavior, so now when NOT in stupid_legacy_mode, we actually
 ///     delete these groups and their commands, like you would expect (and don't leave hanging
 ///     `--- DELETED ---` groups around)
-void augroup_del(char *name, bool stupid_legacy_mode)
+/// @param id_for_error  only to provide context for an error message:
+///                       if >= 0, we tried to look up the group by id
+///                       if < 0, only use `name` for error
+void augroup_del(char *name, int id_for_error, bool stupid_legacy_mode)
 {
   int group = augroup_find(name);
   if (group == AUGROUP_ERROR) {  // the group doesn't exist
-    semsg(_("E367: No such group: \"%s\""), name);
+    if (id_for_error > 0) {
+      semsg(_("E367: No such group id: %d \"%s\""), id_for_error, name);
+    } else {
+      semsg(_("E367: No such group: \"%s\""), name);
+    }
     return;
   } else if (group == current_augroup) {
     emsg(_("E936: Cannot delete the current group"));
@@ -444,7 +471,7 @@ void augroup_del(char *name, bool stupid_legacy_mode)
       for (size_t i = 0; i < kv_size(*acs); i++) {
         AutoPat *const ap = kv_A(*acs, i).pat;
         if (ap != NULL && ap->group == group) {
-          give_warning(_("W19: Deleting augroup that is still in use"), true);
+          give_warning(_("W19: Deleting augroup that is still in use"), true, true);
           map_put(String, int)(&map_augroup_name_to_id, cstr_as_string(name), AUGROUP_DELETED);
           augroup_map_del(ap->group, NULL);
           return;
@@ -543,7 +570,7 @@ void do_augroup(char *arg, bool del_group)
     if (*arg == NUL) {
       emsg(_(e_argreq));
     } else {
-      augroup_del(arg, true);
+      augroup_del(arg, -1, true);
     }
   } else if (STRICMP(arg, "end") == 0) {  // ":aug end": back to group 0
     current_augroup = AUGROUP_DEFAULT;
@@ -551,6 +578,7 @@ void do_augroup(char *arg, bool del_group)
     current_augroup = augroup_add(arg);
   } else {  // ":aug": list the group names
     msg_start();
+    msg_ext_set_kind("list_cmd");
 
     String name;
     int value;
@@ -569,7 +597,7 @@ void do_augroup(char *arg, bool del_group)
   }
 }
 
-#if defined(EXITFREE)
+#ifdef EXITFREE
 void free_all_autocmds(void)
 {
   FOR_ALL_AUEVENTS(event) {
@@ -593,20 +621,9 @@ void free_all_autocmds(void)
   })
   map_destroy(int, &map_augroup_id_to_name);
 
-  // aucmd_win[] is freed in win_free_all()
+  // ctx_win[] is freed in win_free_all()
 }
 #endif
-
-/// Return true if "win" is an active entry in aucmd_win[].
-bool is_aucmd_win(win_T *win)
-{
-  for (int i = 0; i < AUCMD_WIN_COUNT; i++) {
-    if (aucmd_win[i].auc_win_used && aucmd_win[i].auc_win == win) {
-      return true;
-    }
-  }
-  return false;
-}
 
 /// Return the event number for event name "start".
 /// Return NUM_EVENTS if the event name was not found.
@@ -614,36 +631,30 @@ bool is_aucmd_win(win_T *win)
 event_T event_name2nr(const char *start, char **end)
 {
   const char *p;
-  int i;
 
   // the event name ends with end of line, '|', a blank or a comma
   for (p = start; *p && !ascii_iswhite(*p) && *p != ',' && *p != '|'; p++) {}
-  for (i = 0; event_names[i].name != NULL; i++) {
-    int len = (int)event_names[i].len;
-    if (len == p - start && STRNICMP(event_names[i].name, start, len) == 0) {
-      break;
-    }
-  }
+
+  int hash_idx = event_name2nr_hash(start, (size_t)(p - start));
   if (*p == ',') {
     p++;
   }
   *end = (char *)p;
-  if (event_names[i].name == NULL) {
+  if (hash_idx < 0) {
     return NUM_EVENTS;
   }
-  return event_names[i].event;
+  return (event_T)abs(event_names[event_hash[hash_idx]].event);
 }
 
 /// Return the event number for event name "str".
 /// Return NUM_EVENTS if the event name was not found.
 event_T event_name2nr_str(String str)
 {
-  for (int i = 0; event_names[i].name != NULL; i++) {
-    if (str.size == event_names[i].len && STRNICMP(str.data, event_names[i].name, str.size) == 0) {
-      return event_names[i].event;
-    }
+  int hash_idx = event_name2nr_hash(str.data, str.size);
+  if (hash_idx < 0) {
+    return NUM_EVENTS;
   }
-  return NUM_EVENTS;
+  return (event_T)abs(event_names[event_hash[hash_idx]].event);
 }
 
 /// Return the name for event
@@ -654,46 +665,46 @@ event_T event_name2nr_str(String str)
 const char *event_nr2name(event_T event)
   FUNC_ATTR_NONNULL_RET FUNC_ATTR_WARN_UNUSED_RESULT FUNC_ATTR_CONST
 {
-  for (int i = 0; event_names[i].name != NULL; i++) {
-    if (event_names[i].event == event) {
-      return event_names[i].name;
-    }
-  }
-  return "Unknown";
+  return event < NUM_EVENTS ? event_names[event].name : "Unknown";
 }
 
-/// Return true if "event" is included in 'eventignore'.
+/// Return true if "event" is included in 'eventignore(win)'.
 ///
 /// @param event event to check
-static bool event_ignored(event_T event)
+bool event_ignored(event_T event, char *ei)
   FUNC_ATTR_PURE FUNC_ATTR_WARN_UNUSED_RESULT
 {
-  char *p = p_ei;
-
-  while (*p != NUL) {
-    if (STRNICMP(p, "all", 3) == 0 && (p[3] == NUL || p[3] == ',')) {
-      return true;
-    } else if (event_name2nr(p, &p) == event) {
-      return true;
+  bool ignored = false;
+  while (*ei != NUL) {
+    bool unignore = *ei == '-';
+    ei += unignore;
+    if (STRNICMP(ei, "all", 3) == 0 && (ei[3] == NUL || ei[3] == ',')) {
+      ignored = ei == p_ei || event_names[event].event <= 0;
+      ei += 3 + (ei[3] == ',');
+    } else if (event_name2nr(ei, &ei) == event) {
+      if (unignore) {
+        return false;
+      }
+      ignored = true;
     }
   }
 
-  return false;
+  return ignored;
 }
 
-// Return OK when the contents of p_ei is valid, FAIL otherwise.
-int check_ei(void)
+/// Return OK when the contents of 'eventignore' or 'eventignorewin' is valid,
+/// FAIL otherwise.
+int check_ei(char *ei, bool win)
 {
-  char *p = p_ei;
-
-  while (*p) {
-    if (STRNICMP(p, "all", 3) == 0 && (p[3] == NUL || p[3] == ',')) {
-      p += 3;
-      if (*p == ',') {
-        p++;
+  while (*ei) {
+    if (STRNICMP(ei, "all", 3) == 0 && (ei[3] == NUL || ei[3] == ',')) {
+      ei += 3 + (ei[3] == ',');
+    } else {
+      ei += (*ei == '-');
+      event_T event = event_name2nr(ei, &ei);
+      if (event == NUM_EVENTS || (win && event_names[event].event > 0)) {
+        return FAIL;
       }
-    } else if (event_name2nr(p, &p) == NUM_EVENTS) {
-      return FAIL;
     }
   }
 
@@ -705,14 +716,15 @@ int check_ei(void)
 // Returns the old value of 'eventignore' in allocated memory.
 char *au_event_disable(char *what)
 {
-  char *save_ei = xstrdup(p_ei);
-  char *new_ei = xstrnsave(p_ei, strlen(p_ei) + strlen(what));
+  size_t p_ei_len = strlen(p_ei);
+  char *save_ei = xmemdupz(p_ei, p_ei_len);
+  char *new_ei = xstrnsave(p_ei, p_ei_len + strlen(what));
   if (*what == ',' && *p_ei == NUL) {
     STRCPY(new_ei, what + 1);
   } else {
-    STRCAT(new_ei, what);
+    STRCPY(new_ei + p_ei_len, what);
   }
-  set_option_direct(kOptEventignore, CSTR_AS_OPTVAL(new_ei), 0, SID_NONE);
+  set_option_direct(kOptEventignore, CSTR_AS_OBJ(new_ei), 0, SID_NONE);
   xfree(new_ei);
   return save_ei;
 }
@@ -720,7 +732,7 @@ char *au_event_disable(char *what)
 void au_event_restore(char *old_ei)
 {
   if (old_ei != NULL) {
-    set_option_direct(kOptEventignore, CSTR_AS_OPTVAL(old_ei), 0, SID_NONE);
+    set_option_direct(kOptEventignore, CSTR_AS_OBJ(old_ei), 0, SID_NONE);
     xfree(old_ei);
   }
 }
@@ -762,7 +774,7 @@ void do_autocmd(exarg_T *eap, char *arg_in, int forceit)
   char *arg = arg_in;
   char *envpat = NULL;
   char *cmd;
-  bool need_free = false;
+  bool cmd_need_free = false;
   bool nested = false;
   bool once = false;
   int group;
@@ -798,18 +810,9 @@ void do_autocmd(exarg_T *eap, char *arg_in, int forceit)
       *cmd++ = NUL;
     }
 
-    // Expand environment variables in the pattern.  Set 'shellslash', we want
-    // forward slashes here.
+    // Expand environment variables in the pattern.
     if (vim_strchr(pat, '$') != NULL || vim_strchr(pat, '~') != NULL) {
-#ifdef BACKSLASH_IN_FILENAME
-      int p_ssl_save = p_ssl;
-
-      p_ssl = true;
-#endif
       envpat = expand_env_save(pat);
-#ifdef BACKSLASH_IN_FILENAME
-      p_ssl = p_ssl_save;
-#endif
       if (envpat != NULL) {
         pat = envpat;
       }
@@ -831,7 +834,7 @@ void do_autocmd(exarg_T *eap, char *arg_in, int forceit)
     }
 
     if (invalid_flags) {
-      return;
+      goto err_exit;
     }
 
     // Find the start of the commands.
@@ -839,9 +842,9 @@ void do_autocmd(exarg_T *eap, char *arg_in, int forceit)
     if (*cmd != NUL) {
       cmd = expand_sfile(cmd);
       if (cmd == NULL) {  // some error
-        return;
+        goto err_exit;
       }
-      need_free = true;
+      cmd_need_free = true;
     }
   }
 
@@ -850,6 +853,7 @@ void do_autocmd(exarg_T *eap, char *arg_in, int forceit)
   // Print header when showing autocommands.
   if (is_showing) {
     // Highlight title
+    msg_ext_set_kind("list_cmd");
     msg_puts_title(_("\n--- Autocommands ---"));
 
     if (*arg == '*' || *arg == '|' || *arg == NUL) {
@@ -877,7 +881,8 @@ void do_autocmd(exarg_T *eap, char *arg_in, int forceit)
     }
   }
 
-  if (need_free) {
+err_exit:
+  if (cmd_need_free) {
     xfree(cmd);
   }
   xfree(envpat);
@@ -899,8 +904,8 @@ void do_all_autocmd_events(const char *pat, bool once, int nested, char *cmd, bo
 // If *cmd == NUL: show entries.
 // If forceit == true: delete entries.
 // If group is not AUGROUP_ALL: only use this group.
-int do_autocmd_event(event_T event, const char *pat, bool once, int nested, char *cmd, bool del,
-                     int group)
+int do_autocmd_event(event_T event, const char *pat, bool once, int nested, const char *cmd,
+                     bool del, int group)
   FUNC_ATTR_NONNULL_ALL
 {
   // Cannot be used to show all patterns. See au_show_for_event or au_show_for_all_events
@@ -918,13 +923,19 @@ int do_autocmd_event(event_T event, const char *pat, bool once, int nested, char
   }
 
   // Loop through all the specified patterns.
-  int patlen = (int)aucmd_pattern_length(pat);
+  int patlen = (int)aucmd_span_pattern(pat, &pat);
   while (patlen) {
+    const char *endpat = pat + patlen;
+
     // detect special <buffer[=X]> buffer-local patterns
     bool is_buflocal = aupat_is_buflocal(pat, patlen);
     if (is_buflocal) {
       const int buflocal_nr = aupat_get_buflocal_nr(pat, patlen);
 
+      if (buflocal_nr == 0 || buflist_findnr(buflocal_nr) == NULL) {
+        semsg(_(e_buffer_nr_invalid_buffer_number), buflocal_nr);
+        return FAIL;
+      }
       // normalize pat into standard "<buffer>#N" form
       aupat_normalize_buflocal_pat(buflocal_pat, pat, patlen, buflocal_nr);
 
@@ -958,22 +969,24 @@ int do_autocmd_event(event_T event, const char *pat, bool once, int nested, char
     }
 
     if (is_adding_cmd) {
-      AucmdExecutable exec = AUCMD_EXECUTABLE_INIT;
-      exec.type = CALLABLE_EX;
-      exec.callable.cmd = cmd;
-      autocmd_register(0, event, pat, patlen, group, once, nested, NULL, exec);
+      Callback handler_fn = CALLBACK_INIT;
+      autocmd_register(0, event, pat, patlen, group, once, nested, NULL, cmd, &handler_fn);
     }
 
-    pat = aucmd_next_pattern(pat, (size_t)patlen);
-    patlen = (int)aucmd_pattern_length(pat);
+    patlen = (int)aucmd_span_pattern(endpat, &pat);
   }
 
   au_cleanup();  // may really delete removed patterns/commands now
   return OK;
 }
 
+/// Registers an autocmd. The handler may be a Ex command or callback function, decided by
+/// the `handler_cmd` or `handler_fn` args.
+///
+/// @param handler_cmd Handler Ex command, or NULL if handler is a function (`handler_fn`).
+/// @param handler_fn Handler function, ignored if `handler_cmd` is not NULL.
 int autocmd_register(int64_t id, event_T event, const char *pat, int patlen, int group, bool once,
-                     bool nested, char *desc, AucmdExecutable aucmd)
+                     bool nested, char *desc, const char *handler_cmd, Callback *handler_fn)
 {
   // 0 is not a valid group.
   assert(group != 0);
@@ -992,6 +1005,10 @@ int autocmd_register(int64_t id, event_T event, const char *pat, int patlen, int
   if (is_buflocal) {
     buflocal_nr = aupat_get_buflocal_nr(pat, patlen);
 
+    if (buflocal_nr == 0 || buflist_findnr(buflocal_nr) == NULL) {
+      semsg(_(e_buffer_nr_invalid_buffer_number), buflocal_nr);
+      return FAIL;
+    }
     // normalize pat into standard "<buffer>#N" form
     aupat_normalize_buflocal_pat(buflocal_pat, pat, patlen, buflocal_nr);
 
@@ -1017,12 +1034,6 @@ int autocmd_register(int64_t id, event_T event, const char *pat, int patlen, int
 
   // No matching pattern found, allocate a new one.
   if (ap == NULL) {
-    // refuse to add buffer-local ap if buffer number is invalid
-    if (is_buflocal && (buflocal_nr == 0 || buflist_findnr(buflocal_nr) == NULL)) {
-      semsg(_("E680: <buffer=%d>: invalid buffer number "), buflocal_nr);
-      return FAIL;
-    }
-
     ap = xmalloc(sizeof(AutoPat));
 
     if (is_buflocal) {
@@ -1032,7 +1043,8 @@ int autocmd_register(int64_t id, event_T event, const char *pat, int patlen, int
       ap->buflocal_nr = 0;
       char *reg_pat = file_pat_to_reg_pat(pat, pat + patlen, &ap->allow_dirs, true);
       if (reg_pat != NULL) {
-        ap->reg_prog = vim_regcomp(reg_pat, RE_MAGIC);
+        // RE_NOBREAK: autocmd-pattern matching (aucmd_next()) must not os_breakcheck(). #35071
+        ap->reg_prog = vim_regcomp(reg_pat, RE_MAGIC | RE_NOBREAK);
       }
       xfree(reg_pat);
       if (reg_pat == NULL || ap->reg_prog == NULL) {
@@ -1050,9 +1062,10 @@ int autocmd_register(int64_t id, event_T event, const char *pat, int patlen, int
       get_mode(last_mode);
     }
 
-    // If the event is CursorMoved, update the last cursor position
+    // If the event is CursorMoved or CursorMovedI, update the last cursor position
     // position to avoid immediately triggering the autocommand
-    if (event == EVENT_CURSORMOVED && !has_event(EVENT_CURSORMOVED)) {
+    if ((event == EVENT_CURSORMOVED && !has_event(EVENT_CURSORMOVED))
+        || (event == EVENT_CURSORMOVEDI && !has_event(EVENT_CURSORMOVEDI))) {
       last_cursormoved_win = curwin;
       last_cursormoved = curwin->w_cursor;
     }
@@ -1081,7 +1094,12 @@ int autocmd_register(int64_t id, event_T event, const char *pat, int patlen, int
   AutoCmd *ac = kv_pushp(autocmds[(int)event]);
   ac->pat = ap;
   ac->id = id;
-  ac->exec = aucmd_exec_copy(aucmd);
+  if (handler_cmd) {
+    ac->handler_cmd = xstrdup(handler_cmd);
+  } else {
+    ac->handler_cmd = NULL;
+    callback_copy(&ac->handler_fn, handler_fn);
+  }
   ac->script_ctx = current_sctx;
   ac->script_ctx.sc_lnum += SOURCING_LNUM;
   nlua_set_sctx(&ac->script_ctx);
@@ -1092,46 +1110,28 @@ int autocmd_register(int64_t id, event_T event, const char *pat, int patlen, int
   return OK;
 }
 
-size_t aucmd_pattern_length(const char *pat)
-  FUNC_ATTR_PURE
+size_t aucmd_span_pattern(const char *pat, const char **start)
+  FUNC_ATTR_NONNULL_ALL FUNC_ATTR_WARN_UNUSED_RESULT
 {
-  if (*pat == NUL) {
-    return 0;
+  // Skip leading commas.
+  while (*pat == ',') {
+    pat++;
   }
 
-  const char *endpat;
-
-  for (; *pat; pat = endpat + 1) {
-    // Find end of the pattern.
-    // Watch out for a comma in braces, like "*.\{obj,o\}".
-    endpat = pat;
-    // ignore single comma
-    if (*endpat == ',') {
-      continue;
+  // Find end of the pattern.
+  // Watch out for a comma in braces, like "*.\{obj,o\}".
+  const char *p = pat;
+  int brace_level = 0;
+  for (; *p && (*p != ',' || brace_level || (p > pat && p[-1] == '\\')); p++) {
+    if (*p == '{') {
+      brace_level++;
+    } else if (*p == '}') {
+      brace_level--;
     }
-    int brace_level = 0;
-    for (; *endpat && (*endpat != ',' || brace_level || endpat[-1] == '\\'); endpat++) {
-      if (*endpat == '{') {
-        brace_level++;
-      } else if (*endpat == '}') {
-        brace_level--;
-      }
-    }
-
-    return (size_t)(endpat - pat);
   }
 
-  return strlen(pat);
-}
-
-const char *aucmd_next_pattern(const char *pat, size_t patlen)
-  FUNC_ATTR_PURE
-{
-  pat = pat + patlen;
-  if (*pat == ',') {
-    pat = pat + 1;
-  }
-  return pat;
+  *start = pat;
+  return (size_t)(p - pat);
 }
 
 /// Implementation of ":doautocmd [group] event [fname]".
@@ -1167,7 +1167,7 @@ int do_doautocmd(char *arg_start, bool do_msg, bool *did_something)
   // Loop over the events.
   while (*arg && !ends_excmd(*arg) && !ascii_iswhite(*arg)) {
     if (apply_autocmds_group(event_name2nr(arg, &arg), fname, NULL, true, group,
-                             curbuf, NULL, NULL)) {
+                             curbuf, curwin, NULL, NULL, false)) {
       nothing_done = false;
     }
   }
@@ -1186,7 +1186,7 @@ int do_doautocmd(char *arg_start, bool do_msg, bool *did_something)
 void ex_doautoall(exarg_T *eap)
 {
   int retval = OK;
-  aco_save_T aco;
+  CtxSwitch aco = { 0 };
   char *arg = eap->arg;
   int call_do_modelines = check_nomodeline(&arg);
   bufref_T bufref;
@@ -1204,7 +1204,7 @@ void ex_doautoall(exarg_T *eap)
     }
 
     // Find a window for this buffer and save some values.
-    aucmd_prepbuf(&aco, buf);
+    ctx_switch(&aco, NULL, NULL, buf, 0);
     set_bufref(&bufref, buf);
 
     // execute the autocommands for this buffer
@@ -1214,11 +1214,11 @@ void ex_doautoall(exarg_T *eap)
       // Execute the modeline settings, but don't set window-local
       // options if we are using the current window for another
       // buffer.
-      do_modelines(is_aucmd_win(curwin) ? OPT_NOWIN : 0);
+      do_modelines(is_ctx_win(curwin) ? OPT_NOWIN : 0);
     }
 
     // restore the current window
-    aucmd_restbuf(&aco);
+    ctx_restore(&aco);
 
     // Stop if there is some error or buffer was deleted.
     if (retval == FAIL || !bufref_valid(&bufref)) {
@@ -1251,251 +1251,143 @@ bool check_nomodeline(char **argp)
   return true;
 }
 
-/// Prepare for executing autocommands for (hidden) buffer `buf`.
-/// If the current buffer is not in any visible window, put it in a temporary
-/// floating window using an entry in `aucmd_win[]`.
-/// Set `curbuf` and `curwin` to match `buf`.
+/// Schedules an autocommand event, to be executed at the next event-loop tick.
 ///
-/// @param aco  structure to save values in
-/// @param buf  new curbuf
-void aucmd_prepbuf(aco_save_T *aco, buf_T *buf)
+/// @param event Event to schedule
+/// @param fname Name to use as `<amatch>` (the "pattern"). NULL/empty means use actual filename.
+/// @param fname_io Filename to use for <afile> on cmdline, NULL means use `fname`.
+/// @param group Group ID or AUGROUP_ALL
+/// @param buf Buffer for <abuf>
+/// @param eap Ex command arguments
+/// @param data Event-specific data. Will be copied, caller must free `data`.
+/// The `data` items will also be copied to `v:event`.
+void aucmd_defer(event_T event, char *fname, char *fname_io, int group, buf_T *buf, exarg_T *eap,
+                 Object *data)
 {
-  win_T *win;
-  bool need_append = true;  // Append `aucmd_win` to the window list.
-
-  // Find a window that is for the new buffer
-  if (buf == curbuf) {  // be quick when buf is curbuf
-    win = curwin;
+  AutoCmdEvent *evdata = xmalloc(sizeof(AutoCmdEvent));
+  evdata->event = event;
+  evdata->fname = fname != NULL ? xstrdup(fname) : NULL;
+  evdata->fname_io = fname_io != NULL ? xstrdup(fname_io) : NULL;
+  evdata->group = group;
+  evdata->buf = buf->handle;
+  evdata->eap = eap;
+  if (data) {
+    evdata->data = xmalloc(sizeof(Object));
+    *evdata->data = copy_object(*data, NULL);
   } else {
-    win = NULL;
-    FOR_ALL_WINDOWS_IN_TAB(wp, curtab) {
-      if (wp->w_buffer == buf) {
-        win = wp;
-        break;
-      }
-    }
+    evdata->data = NULL;
   }
 
-  // Allocate a window when needed.
-  win_T *auc_win = NULL;
-  int auc_idx = AUCMD_WIN_COUNT;
-  if (win == NULL) {
-    for (auc_idx = 0; auc_idx < AUCMD_WIN_COUNT; auc_idx++) {
-      if (!aucmd_win[auc_idx].auc_win_used) {
-        break;
-      }
-    }
-
-    if (auc_idx == AUCMD_WIN_COUNT) {
-      kv_push(aucmd_win_vec, ((aucmdwin_T){
-        .auc_win = NULL,
-        .auc_win_used = false,
-      }));
-    }
-
-    if (aucmd_win[auc_idx].auc_win == NULL) {
-      win_alloc_aucmd_win(auc_idx);
-      need_append = false;
-    }
-    auc_win = aucmd_win[auc_idx].auc_win;
-    aucmd_win[auc_idx].auc_win_used = true;
-  }
-
-  aco->save_curwin_handle = curwin->handle;
-  aco->save_prevwin_handle = prevwin == NULL ? 0 : prevwin->handle;
-  aco->save_State = State;
-  if (bt_prompt(curbuf)) {
-    aco->save_prompt_insert = curbuf->b_prompt_insert;
-  }
-
-  if (win != NULL) {
-    // There is a window for "buf" in the current tab page, make it the
-    // curwin.  This is preferred, it has the least side effects (esp. if
-    // "buf" is curbuf).
-    aco->use_aucmd_win_idx = -1;
-    curwin = win;
-  } else {
-    // There is no window for "buf", use "auc_win".  To minimize the side
-    // effects, insert it in the current tab page.
-    // Anything related to a window (e.g., setting folds) may have
-    // unexpected results.
-    aco->use_aucmd_win_idx = auc_idx;
-    auc_win->w_buffer = buf;
-    auc_win->w_s = &buf->b_s;
-    buf->b_nwindows++;
-    win_init_empty(auc_win);  // set cursor and topline to safe values
-
-    // Make sure w_localdir, tp_localdir and globaldir are NULL to avoid a
-    // chdir() in win_enter_ext().
-    XFREE_CLEAR(auc_win->w_localdir);
-    aco->tp_localdir = curtab->tp_localdir;
-    curtab->tp_localdir = NULL;
-    aco->globaldir = globaldir;
-    globaldir = NULL;
-
-    block_autocmds();  // We don't want BufEnter/WinEnter autocommands.
-    if (need_append) {
-      win_append(lastwin, auc_win, NULL);
-      pmap_put(int)(&window_handles, auc_win->handle, auc_win);
-      win_config_float(auc_win, auc_win->w_config);
-    }
-    // Prevent chdir() call in win_enter_ext(), through do_autochdir()
-    const int save_acd = p_acd;
-    p_acd = false;
-    // no redrawing and don't set the window title
-    RedrawingDisabled++;
-    win_enter(auc_win, false);
-    RedrawingDisabled--;
-    p_acd = save_acd;
-    unblock_autocmds();
-    curwin = auc_win;
-  }
-  curbuf = buf;
-  aco->new_curwin_handle = curwin->handle;
-  set_bufref(&aco->new_curbuf, curbuf);
-
-  // disable the Visual area, the position may be invalid in another buffer
-  aco->save_VIsual_active = VIsual_active;
-  VIsual_active = false;
+  multiqueue_put(deferred_events, deferred_event, evdata);
 }
 
-/// Cleanup after executing autocommands for a (hidden) buffer.
-/// Restore the window as it was (if possible).
-///
-/// @param aco  structure holding saved values
-void aucmd_restbuf(aco_save_T *aco)
+/// Executes a deferred autocommand event.
+static void deferred_event(void **argv)
 {
-  if (aco->use_aucmd_win_idx >= 0) {
-    win_T *awp = aucmd_win[aco->use_aucmd_win_idx].auc_win;
+  AutoCmdEvent *e = argv[0];
+  event_T event = e->event;
+  char *fname = e->fname;
+  char *fname_io = e->fname_io;
+  int group = e->group;
+  exarg_T *eap = e->eap;
+  Object *data = e->data;
 
-    // Find "awp", it can't be closed, but it may be in another tab page.
-    // Do not trigger autocommands here.
-    block_autocmds();
-    if (curwin != awp) {
-      FOR_ALL_TAB_WINDOWS(tp, wp) {
-        if (wp == awp) {
-          if (tp != curtab) {
-            goto_tabpage_tp(tp, true, true);
-          }
-          win_goto(awp);
-          goto win_found;
+  Error err = ERROR_INIT;
+  buf_T *buf = find_buffer_by_handle(e->buf, &err);
+  if (buf) {
+    // Copy `data` to `v:event`.
+    save_v_event_T save_v_event;
+    dict_T *v_event = get_v_event(&save_v_event);
+    if (data && data->type == kObjectTypeDict) {
+      for (size_t i = 0; i < data->data.dict.size; i++) {
+        KeyValuePair item = data->data.dict.items[i];
+        typval_T tv;
+        object_to_vim(item.value, &tv, &err);
+        if (ERROR_SET(&err)) {
+          api_clear_error(&err);
+          continue;
         }
+        tv_dict_add_tv(v_event, item.key.data, item.key.size, &tv);
+        tv_clear(&tv);
       }
     }
-win_found:
-    curbuf->b_nwindows--;
-    const bool save_stop_insert_mode = stop_insert_mode;
-    // May need to stop Insert mode if we were in a prompt buffer.
-    leaving_window(curwin);
-    // Do not stop Insert mode when already in Insert mode before.
-    if (aco->save_State & MODE_INSERT) {
-      stop_insert_mode = save_stop_insert_mode;
-    }
-    // Remove the window.
-    win_remove(curwin, NULL);
-    pmap_del(int)(&window_handles, curwin->handle, NULL);
-    if (curwin->w_grid_alloc.chars != NULL) {
-      ui_comp_remove_grid(&curwin->w_grid_alloc);
-      ui_call_win_hide(curwin->w_grid_alloc.handle);
-      grid_free(&curwin->w_grid_alloc);
-    }
+    tv_dict_set_keys_readonly(v_event);
 
-    // The window is marked as not used, but it is not freed, it can be
-    // used again.
-    aucmd_win[aco->use_aucmd_win_idx].auc_win_used = false;
+    win_T *win = curwin;  // before ctx_switch() may make the context window current
 
-    if (!valid_tabpage_win(curtab)) {
-      // no valid window in current tabpage
-      close_tabpage(curtab);
-    }
+    CtxSwitch aco = { 0 };
+    ctx_switch(&aco, NULL, NULL, buf, 0);
+    apply_autocmds_group(event, fname, fname_io, false, group, buf, win, eap, data, false);
+    ctx_restore(&aco);
 
-    unblock_autocmds();
-
-    win_T *const save_curwin = win_find_by_handle(aco->save_curwin_handle);
-    if (save_curwin != NULL) {
-      curwin = save_curwin;
-    } else {
-      // Hmm, original window disappeared.  Just use the first one.
-      curwin = firstwin;
-    }
-    curbuf = curwin->w_buffer;
-    // May need to restore insert mode for a prompt buffer.
-    entering_window(curwin);
-    if (bt_prompt(curbuf)) {
-      curbuf->b_prompt_insert = aco->save_prompt_insert;
-    }
-
-    prevwin = win_find_by_handle(aco->save_prevwin_handle);
-    vars_clear(&awp->w_vars->dv_hashtab);         // free all w: variables
-    hash_init(&awp->w_vars->dv_hashtab);          // re-use the hashtab
-
-    // If :lcd has been used in the autocommand window, correct current
-    // directory before restoring tp_localdir and globaldir.
-    if (awp->w_localdir != NULL) {
-      win_fix_current_dir();
-    }
-    xfree(curtab->tp_localdir);
-    curtab->tp_localdir = aco->tp_localdir;
-    xfree(globaldir);
-    globaldir = aco->globaldir;
-
-    // the buffer contents may have changed
-    VIsual_active = aco->save_VIsual_active;
-    check_cursor(curwin);
-    if (curwin->w_topline > curbuf->b_ml.ml_line_count) {
-      curwin->w_topline = curbuf->b_ml.ml_line_count;
-      curwin->w_topfill = 0;
-    }
-  } else {
-    // Restore curwin.  Use the window ID, a window may have been closed
-    // and the memory re-used for another one.
-    win_T *const save_curwin = win_find_by_handle(aco->save_curwin_handle);
-    if (save_curwin != NULL) {
-      // Restore the buffer which was previously edited by curwin, if it was
-      // changed, we are still the same window and the buffer is valid.
-      if (curwin->handle == aco->new_curwin_handle
-          && curbuf != aco->new_curbuf.br_buf
-          && bufref_valid(&aco->new_curbuf)
-          && aco->new_curbuf.br_buf->b_ml.ml_mfp != NULL) {
-        if (curwin->w_s == &curbuf->b_s) {
-          curwin->w_s = &aco->new_curbuf.br_buf->b_s;
-        }
-        curbuf->b_nwindows--;
-        curbuf = aco->new_curbuf.br_buf;
-        curwin->w_buffer = curbuf;
-        curbuf->b_nwindows++;
-      }
-
-      curwin = save_curwin;
-      curbuf = curwin->w_buffer;
-      prevwin = win_find_by_handle(aco->save_prevwin_handle);
-
-      // In case the autocommand moves the cursor to a position that does not
-      // exist in curbuf
-      VIsual_active = aco->save_VIsual_active;
-      check_cursor(curwin);
-    }
+    restore_v_event(v_event, &save_v_event);
   }
 
-  VIsual_active = aco->save_VIsual_active;
-  check_cursor(curwin);  // just in case lines got deleted
-  if (VIsual_active) {
-    check_pos(curbuf, &VIsual);
+  xfree(fname);
+  xfree(fname_io);
+  if (data) {
+    api_free_object(*data);
+    xfree(data);
   }
+  xfree(e);
+}
+
+static void deferred_optionset_modified(void **argv)
+{
+  Error err = ERROR_INIT;
+  buf_T *buf = find_buffer_by_handle((handle_T)(uintptr_t)argv[0], &err);
+  api_clear_error(&err);
+  if (buf) {
+    bool new_val = (bool)(uintptr_t)argv[1];
+    Object old = BOOLEAN_OBJ(!new_val);
+    Object new = BOOLEAN_OBJ(new_val);
+    CtxSwitch aco = { 0 };
+    ctx_switch(&aco, NULL, NULL, buf, 0);
+    apply_optionset_autocmd_now(kOptModified, OPT_LOCAL, old, old, old, new);
+    ctx_restore(&aco);
+  }
+}
+
+/// Special case of aucmd_defer for `OptionSet modified`.
+void aucmd_defer_modified(buf_T *buf, bool new_val)
+{
+  if (!has_event(EVENT_OPTIONSET)
+      || (bt_nofile(buf) && !buf->b_p_bl)
+      || *get_vim_var_str(VV_OPTION_TYPE) != NUL) {
+    return;
+  }
+  multiqueue_put(deferred_events, deferred_optionset_modified,
+                 (void *)(uintptr_t)buf->handle,
+                 (void *)(uintptr_t)new_val);
 }
 
 /// Execute autocommands for "event" and file name "fname".
 ///
+/// `ev.win` is curwin; use apply_autocmds_win() for window-specific events.
+///
 /// @param event event that occurred
 /// @param fname filename, NULL or empty means use actual file name
 /// @param fname_io filename to use for <afile> on cmdline
-/// @param force When true, ignore autocmd_busy
+/// @param force Ignore autocmd_busy (force "++nested" behavior)
 /// @param buf Buffer for <abuf>
 ///
 /// @return true if some commands were executed.
 bool apply_autocmds(event_T event, char *fname, char *fname_io, bool force, buf_T *buf)
 {
-  return apply_autocmds_group(event, fname, fname_io, force, AUGROUP_ALL, buf, NULL, NULL);
+  return apply_autocmds_group(event, fname, fname_io, force, AUGROUP_ALL, buf, curwin, NULL, NULL,
+                              false);
+}
+
+/// Like apply_autocmds(), but with an explicit window for `ev.win`.
+///
+/// @param win Window for `ev.win`, NULL for the current window.
+///
+/// @return true if some commands were executed.
+bool apply_autocmds_win(event_T event, char *fname, char *fname_io, bool force, buf_T *buf,
+                        win_T *win)
+{
+  return apply_autocmds_group(event, fname, fname_io, force, AUGROUP_ALL, buf, win, NULL, NULL,
+                              false);
 }
 
 /// Like apply_autocmds(), but with extra "eap" argument.  This takes care of
@@ -1504,7 +1396,7 @@ bool apply_autocmds(event_T event, char *fname, char *fname_io, bool force, buf_
 /// @param event event that occurred
 /// @param fname NULL or empty means use actual file name
 /// @param fname_io fname to use for <afile> on cmdline
-/// @param force When true, ignore autocmd_busy
+/// @param force Ignore autocmd_busy (force "++nested" behavior)
 /// @param buf Buffer for <abuf>
 /// @param exarg Ex command arguments
 ///
@@ -1512,7 +1404,8 @@ bool apply_autocmds(event_T event, char *fname, char *fname_io, bool force, buf_
 bool apply_autocmds_exarg(event_T event, char *fname, char *fname_io, bool force, buf_T *buf,
                           exarg_T *eap)
 {
-  return apply_autocmds_group(event, fname, fname_io, force, AUGROUP_ALL, buf, eap, NULL);
+  return apply_autocmds_group(event, fname, fname_io, force, AUGROUP_ALL, buf, curwin, eap, NULL,
+                              false);
 }
 
 /// Like apply_autocmds(), but handles the caller's retval.  If the script
@@ -1523,7 +1416,7 @@ bool apply_autocmds_exarg(event_T event, char *fname, char *fname_io, bool force
 /// @param event event that occurred
 /// @param fname NULL or empty means use actual file name
 /// @param fname_io fname to use for <afile> on cmdline
-/// @param force When true, ignore autocmd_busy
+/// @param force Ignore autocmd_busy (force "++nested" behavior)
 /// @param buf Buffer for <abuf>
 /// @param[in,out] retval caller's retval
 ///
@@ -1535,7 +1428,8 @@ bool apply_autocmds_retval(event_T event, char *fname, char *fname_io, bool forc
     return false;
   }
 
-  bool did_cmd = apply_autocmds_group(event, fname, fname_io, force, AUGROUP_ALL, buf, NULL, NULL);
+  bool did_cmd = apply_autocmds_group(event, fname, fname_io, force, AUGROUP_ALL, buf, curwin, NULL,
+                                      NULL, false);
   if (did_cmd && aborting()) {
     *retval = FAIL;
   }
@@ -1552,7 +1446,7 @@ bool has_event(event_T event) FUNC_ATTR_PURE FUNC_ATTR_WARN_UNUSED_RESULT
 
 /// Return true when there is a CursorHold/CursorHoldI autocommand defined for
 /// the current mode.
-bool has_cursorhold(void) FUNC_ATTR_PURE FUNC_ATTR_WARN_UNUSED_RESULT
+static bool has_cursorhold(void) FUNC_ATTR_PURE FUNC_ATTR_WARN_UNUSED_RESULT
 {
   return has_event((get_real_state() == MODE_NORMAL_BUSY ? EVENT_CURSORHOLD : EVENT_CURSORHOLDI));
 }
@@ -1576,14 +1470,16 @@ bool trigger_cursorhold(void) FUNC_ATTR_PURE FUNC_ATTR_WARN_UNUSED_RESULT
 /// @param fname filename, NULL or empty means use actual file name
 /// @param fname_io filename to use for <afile> on cmdline,
 ///                 NULL means use `fname`.
-/// @param force When true, ignore autocmd_busy
+/// @param force Ignore autocmd_busy (force "++nested" behavior)
 /// @param group autocmd group ID or AUGROUP_ALL
 /// @param buf Buffer for <abuf>
+/// @param win Window for `ev.win`, NULL for the current window.
 /// @param eap Ex command arguments
+/// @param with_buf Run callbacks with "buf" as the current buffer
 ///
 /// @return true if some commands were executed.
 bool apply_autocmds_group(event_T event, char *fname, char *fname_io, bool force, int group,
-                          buf_T *buf, exarg_T *eap, Object *data)
+                          buf_T *buf, win_T *win, exarg_T *eap, Object *data, bool with_buf)
 {
   char *sfname = NULL;  // short file name
   bool retval = false;
@@ -1592,8 +1488,12 @@ bool apply_autocmds_group(event_T event, char *fname, char *fname_io, bool force
   static bool filechangeshell_busy = false;
   proftime_T wait_time;
   bool did_save_redobuff = false;
-  save_redo_T save_redo;
+  RedoState save_redo;
   const bool save_KeyTyped = KeyTyped;
+  ESTACK_CHECK_DECLARATION;
+  CtxSwitch aco = { 0 };
+  bool save_changed = false;
+  buf_T *old_curbuf = NULL;
 
   // Quickly return if there are no autocommands for this event or
   // autocommands are blocked.
@@ -1620,7 +1520,25 @@ bool apply_autocmds_group(event_T event, char *fname, char *fname_io, bool force
   }
 
   // Ignore events in 'eventignore'.
-  if (event_ignored(event)) {
+  if (event_ignored(event, p_ei)) {
+    goto BYPASS_AU;
+  }
+
+  bool win_ignore = false;
+  // If event is allowed in 'eventignorewin', check if curwin or all windows
+  // into "buf" are ignoring the event.
+  if (buf == curbuf && event_names[event].event <= 0) {
+    win_ignore = event_ignored(event, curwin->w_p_eiw);
+  } else if (buf != NULL && event_names[event].event <= 0 && buf->b_nwindows > 0) {
+    win_ignore = true;
+    FOR_ALL_TAB_WINDOWS(tp, wp) {
+      if (wp->w_buffer == buf && !event_ignored(event, wp->w_p_eiw)) {
+        win_ignore = false;
+        break;
+      }
+    }
+  }
+  if (win_ignore) {
     goto BYPASS_AU;
   }
 
@@ -1642,18 +1560,17 @@ bool apply_autocmds_group(event_T event, char *fname, char *fname_io, bool force
   char *save_autocmd_fname = autocmd_fname;
   bool save_autocmd_fname_full = autocmd_fname_full;
   int save_autocmd_bufnr = autocmd_bufnr;
+  handle_T save_autocmd_winid = autocmd_winid;
   char *save_autocmd_match = autocmd_match;
   int save_autocmd_busy = autocmd_busy;
   int save_autocmd_nested = autocmd_nested;
-  bool save_changed = curbuf->b_changed;
-  buf_T *old_curbuf = curbuf;
-
   // Set the file name to be used for <afile>.
   // Make a copy to avoid that changing a buffer name or directory makes it
   // invalid.
   if (fname_io == NULL) {
     if (event == EVENT_COLORSCHEME || event == EVENT_COLORSCHEMEPRE
-        || event == EVENT_OPTIONSET || event == EVENT_MODECHANGED) {
+        || event == EVENT_OPTIONSET || event == EVENT_MODECHANGED
+        || event == EVENT_MARKSET) {
       autocmd_fname = NULL;
     } else if (fname != NULL && !ends_excmd(*fname)) {
       autocmd_fname = fname;
@@ -1665,7 +1582,9 @@ bool apply_autocmds_group(event_T event, char *fname, char *fname_io, bool force
   } else {
     autocmd_fname = fname_io;
   }
+  char *afile_orig = NULL;  ///< Unexpanded <afile>
   if (autocmd_fname != NULL) {
+    afile_orig = xstrdup(autocmd_fname);
     // Allocate MAXPATHL for when eval_vars() resolves the fullpath.
     autocmd_fname = xstrnsave(autocmd_fname, MAXPATHL);
   }
@@ -1697,22 +1616,41 @@ bool apply_autocmds_group(event_T event, char *fname, char *fname_io, bool force
     }
     fname = xstrdup(fname);  // make a copy, so we can change it
   } else {
-    sfname = xstrdup(fname);
+    sfname = TO_SLASH_SAVE(fname);
     // Don't try expanding the following events.
-    if (event == EVENT_CMDLINECHANGED || event == EVENT_CMDLINEENTER
-        || event == EVENT_CMDLINELEAVE || event == EVENT_CMDUNDEFINED
-        || event == EVENT_CMDWINENTER || event == EVENT_CMDWINLEAVE
-        || event == EVENT_COLORSCHEME || event == EVENT_COLORSCHEMEPRE
-        || event == EVENT_DIRCHANGED || event == EVENT_DIRCHANGEDPRE
-        || event == EVENT_FILETYPE || event == EVENT_FUNCUNDEFINED
-        || event == EVENT_MENUPOPUP || event == EVENT_MODECHANGED
-        || event == EVENT_OPTIONSET || event == EVENT_QUICKFIXCMDPOST
-        || event == EVENT_QUICKFIXCMDPRE || event == EVENT_REMOTEREPLY
-        || event == EVENT_SIGNAL || event == EVENT_SPELLFILEMISSING
-        || event == EVENT_SYNTAX || event == EVENT_TABCLOSED
-        || event == EVENT_USER || event == EVENT_WINCLOSED
-        || event == EVENT_WINRESIZED || event == EVENT_WINSCROLLED) {
-      fname = xstrdup(fname);
+    if (event == EVENT_CMDATOM
+        || event == EVENT_CMDLINECHANGED
+        || event == EVENT_CMDLINEENTER
+        || event == EVENT_CMDLINELEAVEPRE
+        || event == EVENT_CMDLINELEAVE
+        || event == EVENT_CMDUNDEFINED
+        || event == EVENT_CURSORMOVEDC
+        || event == EVENT_CMDWINENTER
+        || event == EVENT_CMDWINLEAVE
+        || event == EVENT_COLORSCHEME
+        || event == EVENT_COLORSCHEMEPRE
+        || event == EVENT_DIRCHANGED
+        || event == EVENT_DIRCHANGEDPRE
+        || event == EVENT_FILETYPE
+        || event == EVENT_FUNCUNDEFINED
+        || event == EVENT_MARKSET
+        || event == EVENT_MENUPOPUP
+        || event == EVENT_MODECHANGED
+        || event == EVENT_OPTIONSET
+        || event == EVENT_PROGRESS
+        || event == EVENT_QUICKFIXCMDPOST
+        || event == EVENT_QUICKFIXCMDPRE
+        || event == EVENT_REMOTEREPLY
+        || event == EVENT_SIGNAL
+        || event == EVENT_SPELLFILEMISSING
+        || event == EVENT_SYNTAX
+        || event == EVENT_TABCLOSED
+        || event == EVENT_TABMOVED
+        || event == EVENT_USER
+        || event == EVENT_WINCLOSED
+        || event == EVENT_WINRESIZED
+        || event == EVENT_WINSCROLLED) {
+      fname = TO_SLASH_SAVE(fname);
       autocmd_fname_full = true;  // don't expand it later
     } else {
       fname = FullName_save(fname, false);
@@ -1724,14 +1662,16 @@ bool apply_autocmds_group(event_T event, char *fname, char *fname_io, bool force
     goto BYPASS_AU;
   }
 
-#ifdef BACKSLASH_IN_FILENAME
-  // Replace all backslashes with forward slashes. This makes the
-  // autocommand patterns portable between Unix and Windows.
-  if (sfname != NULL) {
-    forward_slash(sfname);
+  // Set the window handle for `ev.win`.  After the last "goto BYPASS_AU", which
+  // skips the restore below, and before ctx_switch().
+  autocmd_winid = win != NULL ? win->handle : (curwin != NULL ? curwin->handle : 0);
+
+  if (with_buf && buf != NULL && buf != curbuf) {
+    ctx_switch(&aco, NULL, NULL, buf, 0);
   }
-  forward_slash(fname);
-#endif
+
+  save_changed = curbuf->b_changed;
+  old_curbuf = curbuf;
 
   // Set the name to be used for <amatch>.
   autocmd_match = fname;
@@ -1741,6 +1681,7 @@ bool apply_autocmds_group(event_T event, char *fname, char *fname_io, bool force
 
   // name and lnum are filled in later
   estack_push(ETYPE_AUCMD, NULL, 0);
+  ESTACK_CHECK_SETUP;
 
   const sctx_T save_current_sctx = current_sctx;
 
@@ -1756,7 +1697,7 @@ bool apply_autocmds_group(event_T event, char *fname, char *fname_io, bool force
   if (!autocmd_busy) {
     save_search_patterns();
     if (!ins_compl_active()) {
-      saveRedobuff(&save_redo);
+      save_redobuff(&save_redo);
       did_save_redobuff = true;
     }
     curbuf->b_did_filetype = curbuf->b_keep_filetype;
@@ -1767,8 +1708,8 @@ bool apply_autocmds_group(event_T event, char *fname, char *fname_io, bool force
   filechangeshell_busy = (event == EVENT_FILECHANGEDSHELL);
   nesting++;  // see matching decrement below
 
-  // Remember that FileType was triggered.  Used for did_filetype().
-  if (event == EVENT_FILETYPE) {
+  // Remember that FileType was triggered, if 'filetype' was actually set.  For :setf.
+  if (event == EVENT_FILETYPE && *curbuf->b_p_ft != NUL) {
     curbuf->b_did_filetype = true;
   }
 
@@ -1783,6 +1724,7 @@ bool apply_autocmds_group(event_T event, char *fname, char *fname_io, bool force
     // save vector size, to avoid an endless loop when more patterns
     // are added when executing autocommands
     .ausize = kv_size(autocmds[(int)event]),
+    .afile_orig = afile_orig,
     .fname = fname,
     .sfname = sfname,
     .tail = tail,
@@ -1821,13 +1763,11 @@ bool apply_autocmds_group(event_T event, char *fname, char *fname_io, bool force
     }
 
     const int save_did_emsg = did_emsg;
-    const bool save_ex_pressedreturn = get_pressedreturn();
 
     // Execute the autocmd. The `getnextac` callback handles iteration.
     do_cmdline(NULL, getnextac, &patcmd, DOCMD_NOWAIT | DOCMD_VERBOSE | DOCMD_REPEAT);
 
     did_emsg += save_did_emsg;
-    set_pressedreturn(save_ex_pressedreturn);
 
     if (nesting == 1) {
       // restore cursor and topline, unless they were changed
@@ -1849,11 +1789,14 @@ bool apply_autocmds_group(event_T event, char *fname, char *fname_io, bool force
   filechangeshell_busy = false;
   autocmd_nested = save_autocmd_nested;
   xfree(SOURCING_NAME);
+  ESTACK_CHECK_NOW;
   estack_pop();
+  xfree(afile_orig);
   xfree(autocmd_fname);
   autocmd_fname = save_autocmd_fname;
   autocmd_fname_full = save_autocmd_fname_full;
   autocmd_bufnr = save_autocmd_bufnr;
+  autocmd_winid = save_autocmd_winid;
   autocmd_match = save_autocmd_match;
   current_sctx = save_current_sctx;
   restore_funccal();
@@ -1871,7 +1814,7 @@ bool apply_autocmds_group(event_T event, char *fname, char *fname_io, bool force
   if (!autocmd_busy) {
     restore_search_patterns();
     if (did_save_redobuff) {
-      restoreRedobuff(&save_redo);
+      restore_redobuff(&save_redo);
     }
     curbuf->b_did_filetype = false;
     while (au_pending_free_buf != NULL) {
@@ -1913,16 +1856,30 @@ BYPASS_AU:
     curbuf->b_au_did_filetype = true;
   }
 
+  ctx_restore(&aco);
+
   return retval;
+}
+
+void do_termresponse_autocmd(const String sequence, uint64_t channel_id)
+{
+  MAXSIZE_TEMP_DICT(data, 2);
+  PUT_C(data, "sequence", STRING_OBJ(sequence));
+  PUT_C(data, "chan", INTEGER_OBJ((Integer)channel_id));
+  apply_autocmds_group(EVENT_TERMRESPONSE, NULL, NULL, true, AUGROUP_ALL, NULL, curwin, NULL,
+                       &DICT_OBJ(data), false);
+  termresponse_changed = true;
+  termresponse_chan_id = channel_id;
 }
 
 // Block triggering autocommands until unblock_autocmd() is called.
 // Can be used recursively, so long as it's symmetric.
 void block_autocmds(void)
 {
-  // Remember the value of v:termresponse.
+  // Detect if v:termresponse is set while blocked.
   if (!is_autocmd_blocked()) {
-    old_termresponse = get_vim_var_str(VV_TERMRESPONSE);
+    termresponse_changed = false;
+    termresponse_chan_id = 0;
   }
   autocmd_blocked++;
 }
@@ -1934,8 +1891,11 @@ void unblock_autocmds(void)
   // When v:termresponse was set while autocommands were blocked, trigger
   // the autocommands now.  Esp. useful when executing a shell command
   // during startup (nvim -d).
-  if (!is_autocmd_blocked() && get_vim_var_str(VV_TERMRESPONSE) != old_termresponse) {
-    apply_autocmds(EVENT_TERMRESPONSE, NULL, NULL, false, curbuf);
+  if (!is_autocmd_blocked() && termresponse_changed && has_event(EVENT_TERMRESPONSE)) {
+    // Copied to a new allocation, as termresponse may be freed during the event.
+    const String sequence = cstr_to_string(get_vim_var_str(VV_TERMRESPONSE));
+    do_termresponse_autocmd(sequence, termresponse_chan_id);
+    api_free_string(sequence);
   }
 }
 
@@ -2007,16 +1967,18 @@ static void aucmd_next(AutoPatCmd *apc)
   apc->auidx = SIZE_MAX;
 }
 
-static bool call_autocmd_callback(const AutoCmd *ac, const AutoPatCmd *apc)
+/// Executes an autocmd callback function (as opposed to an Ex command).
+static bool au_callback(const AutoCmd *ac, const AutoPatCmd *apc)
 {
-  Callback callback = ac->exec.callable.cb;
+  Callback callback = ac->handler_fn;
   if (callback.type == kCallbackLua) {
-    MAXSIZE_TEMP_DICT(data, 7);
+    MAXSIZE_TEMP_DICT(data, 8);
     PUT_C(data, "id", INTEGER_OBJ(ac->id));
     PUT_C(data, "event", CSTR_AS_OBJ(event_nr2name(apc->event)));
+    PUT_C(data, "file", CSTR_AS_OBJ(apc->afile_orig));
     PUT_C(data, "match", CSTR_AS_OBJ(autocmd_match));
-    PUT_C(data, "file", CSTR_AS_OBJ(autocmd_fname));
     PUT_C(data, "buf", INTEGER_OBJ(autocmd_bufnr));
+    PUT_C(data, "win", INTEGER_OBJ(autocmd_winid));
 
     if (apc->data) {
       PUT_C(data, "data", *apc->data);
@@ -2037,7 +1999,7 @@ static bool call_autocmd_callback(const AutoCmd *ac, const AutoPatCmd *apc)
     }
 
     MAXSIZE_TEMP_ARRAY(args, 1);
-    ADD_C(args, DICTIONARY_OBJ(data));
+    ADD_C(args, DICT_OBJ(data));
 
     Object result = nlua_call_ref(callback.data.luaref, NULL, args, kRetNilBool, NULL, NULL);
     return LUARET_TRUTHY(result);
@@ -2074,10 +2036,10 @@ char *getnextac(int c, void *cookie, int indent, bool do_concat)
 
   if (p_verbose >= 9) {
     verbose_enter_scroll();
-    char *exec_to_string = aucmd_exec_to_string(ac, ac->exec);
-    smsg(0, _("autocommand %s"), exec_to_string);
+    char *handler_str = aucmd_handler_to_string(ac);
+    smsg(0, _("autocommand %s"), handler_str);
     msg_puts("\n");  // don't overwrite this either
-    XFREE_CLEAR(exec_to_string);
+    XFREE_CLEAR(handler_str);
     verbose_leave_scroll();
   }
 
@@ -2088,16 +2050,22 @@ char *getnextac(int c, void *cookie, int indent, bool do_concat)
   apc->script_ctx = current_sctx;
 
   char *retval;
-  if (ac->exec.type == CALLABLE_CB) {
-    // Can potentially reallocate kvec_t data and invalidate the ac pointer
-    if (call_autocmd_callback(ac, apc)) {
-      // If an autocommand callback returns true, delete the autocommand
-      oneshot = true;
+  if (ac->handler_cmd) {
+    retval = xstrdup(ac->handler_cmd);
+  } else {
+    AutoCmd ac_copy = *ac;
+    // Mark oneshot handler as "removed" now, to prevent recursion by e.g. `:doautocmd`. #25526
+    ac->pat = oneshot ? NULL : ac->pat;
+    // May reallocate `acs` kvec_t data and invalidate the `ac` pointer.
+    bool rv = au_callback(&ac_copy, apc);
+    if (oneshot) {
+      // Restore `pat`. Use `acs` because `ac` may have been invalidated by the callback.
+      kv_A(*acs, apc->auidx).pat = ac_copy.pat;
     }
+    // If an autocommand callback returns true, delete the autocommand
+    oneshot = oneshot || rv;
 
-    // TODO(tjdevries):
-    //
-    // Major Hack Alert:
+    // HACK(tjdevries):
     //  We just return "not-null" and continue going.
     //  This would be a good candidate for a refactor. You would need to refactor:
     //      1. do_cmdline to accept something besides a string
@@ -2106,8 +2074,6 @@ char *getnextac(int c, void *cookie, int indent, bool do_concat)
     //      and instead we loop over all the matches and just execute one-by-one.
     //          However, my expectation would be that could be expensive.
     retval = xcalloc(1, 1);
-  } else {
-    retval = xstrdup(ac->exec.callable.cmd);
   }
 
   // Remove one-shot ("once") autocmd in anticipation of its execution.
@@ -2124,31 +2090,23 @@ char *getnextac(int c, void *cookie, int indent, bool do_concat)
   return retval;
 }
 
-/// Return true if there is a matching autocommand for "fname".
-/// To account for buffer-local autocommands, function needs to know
-/// in which buffer the file will be opened.
+/// Implementation of has_autocmd() and has_autocmd_fullname().
 ///
-/// @param event event that occurred.
-/// @param sfname filename the event occurred in.
-/// @param buf buffer the file is open in
-bool has_autocmd(event_T event, char *sfname, buf_T *buf)
+/// @param is_full true if "sfname" is already a full path name.
+static bool has_autocmd_ext(event_T event, char *sfname, buf_T *buf, bool is_full)
   FUNC_ATTR_WARN_UNUSED_RESULT
 {
-  char *tail = path_tail(sfname);
-  bool retval = false;
-
-  char *fname = FullName_save(sfname, false);
-  if (fname == NULL) {
+  if (!has_event(event)) {
     return false;
   }
 
-#ifdef BACKSLASH_IN_FILENAME
-  // Replace all backslashes with forward slashes. This makes the
-  // autocommand patterns portable between Unix and Windows.
-  sfname = xstrdup(sfname);
-  forward_slash(sfname);
-  forward_slash(fname);
-#endif
+  char *tail = path_tail(sfname);
+  bool retval = false;
+
+  char *fname = is_full ? xstrdup(sfname) : FullName_save(sfname, false);
+  if (fname == NULL) {
+    return false;
+  }
 
   AutoCmdVec *const acs = &autocmds[(int)event];
   for (size_t i = 0; i < kv_size(*acs); i++) {
@@ -2163,11 +2121,27 @@ bool has_autocmd(event_T event, char *sfname, buf_T *buf)
   }
 
   xfree(fname);
-#ifdef BACKSLASH_IN_FILENAME
-  xfree(sfname);
-#endif
 
   return retval;
+}
+
+/// Return true if there is a matching autocommand for "fname".
+/// To account for buffer-local autocommands, function needs to know
+/// in which buffer the file will be opened.
+///
+/// @param event event that occurred.
+/// @param sfname filename the event occurred in.
+/// @param buf buffer the file is open in
+bool has_autocmd(event_T event, char *sfname, buf_T *buf)
+{
+  return has_autocmd_ext(event, sfname, buf, false);
+}
+
+/// Like has_autocmd(), but "fname" is already a full path name, e.g. as
+/// returned by fix_fname().  Avoids expanding it again, which is slow on MS-Windows.
+bool has_autocmd_fullname(event_T event, char *fname, buf_T *buf)
+{
+  return has_autocmd_ext(event, fname, buf, true);
 }
 
 // Function given to ExpandGeneric() to obtain the list of autocommand group names.
@@ -2178,7 +2152,7 @@ char *expand_get_augroup_name(expand_T *xp, int idx)
 }
 
 /// @param doautocmd  true for :doauto*, false for :autocmd
-char *set_context_in_autocmd(expand_T *xp, char *arg, bool doautocmd)
+char *aucmd_set_expand_context(expand_T *xp, char *arg, bool doautocmd)
 {
   // check for a group name, skip it if present
   autocmd_include_groups = false;
@@ -2212,6 +2186,19 @@ char *set_context_in_autocmd(expand_T *xp, char *arg, bool doautocmd)
     arg++;
   }
   if (*arg) {
+    // skip over "++once", "++nested" and "nested"
+    arg = skipwhite(arg);
+    for (int i = 0; i < 2; i++) {
+      if (strncmp(arg, "++once", 6) == 0 && ascii_iswhite(arg[6])) {
+        arg = skipwhite(arg + 6);
+      }
+      if (strncmp(arg, "++nested", 8) == 0 && ascii_iswhite(arg[8])) {
+        arg = skipwhite(arg + 8);
+      }
+      if (strncmp(arg, "nested", 6) == 0 && ascii_iswhite(arg[6])) {
+        arg = skipwhite(arg + 6);
+      }
+    }
     return arg;  // expand (next) command
   }
 
@@ -2223,7 +2210,7 @@ char *set_context_in_autocmd(expand_T *xp, char *arg, bool doautocmd)
   return NULL;
 }
 
-// Function given to ExpandGeneric() to obtain the list of event names.
+/// Function given to ExpandGeneric() to obtain the list of event names.
 char *expand_get_event_name(expand_T *xp, int idx)
 {
   (void)xp;  // xp is a required parameter to be used with ExpandGeneric
@@ -2239,15 +2226,36 @@ char *expand_get_event_name(expand_T *xp, int idx)
     return name;
   }
 
+  int i = idx - next_augroup_id;
+  if (i < 0 || i >= NUM_EVENTS) {
+    return NULL;
+  }
+
   // List event names
-  return event_names[idx - next_augroup_id].name;
+  return event_names[i].name;
 }
 
 /// Function given to ExpandGeneric() to obtain the list of event names. Don't
 /// include groups.
-char *get_event_name_no_group(expand_T *xp FUNC_ATTR_UNUSED, int idx)
+char *get_event_name_no_group(expand_T *xp FUNC_ATTR_UNUSED, int idx, bool win)
 {
-  return event_names[idx].name;
+  if (idx < 0 || idx >= NUM_EVENTS) {
+    return NULL;
+  }
+
+  if (!win) {
+    return event_names[idx].name;
+  }
+
+  // Need to check subset of allowed values for 'eventignorewin'.
+  int j = 0;
+  for (int i = 0; i < NUM_EVENTS; i++) {
+    j += event_names[i].event <= 0;
+    if (j == idx + 1) {
+      return event_names[i].name;
+    }
+  }
+  return NULL;
 }
 
 /// Check whether given autocommand is supported
@@ -2328,7 +2336,7 @@ bool au_exists(const char *const arg)
   }
 
   // if pattern is "<buffer>", special handling is needed which uses curbuf
-  // for pattern "<buffer=N>, path_fnamecmp() will work fine
+  // for pattern "<buffer=N>, mb_strcmp_ic() will work fine
   if (pattern != NULL && STRICMP(pattern, "<buffer>") == 0) {
     buflocal_buf = curbuf;
   }
@@ -2337,12 +2345,12 @@ bool au_exists(const char *const arg)
   for (size_t i = 0; i < kv_size(*acs); i++) {
     AutoPat *const ap = kv_A(*acs, i).pat;
     // Only use a pattern when it has not been removed.
-    // For buffer-local autocommands, path_fnamecmp() works fine.
+    // Patterns are matched verbatim (like do_autocmd): mb_strcmp_ic instead of path_equal.
     if (ap != NULL
         && (group == AUGROUP_ALL || ap->group == group)
         && (pattern == NULL
             || (buflocal_buf == NULL
-                ? path_fnamecmp(ap->pat, pattern) == 0
+                ? mb_strcmp_ic(p_fic, ap->pat, pattern) == 0
                 : ap->buflocal_nr == buflocal_buf->b_fnum))) {
       retval = true;
       break;
@@ -2358,7 +2366,7 @@ theend:
 bool aupat_is_buflocal(const char *pat, int patlen)
   FUNC_ATTR_PURE
 {
-  return patlen >= 8 && strncmp(pat, "<buffer", 7) == 0 && (pat)[patlen - 1] == '>';
+  return patlen >= 8 && strncmp(pat, "<buffer", 7) == 0 && pat[patlen - 1] == '>';
 }
 
 int aupat_get_buflocal_nr(const char *pat, int patlen)
@@ -2370,7 +2378,7 @@ int aupat_get_buflocal_nr(const char *pat, int patlen)
     return curbuf->b_fnum;
   }
 
-  if (patlen > 9 && (pat)[7] == '=') {
+  if (patlen > 9 && pat[7] == '=') {
     // "<buffer=abuf>"
     if (patlen == 13 && STRNICMP(pat, "<buffer=abuf>", 13) == 0) {
       return autocmd_bufnr;
@@ -2378,7 +2386,8 @@ int aupat_get_buflocal_nr(const char *pat, int patlen)
 
     // "<buffer=123>"
     if (skipdigits(pat + 8) == pat + patlen - 1) {
-      return atoi(pat + 8);
+      char *p = (char *)pat + 8;
+      return getdigits_int(&p, false, 0);
     }
   }
 
@@ -2426,66 +2435,14 @@ bool autocmd_delete_id(int64_t id)
   return success;
 }
 
-// ===========================================================================
-//  AucmdExecutable Functions
-// ===========================================================================
-
-/// Generate a string description for the command/callback of an autocmd
-char *aucmd_exec_to_string(AutoCmd *ac, AucmdExecutable acc)
+/// Gets an (allocated) string representation of an autocmd command/callback.
+char *aucmd_handler_to_string(AutoCmd *ac)
   FUNC_ATTR_PURE
 {
-  switch (acc.type) {
-  case CALLABLE_EX:
-    return xstrdup(acc.callable.cmd);
-  case CALLABLE_CB:
-    return callback_to_string(&acc.callable.cb, NULL);
-  case CALLABLE_NONE:
-    return "This is not possible";
+  if (ac->handler_cmd) {
+    return xstrdup(ac->handler_cmd);
   }
-
-  abort();
-}
-
-void aucmd_exec_free(AucmdExecutable *acc)
-{
-  switch (acc->type) {
-  case CALLABLE_EX:
-    XFREE_CLEAR(acc->callable.cmd);
-    break;
-  case CALLABLE_CB:
-    callback_free(&acc->callable.cb);
-    break;
-  case CALLABLE_NONE:
-    return;
-  }
-
-  acc->type = CALLABLE_NONE;
-}
-
-AucmdExecutable aucmd_exec_copy(AucmdExecutable src)
-{
-  AucmdExecutable dest = AUCMD_EXECUTABLE_INIT;
-
-  switch (src.type) {
-  case CALLABLE_EX:
-    dest.type = CALLABLE_EX;
-    dest.callable.cmd = xstrdup(src.callable.cmd);
-    return dest;
-  case CALLABLE_CB:
-    dest.type = CALLABLE_CB;
-    callback_copy(&dest.callable.cb, &src.callable.cb);
-    return dest;
-  case CALLABLE_NONE:
-    return dest;
-  }
-
-  abort();
-}
-
-bool au_event_is_empty(event_T event)
-  FUNC_ATTR_PURE
-{
-  return kv_size(autocmds[(int)event]) == 0;
+  return callback_to_string(&ac->handler_fn, NULL);
 }
 
 // Arg Parsing Functions
@@ -2588,11 +2545,6 @@ void do_autocmd_uienter(uint64_t chanid, bool attached)
 {
   static bool recursive = false;
 
-#ifdef EXITFREE
-  if (entered_free_all_mem) {
-    return;
-  }
-#endif
   if (starting == NO_SCREEN) {
     return;  // user config hasn't been sourced yet
   }
@@ -2638,15 +2590,15 @@ void do_autocmd_focusgained(bool gained)
   recursive = false;
 }
 
-void do_filetype_autocmd(buf_T *buf, bool force)
+/// @return Whether any FileType autocommands were executed.
+bool do_filetype_autocmd(buf_T *buf, bool force)
 {
   static int ft_recursive = 0;
 
   if (ft_recursive > 0 && !force) {
-    return;  // disallow recursion
+    return false;  // disallow recursion
   }
 
-  char **varp = &buf->b_p_ft;
   int secure_save = secure;
 
   // Reset the secure flag, since the value of 'filetype' has
@@ -2657,12 +2609,10 @@ void do_filetype_autocmd(buf_T *buf, bool force)
   buf->b_did_filetype = true;
   // Only pass true for "force" when it is true or
   // used recursively, to avoid endless recurrence.
-  apply_autocmds(EVENT_FILETYPE, buf->b_p_ft, buf->b_fname, force || ft_recursive == 1, buf);
+  bool ret
+    = apply_autocmds(EVENT_FILETYPE, buf->b_p_ft, buf->b_fname, force || ft_recursive == 1, buf);
   ft_recursive--;
 
-  // Just in case the old "buf" is now invalid
-  if (varp != &(buf->b_p_ft)) {
-    varp = NULL;
-  }
   secure = secure_save;
+  return ret;
 }

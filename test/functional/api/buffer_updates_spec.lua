@@ -1,6 +1,7 @@
 local t = require('test.testutil')
 local n = require('test.functional.testnvim')()
 
+local describe, it, before_each = t.describe, t.it, t.before_each
 local clear = n.clear
 local eq, ok = t.eq, t.ok
 local fn = n.fn
@@ -27,12 +28,10 @@ end
 
 local function sendkeys(keys)
   api.nvim_input(keys)
-  -- give nvim some time to process msgpack requests before possibly sending
+  -- Wait for Nvim to fully process pending input before possibly sending
   -- more key presses - otherwise they all pile up in the queue and get
   -- processed at once
-  local ntime = os.clock() + 0.1
-  repeat
-  until os.clock() > ntime
+  n.poke_eventloop()
 end
 
 local function open(activate, lines)
@@ -59,7 +58,6 @@ local function editoriginal(activate, lines)
     lines = origlines
   end
   -- load up the file with the correct contents
-  clear()
   return open(activate, lines)
 end
 
@@ -121,6 +119,11 @@ end
 
 describe('API: buffer events:', function()
   before_each(clear)
+
+  it('validation', function()
+    local b = editoriginal(false)
+    eq("Invalid key: 'builtin'", pcall_err(api.nvim_buf_attach, b, false, { builtin = 'asfd' }))
+  end)
 
   it('when lines are added', function()
     local b, tick = editoriginal(true)
@@ -509,8 +512,6 @@ describe('API: buffer events:', function()
   end)
 
   it('can notify several channels at once', function()
-    clear()
-
     -- create several new sessions, in addition to our main API
     local sessions = {}
     local pipe = n.new_pipename()
@@ -783,8 +784,6 @@ describe('API: buffer events:', function()
   end)
 
   it('detaches if the buffer is unloaded/deleted/wiped', function()
-    -- start with a blank nvim
-    clear()
     -- need to make a new window with a buffer because :bunload doesn't let you
     -- unload the last buffer
     for _, cmd in ipairs({ 'bunload', 'bdelete', 'bwipeout' }) do
@@ -800,20 +799,12 @@ describe('API: buffer events:', function()
   end)
 
   it('does not send the buffer content if not requested', function()
-    clear()
     local b, tick = editoriginal(false)
     ok(api.nvim_buf_attach(b, false, {}))
     expectn('nvim_buf_changedtick_event', { b, tick })
   end)
 
-  it('returns a proper error on nonempty options dict', function()
-    clear()
-    local b = editoriginal(false)
-    eq("Invalid key: 'builtin'", pcall_err(api.nvim_buf_attach, b, false, { builtin = 'asfd' }))
-  end)
-
   it('nvim_buf_attach returns response after delay #8634', function()
-    clear()
     sleep(250)
     -- response
     eq(true, n.request('nvim_buf_attach', 0, false, {}))
@@ -826,6 +817,20 @@ describe('API: buffer events:', function()
         [2] = 2,
       },
     }, next_msg())
+  end)
+
+  it('when updating quickfix list #34610', function()
+    command('copen')
+
+    local b = api.nvim_get_current_buf()
+    ok(api.nvim_buf_attach(b, true, {}))
+    expectn('nvim_buf_lines_event', { b, 2, 0, -1, { '' }, false })
+
+    command("cexpr ['Xa', 'Xb']")
+    expectn('nvim_buf_lines_event', { b, 3, 0, 1, { '|| Xa', '|| Xb' }, false })
+
+    command("caddexpr ['Xc']")
+    expectn('nvim_buf_lines_event', { b, 4, 2, 2, { '|| Xc' }, false })
   end)
 end)
 
@@ -881,7 +886,8 @@ describe('API: buffer events:', function()
   it('when :terminal lines change', function()
     local buffer_lines = {}
     local expected_lines = {}
-    fn.termopen({ nvim_prog, '-u', 'NONE', '-i', 'NONE', '-n', '-c', 'set shortmess+=A' }, {
+    fn.jobstart({ nvim_prog, '-u', 'NONE', '-i', 'NONE', '-n', '-c', 'set shortmess+=A' }, {
+      term = true,
       env = { VIMRUNTIME = os.getenv('VIMRUNTIME') },
     })
 
@@ -911,5 +917,26 @@ describe('API: buffer events:', function()
     local s = string.rep('\nxyz', 30)
     sendkeys(s)
     assert_match_somewhere(expected_lines, buffer_lines)
+
+    -- Trigger synchronized output in child Nvim, and then exit parent Nvim after
+    -- blocking its event loop for a while. This should not cause an error log.
+    n.expect_exit(n.exec_lua, function()
+      vim.api.nvim_chan_send(vim.bo.channel, 'aaa')
+      vim.uv.sleep(5)
+      vim.cmd('qall!')
+    end)
+  end)
+
+  it('no spurious event with nvim_open_term() on empty buffer', function()
+    local b = api.nvim_get_current_buf()
+    local tick = api.nvim_buf_get_var(b, 'changedtick')
+    ok(api.nvim_buf_attach(b, true, {}))
+    expectn('nvim_buf_lines_event', { b, tick, 0, -1, { '' }, false })
+    api.nvim_open_term(0, {})
+    local expected_lines = {}
+    for _ = 1, 23 do
+      table.insert(expected_lines, '')
+    end
+    expectn('nvim_buf_lines_event', { b, tick + 1, 0, 1, expected_lines, false })
   end)
 end)

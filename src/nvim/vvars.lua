@@ -1,19 +1,46 @@
 local M = {}
 
 M.vars = {
+  argf = {
+    type = 'string[]',
+    desc = [=[
+      File arguments (expanded to absolute paths) given at startup.
+
+      Unlike |v:argv|, this does not include option arguments
+      such as `-u`, `--cmd`, or `+cmd`. Unlike |argv()|, it is not
+      affected by later |:args|, |:argadd|, or plugin modifications.
+
+      Example: >
+        nvim file1.txt +ls -- file2.txt
+        :echo v:argf
+        " ['/path/to/cwd/file1.txt', '/path/to/cwd/file2.txt']
+      <
+    ]=],
+  },
   argv = {
     type = 'string[]',
     desc = [=[
-      The command line arguments Vim was invoked with.  This is a
-      list of strings.  The first item is the Vim command.
-      See |v:progpath| for the command with full path.
+      Command line arguments (`-u`, `--cmd`, `+cmd`, …) Nvim was
+      invoked with.  The first item is the Nvim command.
+
+      See |v:progpath| to get the full path to Nvim.
+      See |v:argf| to get only file args, without other options.
+    ]=],
+  },
+  cascading = {
+    type = 'boolean',
+    desc = [=[
+      |v:true| during |multicursor| cascade, |v:false| otherwise.
+      Read-only.
     ]=],
   },
   char = {
+    type = 'string',
     desc = [=[
       Argument for evaluating 'formatexpr' and used for the typed
       character when using <expr> in an abbreviation |:map-<expr>|.
-      It is also used by the |InsertCharPre| and |InsertEnter| events.
+      It is also used by the |InsertCharPre|, |InsertEnter|,
+      |CmdlineLeave| and |CmdlineLeavePre| events.
     ]=],
   },
   charconvert_from = {
@@ -41,6 +68,15 @@ M.vars = {
       included here, because it will be executed anyway.
     ]=],
   },
+  cmdbang = {
+    type = 'integer',
+    desc = [=[
+      Set like v:cmdarg for a file read/write command.  When a "!"
+      was used the value is 1, otherwise it is 0.  Note that this
+      can only be used in autocommands.  For user commands |<bang>|
+      can be used.
+    ]=],
+  },
   collate = {
     type = 'string',
     desc = [=[
@@ -53,16 +89,8 @@ M.vars = {
       See |multi-lang|.
     ]=],
   },
-  cmdbang = {
-    type = 'integer',
-    desc = [=[
-      Set like v:cmdarg for a file read/write command.  When a "!"
-      was used the value is 1, otherwise it is 0.  Note that this
-      can only be used in autocommands.  For user commands |<bang>|
-      can be used.
-    ]=],
-  },
   completed_item = {
+    type = 'vim.v.completed_item',
     desc = [=[
       Dictionary containing the |complete-items| for the most
       recently completed word after |CompleteDone|.  Empty if the
@@ -94,6 +122,7 @@ M.vars = {
     ]=],
   },
   ctype = {
+    type = 'string',
     desc = [=[
       The current locale setting for characters of the runtime
       environment.  This allows Vim scripts to be aware of the
@@ -118,20 +147,13 @@ M.vars = {
       VimLeave autocommands will not be executed.
     ]=],
   },
-  exiting = {
-    desc = [=[
-      Exit code, or |v:null| before invoking the |VimLeavePre|
-      and |VimLeave| autocmds.  See |:q|, |:x| and |:cquit|.
-      Example: >vim
-        :au VimLeave * echo "Exit value is " .. v:exiting
-      <
-    ]=],
-  },
   echospace = {
     type = 'integer',
     desc = [=[
       Number of screen cells that can be used for an `:echo` message
-      in the last screen line before causing the |hit-enter-prompt|.
+      in the last screen line before causing the |hit-enter| prompt
+      (no longer applicable when |ui2| is enabled).
+
       Depends on 'showcmd', 'ruler' and 'columns'.  You need to
       check 'cmdheight' for whether there are full-width lines
       available above the last line.
@@ -140,7 +162,7 @@ M.vars = {
   errmsg = {
     type = 'string',
     desc = [=[
-      Last given error message.
+      Last error message that occurred (not necessarily displayed).
       Modifiable (can be set).
       Example: >vim
         let v:errmsg = ""
@@ -167,6 +189,7 @@ M.vars = {
     ]=],
   },
   event = {
+    type = 'vim.v.event',
     desc = [=[
       Dictionary of event data for the current |autocommand|.  Valid
       only during the event lifetime; storing or passing v:event is
@@ -180,48 +203,52 @@ M.vars = {
                          an aborting condition (e.g. |c_Esc| or
                          |c_CTRL-C| for |CmdlineLeave|).
         chan             |channel-id|
+        changed_window   Is |v:true| if the event fired while
+                         changing window  (or tab) on |DirChanged|.
         cmdlevel         Level of cmdline.
         cmdtype          Type of cmdline, |cmdline-char|.
+        col              Column count of popup menu on |CompleteChanged|,
+                         relative to screen.
+        complete_type    See |complete_info_mode|
+        complete_word    The selected word, or empty if completion
+                         was abandoned/discarded.
+        completed_item   Current selected item on |CompleteChanged|,
+                         or `{}` if no item selected.
         cwd              Current working directory.
+        height           Height of popup menu on |CompleteChanged|
         inclusive        Motion is |inclusive|, else exclusive.
-        scope            Event-specific scope name.
+        info             Dict of arbitrary event data.
         operator         Current |operator|.  Also set for Ex
-        commands         (unlike |v:operator|). For
+                         commands (unlike |v:operator|). For
                          example if |TextYankPost| is triggered
                          by the |:yank| Ex command then
                          `v:event.operator` is "y".
+        reason           |CompleteDone| reason.
         regcontents      Text stored in the register as a
                          |readfile()|-style list of lines.
-        regname          Requested register (e.g "x" for "xyy)
-                         or the empty string for an unnamed
-                         operation.
+        regname          Requested register (e.g "x" for "xyy), or
+                         empty string for an unnamed operation.
         regtype          Type of register as returned by
                          |getregtype()|.
-        visual           Selection is visual (as opposed to,
-                         e.g., via motion).
-        completed_item   Current selected complete item on
-                         |CompleteChanged|, Is `{}` when no complete
-                         item selected.
-        height           Height of popup menu on |CompleteChanged|
-        width            Width of popup menu on |CompleteChanged|
         row              Row count of popup menu on |CompleteChanged|,
                          relative to screen.
-        col              Col count of popup menu on |CompleteChanged|,
-                         relative to screen.
+        scope            Event-specific scope name.
+        scrollbar        |v:true| if popup menu has a scrollbar, or
+                         |v:false| if not.
         size             Total number of completion items on
                          |CompleteChanged|.
-        scrollbar        Is |v:true| if popup menu have scrollbar, or
-                         |v:false| if not.
-        changed_window   Is |v:true| if the event fired while
-                         changing window  (or tab) on |DirChanged|.
         status           Job status or exit code, -1 means "unknown". |TermClose|
+        visual           Selection is visual (as opposed to e.g. a motion range).
+        width            Width of popup menu on |CompleteChanged|
+        windows          List of window IDs that changed on |WinResized|
     ]=],
   },
   exception = {
     type = 'string',
     desc = [=[
       The value of the exception most recently caught and not
-      finished.  See also |v:throwpoint| and |throw-variables|.
+      finished.  See also |v:stacktrace|, |v:throwpoint|, and
+      |throw-variables|.
       Example: >vim
         try
           throw "oops"
@@ -239,21 +266,35 @@ M.vars = {
       |json_encode()|.  This value is converted to "v:false" when used
       as a String (e.g. in |expr5| with string concatenation
       operator) and to zero when used as a Number (e.g. in |expr5|
-      or |expr7| when used with numeric operators). Read-only.
+      or |expr7| when used with numeric operators).  Read-only.
     ]=],
   },
-  fcs_reason = {
+  exiting = {
+    type = 'integer?',
+    desc = [=[
+      Exit code, or |v:null| before invoking the |VimLeavePre|
+      and |VimLeave| autocmds.  See |:q|, |:x| and |:cquit|.
+      Example: >vim
+        :au VimLeave * echo "Exit code is " .. v:exiting
+      <
+    ]=],
+  },
+  exitreason = {
     type = 'string',
     desc = [=[
-      The reason why the |FileChangedShell| event was triggered.
-      Can be used in an autocommand to decide what to do and/or what
-      to set v:fcs_choice to.  Possible values:
-        deleted   file no longer exists
-        conflict  file contents, mode or timestamp was
-                  changed and buffer is modified
-        changed   file contents has changed
-        mode      mode of file changed
-        time      only file timestamp changed
+      Reason for the current exit. Set before |QuitPre|. Reset if
+      exit was canceled.
+
+      Possible values:
+      - ""          Not exiting, or exit was canceled.
+      - "quit"      |:quit|, |:qall|, |:wq|, |ZZ|, |ZQ|, etc.
+      - "restart"   |:restart|, |ZR|.
+      - "restart!"  |:restart!|, |[count]||ZR|.
+
+      Example: >vim
+        autocmd ExitPre * if v:exitreason ==# 'restart' | echomsg 'restarting' | endif
+      <
+      Read-only.
     ]=],
   },
   fcs_choice = {
@@ -279,11 +320,32 @@ M.vars = {
       Vim behaves like it is empty, there is no warning message.
     ]=],
   },
+  fcs_reason = {
+    type = 'string',
+    desc = [=[
+      The reason why the |FileChangedShell| event was triggered.
+      Can be used in an autocommand to decide what to do and/or what
+      to set v:fcs_choice to.  Possible values:
+      - deleted   file no longer exists
+      - conflict  file contents, mode or timestamp was
+                  changed and buffer is modified
+      - changed   file contents has changed
+      - mode      mode of file changed
+      - time      only file timestamp changed
+    ]=],
+  },
   fname = {
     type = 'string',
     desc = [=[
       When evaluating 'includeexpr': the file name that was
       detected.  Empty otherwise.
+    ]=],
+  },
+  fname_diff = {
+    type = 'string',
+    desc = [=[
+      The name of the diff (patch) file.  Only valid while
+      evaluating 'patchexpr'.
     ]=],
   },
   fname_in = {
@@ -295,6 +357,13 @@ M.vars = {
         'diffexpr'     original file
         'patchexpr'    original file
       And set to the swap file name for |SwapExists|.
+    ]=],
+  },
+  fname_new = {
+    type = 'string',
+    desc = [=[
+      The name of the new version of the file.  Only valid while
+      evaluating 'diffexpr'.
     ]=],
   },
   fname_out = {
@@ -312,20 +381,6 @@ M.vars = {
       file and different from v:fname_in.
     ]=],
   },
-  fname_new = {
-    type = 'string',
-    desc = [=[
-      The name of the new version of the file.  Only valid while
-      evaluating 'diffexpr'.
-    ]=],
-  },
-  fname_diff = {
-    type = 'string',
-    desc = [=[
-      The name of the diff (patch) file.  Only valid while
-      evaluating 'patchexpr'.
-    ]=],
-  },
   folddashes = {
     type = 'string',
     desc = [=[
@@ -334,17 +389,17 @@ M.vars = {
       Read-only in the |sandbox|. |fold-foldtext|
     ]=],
   },
-  foldlevel = {
-    type = 'integer',
-    desc = [=[
-      Used for 'foldtext': foldlevel of closed fold.
-      Read-only in the |sandbox|. |fold-foldtext|
-    ]=],
-  },
   foldend = {
     type = 'integer',
     desc = [=[
       Used for 'foldtext': last line of closed fold.
+      Read-only in the |sandbox|. |fold-foldtext|
+    ]=],
+  },
+  foldlevel = {
+    type = 'integer',
+    desc = [=[
+      Used for 'foldtext': foldlevel of closed fold.
       Read-only in the |sandbox|. |fold-foldtext|
     ]=],
   },
@@ -359,7 +414,7 @@ M.vars = {
     type = 'integer',
     desc = [=[
       Variable that indicates whether search highlighting is on.
-      Setting it makes sense only if 'hlsearch' is enabled. Setting
+      Setting it makes sense only if 'hlsearch' is enabled.  Setting
       this variable to zero acts like the |:nohlsearch| command,
       setting it to one acts like >vim
         let &hlsearch = &hlsearch
@@ -400,6 +455,18 @@ M.vars = {
       encoding.  See |multi-lang|.
     ]=],
   },
+  useractive = {
+    type = 'integer',
+    tags = { 'user-idle' },
+    desc = [=[
+      Timestamp (nanoseconds since UNIX epoch) indicating the most
+      recent user activity, i.e. when a key is received from a UI
+      (TUI input or |nvim_input()|).
+
+      Initialized to 0 (no user activity since startup).
+      Read-only.
+    ]=],
+  },
   lc_time = {
     type = 'string',
     desc = [=[
@@ -434,6 +501,22 @@ M.vars = {
       2147483647 on all systems.
     ]=],
   },
+  mouse_col = {
+    type = 'integer',
+    desc = [=[
+      Column number for a mouse click obtained with |getchar()|.
+      This is the screen column number, like with |virtcol()|.  The
+      value is zero when there was no mouse button click.
+    ]=],
+  },
+  mouse_lnum = {
+    type = 'integer',
+    desc = [=[
+      Line number for a mouse click obtained with |getchar()|.
+      This is the text line number, not the screen line number.  The
+      value is zero when there was no mouse button click.
+    ]=],
+  },
   mouse_win = {
     type = 'integer',
     desc = [=[
@@ -449,23 +532,8 @@ M.vars = {
       The value is zero when there was no mouse button click.
     ]=],
   },
-  mouse_lnum = {
-    type = 'integer',
-    desc = [=[
-      Line number for a mouse click obtained with |getchar()|.
-      This is the text line number, not the screen line number.  The
-      value is zero when there was no mouse button click.
-    ]=],
-  },
-  mouse_col = {
-    type = 'integer',
-    desc = [=[
-      Column number for a mouse click obtained with |getchar()|.
-      This is the screen column number, like with |virtcol()|.  The
-      value is zero when there was no mouse button click.
-    ]=],
-  },
   msgpack_types = {
+    type = 'table',
     desc = [=[
       Dictionary containing msgpack types used by |msgpackparse()|
       and |msgpackdump()|. All types inside dictionary are fixed
@@ -480,7 +548,7 @@ M.vars = {
       See |json_encode()|.  This value is converted to "v:null" when
       used as a String (e.g. in |expr5| with string concatenation
       operator) and to zero when used as a Number (e.g. in |expr5|
-      or |expr7| when used with numeric operators). Read-only.
+      or |expr7| when used with numeric operators).  Read-only.
       In some places `v:null` can be used for a List, Dict, etc.
       that is not set.  That is slightly different than an empty
       List, Dict, etc.
@@ -515,51 +583,6 @@ M.vars = {
       than String this will cause trouble.
     ]=],
   },
-  option_new = {
-    desc = [=[
-      New value of the option. Valid while executing an |OptionSet|
-      autocommand.
-    ]=],
-  },
-  option_old = {
-    desc = [=[
-      Old value of the option. Valid while executing an |OptionSet|
-      autocommand. Depending on the command used for setting and the
-      kind of option this is either the local old value or the
-      global old value.
-    ]=],
-  },
-  option_oldlocal = {
-    desc = [=[
-      Old local value of the option. Valid while executing an
-      |OptionSet| autocommand.
-    ]=],
-  },
-  option_oldglobal = {
-    desc = [=[
-      Old global value of the option. Valid while executing an
-      |OptionSet| autocommand.
-    ]=],
-  },
-  option_type = {
-    type = 'string',
-    desc = [=[
-      Scope of the set command. Valid while executing an
-      |OptionSet| autocommand. Can be either "global" or "local"
-    ]=],
-  },
-  option_command = {
-    type = 'string',
-    desc = [=[
-      Command used to set the option. Valid while executing an
-      |OptionSet| autocommand.
-        value        option was set via ~
-        "setlocal"   |:setlocal| or `:let l:xxx`
-        "setglobal"  |:setglobal| or `:let g:xxx`
-        "set"        |:set| or |:let|
-        "modeline"   |modeline|
-    ]=],
-  },
   operator = {
     type = 'string',
     desc = [=[
@@ -575,6 +598,51 @@ M.vars = {
       v:operator is not set for |:delete|, |:yank| or other Ex
       commands.
       Read-only.
+    ]=],
+  },
+  option_command = {
+    type = 'string',
+    desc = [=[
+      Command used to set the option.  Valid while executing an
+      |OptionSet| autocommand.
+        value        option was set via ~
+        "setlocal"   |:setlocal| or `:let l:xxx`
+        "setglobal"  |:setglobal| or `:let g:xxx`
+        "set"        |:set| or |:let|
+        "modeline"   |modeline|
+    ]=],
+  },
+  option_new = {
+    desc = [=[
+      New value of the option.  Valid while executing an |OptionSet|
+      autocommand.
+    ]=],
+  },
+  option_old = {
+    desc = [=[
+      Old value of the option.  Valid while executing an |OptionSet|
+      autocommand.  Depending on the command used for setting and
+      the kind of option this is either the local old value or the
+      global old value.
+    ]=],
+  },
+  option_oldglobal = {
+    desc = [=[
+      Old global value of the option.  Valid while executing an
+      |OptionSet| autocommand.
+    ]=],
+  },
+  option_oldlocal = {
+    desc = [=[
+      Old local value of the option.  Valid while executing an
+      |OptionSet| autocommand.
+    ]=],
+  },
+  option_type = {
+    type = 'string',
+    desc = [=[
+      Scope of the set command.  Valid while executing an
+      |OptionSet| autocommand.  Can be either "global" or "local"
     ]=],
   },
   prevcount = {
@@ -631,13 +699,23 @@ M.vars = {
     ]=],
   },
   scrollstart = {
+    type = 'string',
     desc = [=[
       String describing the script or function that caused the
       screen to scroll up.  It's only set when it is empty, thus the
       first reason is remembered.  It is set to "Unknown" for a
       typed command.
-      This can be used to find out why your script causes the
-      hit-enter prompt.
+    ]=],
+  },
+  searchforward = {
+    type = 'integer',
+    desc = [=[
+      Search direction:  1 after a forward search, 0 after a
+      backward search.  It is reset to forward when directly setting
+      the last search pattern, see |quote/|.
+      Note that the value is restored when returning from a
+      function. |function-search-undo|.
+      Read-write.
     ]=],
   },
   servername = {
@@ -652,26 +730,22 @@ M.vars = {
       Read-only.
 
                                                            *$NVIM*
-      $NVIM is set by |terminal| and |jobstart()|, and is thus
-      a hint that the current environment is a subprocess of Nvim.
-      Example: >vim
-        if $NVIM
-          echo nvim_get_chan_info(v:parent)
-        endif
-      <
+      $NVIM is set to v:servername by |terminal| and |jobstart()|,
+      and is thus a hint that the current environment is a child
+      (direct subprocess) of Nvim.
 
-      Note the contents of $NVIM may change in the future.
-    ]=],
-  },
-  searchforward = {
-    type = 'integer',
-    desc = [=[
-      Search direction:  1 after a forward search, 0 after a
-      backward search.  It is reset to forward when directly setting
-      the last search pattern, see |quote/|.
-      Note that the value is restored when returning from a
-      function. |function-search-undo|.
-      Read-write.
+      Example: a child Nvim process can detect and make requests to
+      its parent Nvim: >lua
+
+        if vim.env.NVIM then
+          local ok, chan = pcall(vim.fn.sockconnect, 'pipe', vim.env.NVIM, {rpc=true})
+          if ok and chan then
+            local client = vim.api.nvim_get_chan_info(chan).client
+            local rv = vim.rpcrequest(chan, 'nvim_exec_lua', [[return ... + 1]], { 41 })
+            vim.print(('got "%s" from parent Nvim'):format(rv))
+          end
+        end
+      <
     ]=],
   },
   shell_error = {
@@ -690,6 +764,39 @@ M.vars = {
       <
     ]=],
   },
+  stacktrace = {
+    type = 'table[]',
+    desc = [=[
+      The stack trace of the exception most recently caught and
+      not finished.  Refer to |getstacktrace()| for the structure of
+      stack trace.  See also |v:exception|, |v:throwpoint|, and
+      |throw-variables|.
+    ]=],
+  },
+  starttime = {
+    type = 'integer',
+    desc = [=[
+      Timestamp (nanoseconds since UNIX epoch) when the Nvim process
+      started.
+
+      To see the current "uptime": >lua
+        vim.print(('uptime: %d seconds'):format(os.time() - (vim.v.starttime / 1e9)))
+      <
+      Read-only.
+    ]=],
+  },
+  startreason = {
+    type = 'string',
+    desc = [=[
+      The reason Nvim started. Possible values:
+      - "normal"      Normal startup, yearning for life, etc.
+      - "restart"     Started by |:restart|.
+      - "restart!"    Started by |:restart!|.
+      - "remote-ssh"  Started by |remote-ssh|.
+
+      Read-only.
+    ]=],
+  },
   statusmsg = {
     type = 'string',
     desc = [=[
@@ -706,14 +813,6 @@ M.vars = {
       open for writing. Example: >vim
       :call chansend(v:stderr, "error: toaster empty\n")
       <
-    ]=],
-  },
-  swapname = {
-    type = 'string',
-    desc = [=[
-      Name of the swapfile found.
-      Only valid during |SwapExists| event.
-      Read-only.
     ]=],
   },
   swapchoice = {
@@ -740,6 +839,14 @@ M.vars = {
       another Vim open the file and jump to the right place.  For
       example, when jumping to a tag the value is ":tag tagname\r".
       For ":edit +cmd file" the value is ":cmd\r".
+    ]=],
+  },
+  swapname = {
+    type = 'string',
+    desc = [=[
+      Name of the swapfile found.
+      Only valid during |SwapExists| event.
+      Read-only.
     ]=],
   },
   t_blob = {
@@ -775,30 +882,32 @@ M.vars = {
     type = 'integer',
     desc = 'Value of |String| type.  Read-only.  See: |type()|',
   },
-  termresponse = {
-    type = 'string',
-    desc = [=[
-      The value of the most recent OSC or DCS control sequence
-      received by Nvim from the terminal. This can be read in a
-      |TermResponse| event handler after querying the terminal using
-      another escape sequence.
-    ]=],
-  },
   termrequest = {
     type = 'string',
     desc = [=[
-      The value of the most recent OSC or DCS control sequence
+      The value of the most recent OSC, DCS or APC control sequence
       sent from a process running in the embedded |terminal|.
       This can be read in a |TermRequest| event handler to respond
       to queries from embedded applications.
     ]=],
   },
+  termresponse = {
+    type = 'string',
+    desc = [=[
+      The most recent OSC, DCS, APC, or recognized CSI (DA1, kitty
+      multiple-cursors) control sequence received by Nvim from the
+      host-terminal. Can be read in a |TermResponse| event handler
+      after querying the terminal.
+    ]=],
+  },
   testing = {
+    type = 'integer',
     desc = [=[
       Must be set before using `test_garbagecollect_now()`.
     ]=],
   },
   this_session = {
+    type = 'string',
     desc = [=[
       Full filename of the last loaded or saved session file.
       Empty when no session file has been saved.  See |:mksession|.
@@ -806,10 +915,11 @@ M.vars = {
     ]=],
   },
   throwpoint = {
+    type = 'string',
     desc = [=[
       The point where the exception most recently caught and not
       finished was thrown.  Not set when commands are typed.  See
-      also |v:exception| and |throw-variables|.
+      also |v:exception|, |v:stacktrace|, and |throw-variables|.
       Example: >vim
         try
           throw "oops"
@@ -827,7 +937,7 @@ M.vars = {
       |json_encode()|.  This value is converted to "v:true" when used
       as a String (e.g. in |expr5| with string concatenation
       operator) and to one when used as a Number (e.g. in |expr5| or
-      |expr7| when used with numeric operators). Read-only.
+      |expr7| when used with numeric operators).  Read-only.
     ]=],
   },
   val = {
@@ -848,6 +958,38 @@ M.vars = {
       <
     ]=],
   },
+  versionlong = {
+    type = 'integer',
+    desc = [=[
+      Like v:version, but also including the patchlevel in the last
+      four digits.  Version 8.1 with patch 123 has value 8010123.
+      This can be used like this: >
+        if v:versionlong >= 8010123
+      <
+      However, if there are gaps in the list of patches included
+      this will not work well.  This can happen if a recent patch
+      was included into an older version, e.g. for a security fix.
+      Use the has() function to make sure the patch is actually
+      included.
+    ]=],
+  },
+  vim_did_enter = {
+    type = 'integer',
+    desc = [=[
+      0 during startup, 1 just before |VimEnter|.
+      See also |v:vim_did_init|, which is set earlier.
+      Read-only.
+    ]=],
+  },
+  vim_did_init = {
+    type = 'integer',
+    desc = [=[
+      0 during initialization, 1 after sourcing the user |vimrc|,
+      just before |load-plugins|.
+      See also |v:vim_did_enter|, which is set later.
+      Read-only.
+    ]=],
+  },
   virtnum = {
     type = 'integer',
     desc = [=[
@@ -855,13 +997,6 @@ M.vars = {
       Negative when drawing the status column for virtual lines, zero
       when drawing an actual buffer line, and positive when drawing
       the wrapped part of a buffer line.
-      Read-only.
-    ]=],
-  },
-  vim_did_enter = {
-    type = 'integer',
-    desc = [=[
-      0 during startup, 1 just before |VimEnter|.
       Read-only.
     ]=],
   },

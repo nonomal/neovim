@@ -2,6 +2,7 @@ local t = require('test.testutil')
 local n = require('test.functional.testnvim')()
 local Screen = require('test.functional.ui.screen')
 
+local describe, it, before_each = t.describe, t.it, t.before_each
 local clear = n.clear
 local command = n.command
 local eq = t.eq
@@ -9,6 +10,7 @@ local neq = t.neq
 local feed = n.feed
 local eval = n.eval
 local exec = n.exec
+local exec_lua = n.exec_lua
 local fn = n.fn
 local api = n.api
 local curwin = n.api.nvim_get_current_win
@@ -102,15 +104,9 @@ describe('tabpage', function()
 
   it('switching tabpage after setting laststatus=3 #19591', function()
     local screen = Screen.new(40, 8)
-    screen:set_default_attr_ids({
-      [0] = { bold = true, foreground = Screen.colors.Blue },
-      [1] = { bold = true, reverse = true }, -- StatusLine
-      [2] = { reverse = true }, -- TabLineFill
-      [3] = { bold = true }, -- TabLineSel
-      [4] = { background = Screen.colors.LightGrey, underline = true }, -- TabLine
-      [5] = { bold = true, foreground = Screen.colors.Magenta },
-    })
-    screen:attach()
+    screen:add_extra_attr_ids {
+      [100] = { bold = true, foreground = Screen.colors.Fuchsia },
+    }
 
     command('tabnew')
     command('tabprev')
@@ -118,18 +114,18 @@ describe('tabpage', function()
     command('tabnext')
     feed('<C-G>')
     screen:expect([[
-      {4: [No Name] }{3: [No Name] }{2:                 }{4:X}|
+      {24: [No Name] }{5: [No Name] }{2:                 }{24:X}|
       ^                                        |
-      {0:~                                       }|*4
-      {1:[No Name]                               }|
+      {1:~                                       }|*4
+      {3:[No Name]                               }|
       "[No Name]" --No lines in buffer--      |
     ]])
     command('vnew')
     screen:expect([[
-      {4: [No Name] }{3: }{5:2}{3: [No Name] }{2:               }{4:X}|
+      {24: [No Name] }{5: }{100:2}{5: [No Name] }{2:               }{24:X}|
       ^                    │                   |
-      {0:~                   }│{0:~                  }|*4
-      {1:[No Name]                               }|
+      {1:~                   }│{1:~                  }|*4
+      {3:[No Name]                               }|
       "[No Name]" --No lines in buffer--      |
     ]])
   end)
@@ -143,9 +139,63 @@ describe('tabpage', function()
     eq(1, fn.nvim_tabpage_get_number(0))
   end)
 
+  it('0 means current tabpage for gettabvar()', function()
+    command('let t:tabvar = 42')
+    eq(42, fn.gettabvar(0, 'tabvar'))
+  end)
+
+  it("gettabwinvar() returns tab-local 'cmdheight' #31140", function()
+    command('set cmdheight=5')
+    local tab1 = api.nvim_get_current_tabpage()
+    command('tabnew')
+    command('set cmdheight=2')
+    local tab2 = api.nvim_get_current_tabpage()
+    local tnr1 = fn.nvim_tabpage_get_number(tab1)
+    local tnr2 = fn.nvim_tabpage_get_number(tab2)
+
+    -- Reading the *other* tab's cmdheight does not change the current tab.
+    eq(5, fn.gettabwinvar(tnr1, 1, '&cmdheight'))
+    eq(2, fn.gettabwinvar(tnr2, 1, '&cmdheight'))
+    eq(tab2, api.nvim_get_current_tabpage())
+    eq(2, api.nvim_get_option_value('cmdheight', {}))
+  end)
+
   it(':tabs does not overflow IObuff with long path with comma #20850', function()
     api.nvim_buf_set_name(0, ('x'):rep(1024) .. ',' .. ('x'):rep(1024))
     command('tabs')
     assert_alive()
   end)
+
+  it('no crash if autocmd remains in tabpage of closing last window', function()
+    exec([[
+      tabnew
+      let s:win = win_getid()
+      autocmd TabLeave * ++once tablast | tabonly
+      quit
+    ]])
+  end)
+
+  it(
+    'no crash when :tabclose/:tabonly and WinClosed autocmd wipes buf and switches to closing tab',
+    function()
+      exec_lua(function()
+        local win1 = vim.api.nvim_get_current_win()
+        vim.cmd('botright new')
+        local win2 = vim.api.nvim_get_current_win()
+        local buf2 = vim.api.nvim_get_current_buf()
+        vim.cmd('tabedit')
+        vim.api.nvim_create_autocmd('WinClosed', {
+          pattern = tostring(win2),
+          callback = function()
+            -- Wipe the closing window's buffer and switch back to the original window,
+            -- so `curtab == tp` in tabpage_close_other's loop.
+            vim.api.nvim_buf_delete(buf2, { force = true })
+            vim.api.nvim_set_current_win(win1)
+          end,
+        })
+        vim.cmd('tabonly')
+      end)
+      assert_alive()
+    end
+  )
 end)

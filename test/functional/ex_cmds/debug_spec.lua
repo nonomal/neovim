@@ -1,6 +1,8 @@
 local n = require('test.functional.testnvim')()
+local t = require('test.testutil')
 local Screen = require('test.functional.ui.screen')
 
+local describe, it, before_each = t.describe, t.it, t.before_each
 local feed = n.feed
 local clear = n.clear
 
@@ -15,7 +17,6 @@ describe(':debug', function()
       [3] = { foreground = Screen.colors.Grey100, background = Screen.colors.Red },
       [4] = { bold = true, foreground = Screen.colors.SeaGreen4 },
     })
-    screen:attach()
   end)
   it('scrolls messages correctly', function()
     feed(':echoerr bork<cr>')

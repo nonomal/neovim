@@ -10,6 +10,7 @@
 #include "nvim/buffer_defs.h"
 #include "nvim/charset.h"
 #include "nvim/drawscreen.h"
+#include "nvim/errors.h"
 #include "nvim/eval/funcs.h"
 #include "nvim/eval/typval.h"
 #include "nvim/eval/window.h"
@@ -36,18 +37,14 @@
 #include "nvim/types_defs.h"
 #include "nvim/vim_defs.h"
 
-#ifdef INCLUDE_GENERATED_DECLARATIONS
-# include "match.c.generated.h"
-#endif
-
-static const char *e_invalwindow = N_("E957: Invalid window number");
+#include "match.c.generated.h"
 
 #define SEARCH_HL_PRIORITY 0
 
 /// Add match to the match list of window "wp".
 /// If "pat" is not NULL the pattern will be highlighted with the group "grp"
 /// with priority "prio".
-/// If "pos_list" is not NULL the list of posisions defines the highlights.
+/// If "pos_list" is not NULL the list of positions defines the highlights.
 /// Optionally, a desired ID "id" can be specified (greater than or equal to 1).
 /// If no particular ID is desired, -1 must be specified for "id".
 ///
@@ -189,19 +186,7 @@ static int match_add(win_T *wp, const char *const grp, const char *const pat, in
 
     // Calculate top and bottom lines for redrawing area
     if (toplnum != 0) {
-      if (wp->w_buffer->b_mod_set) {
-        if (wp->w_buffer->b_mod_top > toplnum) {
-          wp->w_buffer->b_mod_top = toplnum;
-        }
-        if (wp->w_buffer->b_mod_bot < botlnum) {
-          wp->w_buffer->b_mod_bot = botlnum;
-        }
-      } else {
-        wp->w_buffer->b_mod_set = true;
-        wp->w_buffer->b_mod_top = toplnum;
-        wp->w_buffer->b_mod_bot = botlnum;
-        wp->w_buffer->b_mod_xlines = 0;
-      }
+      redraw_win_range_later(wp, toplnum, botlnum);
       m->mit_toplnum = toplnum;
       m->mit_botlnum = botlnum;
       rtype = UPD_VALID;
@@ -227,6 +212,7 @@ static int match_add(win_T *wp, const char *const grp, const char *const pat, in
   return id;
 
 fail:
+  vim_regfree(regprog);
   xfree(m->mit_pattern);
   xfree(m->mit_pos_array);
   xfree(m);
@@ -267,19 +253,7 @@ static int match_delete(win_T *wp, int id, bool perr)
   vim_regfree(cur->mit_match.regprog);
   xfree(cur->mit_pattern);
   if (cur->mit_toplnum != 0) {
-    if (wp->w_buffer->b_mod_set) {
-      if (wp->w_buffer->b_mod_top > cur->mit_toplnum) {
-        wp->w_buffer->b_mod_top = cur->mit_toplnum;
-      }
-      if (wp->w_buffer->b_mod_bot < cur->mit_botlnum) {
-        wp->w_buffer->b_mod_bot = cur->mit_botlnum;
-      }
-    } else {
-      wp->w_buffer->b_mod_set = true;
-      wp->w_buffer->b_mod_top = cur->mit_toplnum;
-      wp->w_buffer->b_mod_bot = cur->mit_botlnum;
-      wp->w_buffer->b_mod_xlines = 0;
-    }
+    redraw_win_range_later(wp, cur->mit_toplnum, cur->mit_botlnum);
     rtype = UPD_VALID;
   }
   xfree(cur->mit_pos_array);
@@ -416,7 +390,7 @@ static void next_search_hl(win_T *win, match_T *search_hl, match_T *shl, linenr_
   const int called_emsg_before = called_emsg;
 
   // for :{range}s/pat only highlight inside the range
-  if ((lnum < search_first_line || lnum > search_last_line) && cur == NULL) {
+  if ((lnum < Search.first_line || lnum > Search.last_line) && cur == NULL) {
     shl->lnum = 0;
     return;
   }
@@ -449,7 +423,7 @@ static void next_search_hl(win_T *win, match_T *search_hl, match_T *shl, linenr_
     // 3. Vi compatible searching: continue at end of previous match.
     if (shl->lnum == 0) {
       matchcol = 0;
-    } else if (vim_strchr(p_cpo, CPO_SEARCH) == NULL
+    } else if (vim_strchr(p_cpo, kCpoSearch) == NULL
                || (shl->rm.endpos[0].lnum == 0
                    && shl->rm.endpos[0].col <= shl->rm.startpos[0].col)) {
       matchcol = shl->rm.startpos[0].col;
@@ -705,6 +679,9 @@ int update_search_hl(win_T *wp, linenr_T lnum, colnr_T col, char **line, match_T
         // group.
         if (shl == search_hl && shl->has_cursor) {
           shl->attr_cur = win_hl_attr(wp, HLF_LC);
+          if (shl->attr_cur != shl->attr) {
+            search_hl_has_cursor_lnum = lnum;
+          }
         } else {
           shl->attr_cur = shl->attr;
         }
@@ -930,9 +907,9 @@ void f_getmatches(typval_T *argvars, typval_T *rettv, EvalFuncData fptr)
 
     if (cur->mit_conceal_char) {
       char buf[MB_MAXCHAR + 1];
-
-      buf[utf_char2bytes(cur->mit_conceal_char, buf)] = NUL;
-      tv_dict_add_str(dict, S_LEN("conceal"), buf);
+      int buflen = utf_char2bytes(cur->mit_conceal_char, buf);
+      buf[buflen] = NUL;
+      tv_dict_add_str_len(dict, S_LEN("conceal"), buf, buflen);
     }
 
     tv_list_append_dict(rettv->vval.v_list, dict);
@@ -989,6 +966,7 @@ void f_setmatches(typval_T *argvars, typval_T *rettv, EvalFuncData fptr)
     if (di == NULL) {
       if (s == NULL) {
         s = tv_list_alloc(9);
+        tv_list_ref(s);
       }
 
       // match from matchaddpos()
@@ -998,11 +976,11 @@ void f_setmatches(typval_T *argvars, typval_T *rettv, EvalFuncData fptr)
         dictitem_T *const pos_di = tv_dict_find(d, buf, -1);
         if (pos_di != NULL) {
           if (pos_di->di_tv.v_type != VAR_LIST) {
+            tv_list_unref(s);
             return;
           }
 
           tv_list_append_tv(s, &pos_di->di_tv);
-          tv_list_ref(s);
         } else {
           break;
         }
@@ -1078,7 +1056,7 @@ void f_matchadd(typval_T *argvars, typval_T *rettv, EvalFuncData fptr)
     return;
   }
   if (id >= 1 && id <= 3) {
-    semsg(_("E798: ID is reserved for \":match\": %" PRId64), (int64_t)id);
+    semsg(_("E798: ID is reserved for \":match\": %d"), id);
     return;
   }
 
@@ -1129,7 +1107,7 @@ void f_matchaddpos(typval_T *argvars, typval_T *rettv, EvalFuncData fptr)
 
   // id == 3 is ok because matchaddpos() is supposed to substitute :3match
   if (id == 1 || id == 2) {
-    semsg(_("E798: ID is reserved for \"match\": %" PRId64), (int64_t)id);
+    semsg(_("E798: ID is reserved for \"match\": %d"), id);
     return;
   }
 

@@ -11,10 +11,12 @@
 #include "nvim/ascii_defs.h"
 #include "nvim/charset.h"
 #include "nvim/debugger.h"
+#include "nvim/errors.h"
 #include "nvim/eval.h"
 #include "nvim/eval/typval.h"
 #include "nvim/eval/typval_defs.h"
 #include "nvim/eval/userfunc.h"
+#include "nvim/eval/vars.h"
 #include "nvim/eval_defs.h"
 #include "nvim/ex_cmds_defs.h"
 #include "nvim/ex_docmd.h"
@@ -32,9 +34,7 @@
 #include "nvim/strings.h"
 #include "nvim/vim_defs.h"
 
-#ifdef INCLUDE_GENERATED_DECLARATIONS
-# include "ex_eval.c.generated.h"
-#endif
+#include "ex_eval.c.generated.h"
 
 static const char e_multiple_else[] = N_("E583: Multiple :else");
 static const char e_multiple_finally[] = N_("E607: Multiple :finally");
@@ -155,7 +155,7 @@ bool aborted_in_try(void)
 /// When several messages appear in the same command, the first is usually the
 /// most specific one and used as the exception value.  The "severe" flag can be
 /// set to true, if a later but severer message should be used instead.
-bool cause_errthrow(const char *mesg, bool multiline, bool severe, bool *ignore)
+bool cause_errthrow(const char *mesg, bool multiline, bool concat, bool severe, bool *ignore)
   FUNC_ATTR_NONNULL_ALL
 {
   msglist_T *elem;
@@ -241,6 +241,12 @@ bool cause_errthrow(const char *mesg, bool multiline, bool severe, bool *ignore)
     if (msg_list != NULL) {
       msglist_T **plist = msg_list;
       while (*plist != NULL) {
+        // Concatenate (a multihl message) instead.
+        if ((*plist)->next == NULL && concat) {
+          (*plist)->msg = xrealloc((*plist)->msg, strlen((*plist)->msg) + strlen(mesg) + 1);
+          (*plist)->throw_msg = strcat((*plist)->msg, mesg);
+          return true;
+        }
         plist = &(*plist)->next;
       }
 
@@ -251,7 +257,7 @@ bool cause_errthrow(const char *mesg, bool multiline, bool severe, bool *ignore)
       elem->throw_msg = NULL;
       *plist = elem;
       if (plist == msg_list || severe) {
-        // Skip the extra "Vim " prefix for message "E458".
+        // Skip the extra "Vim " prefix for message "E457".
         char *tmsg = elem->msg;
         if (strncmp(tmsg, "Vim E", 5) == 0
             && ascii_isdigit(tmsg[5])
@@ -372,7 +378,9 @@ bool do_intthrow(cstack_T *cstack)
   return true;
 }
 
-/// Get an exception message that is to be stored in current_exception->value.
+/// Gets an exception message that is to be stored in current_exception->value.
+///
+/// For error exceptions (ET_ERROR), formats the message as "Vim(cmdname):Exx: …".
 char *get_exception_string(void *value, except_type_T type, char *cmdname, bool *should_free)
 {
   char *ret;
@@ -405,7 +413,7 @@ char *get_exception_string(void *value, except_type_T type, char *cmdname, bool 
                           || (ascii_isdigit(p[3])
                               && p[4] == ':')))))) {
         if (*p == NUL || p == mesg) {
-          STRCAT(val, mesg);  // 'E123' missing or at beginning
+          strcat(val, mesg);  // 'E123' missing or at beginning
         } else {
           // '"filename" E123: message text'
           if (mesg[0] != '"' || p - 2 < &mesg[1]
@@ -414,7 +422,7 @@ char *get_exception_string(void *value, except_type_T type, char *cmdname, bool 
             continue;
           }
 
-          STRCAT(val, p);
+          strcat(val, p);
           p[-2] = NUL;
           snprintf(val + strlen(p), strlen(" (%s)"), " (%s)", &mesg[1]);
           p[-2] = '"';
@@ -477,6 +485,9 @@ static int throw_exception(void *value, except_type_T type, char *cmdname)
     }
     excp->throw_lnum = SOURCING_LNUM;
   }
+
+  excp->stacktrace = stacktrace_create();
+  tv_list_ref(excp->stacktrace);
 
   if (p_verbose >= 13 || debug_break_level > 0) {
     int save_msg_silent = msg_silent;
@@ -562,6 +573,7 @@ static void discard_exception(except_T *excp, bool was_finished)
     free_msglist(excp->messages);
   }
   xfree(excp->throw_name);
+  tv_list_unref(excp->stacktrace);
   xfree(excp);
 }
 
@@ -583,14 +595,16 @@ static void catch_exception(except_T *excp)
   excp->caught = caught_stack;
   caught_stack = excp;
   set_vim_var_string(VV_EXCEPTION, excp->value, -1);
+  set_vim_var_list(VV_STACKTRACE, excp->stacktrace);
   if (*excp->throw_name != NUL) {
+    size_t IObufflen;
     if (excp->throw_lnum != 0) {
-      vim_snprintf(IObuff, IOSIZE, _("%s, line %" PRId64),
-                   excp->throw_name, (int64_t)excp->throw_lnum);
+      IObufflen = vim_snprintf_safelen(IObuff, IOSIZE, _("%s, line %" PRId64),
+                                       excp->throw_name, (int64_t)excp->throw_lnum);
     } else {
-      vim_snprintf(IObuff, IOSIZE, "%s", excp->throw_name);
+      IObufflen = vim_snprintf_safelen(IObuff, IOSIZE, "%s", excp->throw_name);
     }
-    set_vim_var_string(VV_THROWPOINT, IObuff, -1);
+    set_vim_var_string(VV_THROWPOINT, IObuff, (ptrdiff_t)IObufflen);
   } else {
     // throw_name not set on an exception from a command that was typed.
     set_vim_var_string(VV_THROWPOINT, NULL, -1);
@@ -632,16 +646,18 @@ static void finish_exception(except_T *excp)
   caught_stack = caught_stack->caught;
   if (caught_stack != NULL) {
     set_vim_var_string(VV_EXCEPTION, caught_stack->value, -1);
+    set_vim_var_list(VV_STACKTRACE, caught_stack->stacktrace);
     if (*caught_stack->throw_name != NUL) {
+      size_t IObufflen;
       if (caught_stack->throw_lnum != 0) {
-        vim_snprintf(IObuff, IOSIZE,
-                     _("%s, line %" PRId64), caught_stack->throw_name,
-                     (int64_t)caught_stack->throw_lnum);
+        IObufflen = vim_snprintf_safelen(IObuff, IOSIZE, _("%s, line %" PRId64),
+                                         caught_stack->throw_name,
+                                         (int64_t)caught_stack->throw_lnum);
       } else {
-        vim_snprintf(IObuff, IOSIZE, "%s",
-                     caught_stack->throw_name);
+        IObufflen = vim_snprintf_safelen(IObuff, IOSIZE, "%s",
+                                         caught_stack->throw_name);
       }
-      set_vim_var_string(VV_THROWPOINT, IObuff, -1);
+      set_vim_var_string(VV_THROWPOINT, IObuff, (ptrdiff_t)IObufflen);
     } else {
       // throw_name not set on an exception from a command that was
       // typed.
@@ -650,6 +666,7 @@ static void finish_exception(except_T *excp)
   } else {
     set_vim_var_string(VV_EXCEPTION, NULL, -1);
     set_vim_var_string(VV_THROWPOINT, NULL, -1);
+    set_vim_var_list(VV_STACKTRACE, NULL);
   }
 
   // Discard the exception, but use the finish message for 'verbose'.
@@ -791,7 +808,7 @@ void report_make_pending(int pending, void *value)
 
 /// If something pending in a finally clause is resumed at the ":endtry", report
 /// it if required by the 'verbose' option or when debugging.
-void report_resume_pending(int pending, void *value)
+static void report_resume_pending(int pending, void *value)
 {
   if (p_verbose >= 14 || debug_break_level > 0) {
     if (debug_break_level <= 0) {
@@ -806,7 +823,7 @@ void report_resume_pending(int pending, void *value)
 
 /// If something pending in a finally clause is discarded, report it if required
 /// by the 'verbose' option or when debugging.
-void report_discard_pending(int pending, void *value)
+static void report_discard_pending(int pending, void *value)
 {
   if (p_verbose >= 14 || debug_break_level > 0) {
     if (debug_break_level <= 0) {
@@ -848,7 +865,7 @@ void ex_if(exarg_T *eap)
     bool skip = CHECK_SKIP;
 
     bool error;
-    bool result = eval_to_bool(eap->arg, &error, eap, skip);
+    bool result = eval_to_bool(eap->arg, &error, eap, skip, false);
 
     if (!skip && !error) {
       if (result) {
@@ -943,7 +960,7 @@ void ex_else(exarg_T *eap)
     if (skip && *eap->arg != '"' && ends_excmd(*eap->arg)) {
       semsg(_(e_invexpr2), eap->arg);
     } else {
-      result = eval_to_bool(eap->arg, &error, eap, skip);
+      result = eval_to_bool(eap->arg, &error, eap, skip, false);
     }
 
     // When throwing error exceptions, we want to throw always the first
@@ -989,7 +1006,7 @@ void ex_while(exarg_T *eap)
 
     int skip = CHECK_SKIP;
     if (eap->cmdidx == CMD_while) {  // ":while bool-expr"
-      result = eval_to_bool(eap->arg, &error, eap, skip);
+      result = eval_to_bool(eap->arg, &error, eap, skip, false);
     } else {  // ":for var in list-expr"
       evalarg_T evalarg;
       fill_evalarg_from_eap(&evalarg, eap, skip);

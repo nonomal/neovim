@@ -389,8 +389,8 @@ msgstr " Comhlánú saincheaptha (^U^N^P)"
 msgid " Omni completion (^O^N^P)"
 msgstr " Comhlánú Omni (^O^N^P)"
 
-msgid " Spelling suggestion (s^N^P)"
-msgstr " Moladh litrithe (s^N^P)"
+msgid " Spelling suggestion (^S^N^P)"
+msgstr " Moladh litrithe (^S^N^P)"
 
 msgid " Keyword Local completion (^N^P)"
 msgstr " Comhlánú logánta lorgfhocal (^N^P)"
@@ -972,8 +972,8 @@ msgstr ""
 "E146: Ní cheadaítear litreacha mar theormharcóirí ar shloinn ionadaíochta"
 
 #, c-format
-msgid "replace with %s (y/n/a/q/l/^E/^Y)?"
-msgstr "cuir %s ina ionad (y/n/a/q/l/^E/^Y)?"
+msgid "replace with %s? (y)es/(n)o/(a)ll/(q)uit/(l)ast/scroll up(^E)/down(^Y)"
+msgstr "cuir %s? ina ionad (y)es/(n)o/(a)ll/(q)uit/(l)ast/scroll up(^E)/down(^Y)"
 
 msgid "(Interrupted) "
 msgstr "(Idirbhriste) "
@@ -1028,16 +1028,16 @@ msgid "E478: Don't panic!"
 msgstr "E478: Ná téigh i scaoll!"
 
 #, c-format
-msgid "E661: Sorry, no '%s' help for %s"
-msgstr "E661: Tá brón orm, ní aon chabhair '%s' do %s"
+msgid "E661: No '%s' help for %s"
+msgstr "E661: Ní aon chabhair '%s' do %s"
 
 #, c-format
-msgid "E149: Sorry, no help for %s"
-msgstr "E149: Tá brón orm, níl aon chabhair do %s"
+msgid "E149: No help for %s"
+msgstr "E149: Níl aon chabhair do %s"
 
 #, c-format
-msgid "Sorry, help file \"%s\" not found"
-msgstr "Tá brón orm, comhad cabhrach \"%s\" gan aimsiú"
+msgid "Help file \"%s\" not found"
+msgstr "Comhad cabhrach \"%s\" gan aimsiú"
 
 #, c-format
 msgid "E151: No match: %s"
@@ -3667,12 +3667,8 @@ msgstr "E773: Ciogal i naisc shiombalacha le haghaidh \"%s\""
 msgid "E325: ATTENTION"
 msgstr "E325: AIRE"
 
-msgid ""
-"\n"
-"Found a swap file by the name \""
-msgstr ""
-"\n"
-"Fuarthas comhad babhtála darbh ainm \""
+msgid "Found a swap file by the name \""
+msgstr "Fuarthas comhad babhtála darbh ainm \""
 
 msgid "While opening file \""
 msgstr "Agus an comhad seo á oscailt: \""
@@ -3696,8 +3692,8 @@ msgstr ""
 msgid "(2) An edit session for this file crashed.\n"
 msgstr "(2) Thuairteáil seisiún eagarthóireachta.\n"
 
-msgid "    If this is the case, use \":recover\" or \"vim -r "
-msgstr "    Más amhlaidh, bain úsáid as \":recover\" nó \"vim -r "
+msgid "    If this is the case, use \":recover\" or \"nvim -r "
+msgstr "    Más amhlaidh, bain úsáid as \":recover\" nó \"nvim -r "
 
 msgid ""
 "\"\n"
@@ -4480,12 +4476,8 @@ msgstr ""
 "\n"
 "Ní féidir an bhlaosc sh a rith\n"
 
-msgid ""
-"\n"
-"shell returned "
-msgstr ""
-"\n"
-"d'aisfhill an bhlaosc "
+msgid "shell returned "
+msgstr "d'aisfhill an bhlaosc "
 
 msgid ""
 "\n"
@@ -4993,12 +4985,12 @@ msgstr "E797: Scrios uathordú SpellFileMissing an maolán"
 msgid "Warning: region %s not supported"
 msgstr "Rabhadh: réigiún %s gan tacaíocht"
 
-msgid "Sorry, no suggestions"
-msgstr "Tá brón orm, níl aon mholadh ann"
+msgid "No suggestions"
+msgstr "Níl aon mholadh ann"
 
 #, c-format
-msgid "Sorry, only %ld suggestions"
-msgstr "Tá brón orm, níl ach %ld moladh ann"
+msgid "Only %ld suggestions"
+msgstr "Níl ach %ld moladh ann"
 
 #. for when 'cmdheight' > 1
 #. avoid more prompt
@@ -6374,10 +6366,6 @@ msgstr "E471: Tá gá le hargóint"
 
 msgid "E10: \\ should be followed by /, ? or &"
 msgstr "E10: Ba chóir /, ? nó & a chur i ndiaidh \\"
-
-msgid "E11: Invalid in command-line window; <CR> executes, CTRL-C quits"
-msgstr ""
-"E11: Neamhbhailí i bhfuinneog líne na n-orduithe; <CR>=rith, CTRL-C=scoir"
 
 msgid "E12: Command not allowed from exrc/vimrc in current dir or tag search"
 msgstr ""

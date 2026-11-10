@@ -1,20 +1,24 @@
 #pragma once
 
+#include <assert.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <sys/types.h>  // IWYU pragma: keep
+#include <utf8proc.h>
 #include <uv.h>  // IWYU pragma: keep
 
+#include "nvim/ascii_defs.h"
 #include "nvim/cmdexpand_defs.h"  // IWYU pragma: keep
 #include "nvim/eval/typval_defs.h"  // IWYU pragma: keep
-#include "nvim/func_attr.h"
 #include "nvim/macros_defs.h"
 #include "nvim/mbyte_defs.h"  // IWYU pragma: keep
+#include "nvim/option_vars.h"
 #include "nvim/types_defs.h"  // IWYU pragma: keep
 
-#ifdef INCLUDE_GENERATED_DECLARATIONS
-# include "mbyte.h.generated.h"
-#endif
+#define GRAPHEME_STATE_INIT 0
+
+#include "mbyte.h.generated.h"
+#include "mbyte.h.inline.generated.h"
 
 enum {
   kInvalidByteCells = 4,
@@ -53,17 +57,13 @@ extern const uint8_t utf8len_tab[256];
   (p -= utf_head_off((char *)(s), (char *)(p) - 1) + 1)
 
 /// Check whether a given UTF-8 byte is a trailing byte (10xx.xxxx).
-static inline bool utf_is_trail_byte(uint8_t byte)
-  REAL_FATTR_CONST REAL_FATTR_ALWAYS_INLINE;
 
 static inline bool utf_is_trail_byte(uint8_t const byte)
+  FUNC_ATTR_CONST FUNC_ATTR_ALWAYS_INLINE
 {
   // uint8_t is for clang to use smaller cmp
   return (uint8_t)(byte & 0xC0U) == 0x80U;
 }
-
-static inline CharInfo utf_ptr2CharInfo(char const *p_in)
-  REAL_FATTR_NONNULL_ALL REAL_FATTR_PURE REAL_FATTR_WARN_UNUSED_RESULT REAL_FATTR_ALWAYS_INLINE;
 
 /// Convert a UTF-8 byte sequence to a Unicode code point.
 /// Handles ascii, multibyte sequiences and illegal sequences.
@@ -73,6 +73,7 @@ static inline CharInfo utf_ptr2CharInfo(char const *p_in)
 /// @return information abouth the character. When the sequence is illegal,
 /// "value" is negative, "len" is 1.
 static inline CharInfo utf_ptr2CharInfo(char const *const p_in)
+  FUNC_ATTR_NONNULL_ALL FUNC_ATTR_PURE FUNC_ATTR_WARN_UNUSED_RESULT FUNC_ATTR_ALWAYS_INLINE
 {
   uint8_t const *const p = (uint8_t const *)p_in;
   uint8_t const first = *p;
@@ -88,43 +89,126 @@ static inline CharInfo utf_ptr2CharInfo(char const *const p_in)
   }
 }
 
-static inline StrCharInfo utfc_next(StrCharInfo cur)
-  REAL_FATTR_NONNULL_ALL REAL_FATTR_ALWAYS_INLINE REAL_FATTR_PURE;
-
-/// Return information about the next character.
-/// Composing and combining characters are considered a part of the current character.
-///
-/// @param[in] cur  Information about the current character in the string.
-static inline StrCharInfo utfc_next(StrCharInfo cur)
+static inline StrCharInfo utf_ptr2StrCharInfo(const char *ptr)
+  FUNC_ATTR_NONNULL_ALL FUNC_ATTR_ALWAYS_INLINE FUNC_ATTR_PURE
 {
-  int32_t prev_code = cur.chr.value;
-  uint8_t *next = (uint8_t *)(cur.ptr + cur.chr.len);
+  return (StrCharInfo){ .ptr = ptr, .chr = utf_ptr2CharInfo(ptr) };
+}
 
-  while (true) {
-    if (EXPECT(*next < 0x80U, true)) {
-      return (StrCharInfo){
-        .ptr = (char *)next,
-        .chr = (CharInfo){ .value = *next, .len = 1 },
-      };
-    }
-    uint8_t const next_len = utf8len_tab[*next];
-    int32_t const next_code = utf_ptr2CharInfo_impl(next, (uintptr_t)next_len);
-    if (!utf_char_composinglike(prev_code, next_code)) {
-      return (StrCharInfo){
-        .ptr = (char *)next,
-        .chr = (CharInfo){ .value = next_code, .len = (next_code < 0 ? 1 : next_len) },
-      };
-    }
+static inline CharInfo utf_ptr2CharInfo_len(char const *const p_in, int size)
+  FUNC_ATTR_NONNULL_ALL FUNC_ATTR_PURE FUNC_ATTR_WARN_UNUSED_RESULT FUNC_ATTR_ALWAYS_INLINE
+{
+  uint8_t const *const p = (uint8_t const *)p_in;
+  assert(size >= 0);
+  if (size == 0) {
+    return (CharInfo){ .value = -1, .len = 1 };
+  }
 
-    prev_code = next_code;
-    next += next_len;
+  uint8_t const first = *p;
+  if (first < 0x80) {
+    return (CharInfo){ .value = first, .len = 1 };
+  } else {
+    int len = utf8len_tab[first];
+    if (len > size) {
+      return (CharInfo){ .value = -1, .len = 1 };
+    }
+    int32_t const code_point = utf_ptr2CharInfo_impl(p, (uintptr_t)len);
+    if (code_point < 0) {
+      len = 1;
+    }
+    return (CharInfo){ .value = code_point, .len = len };
   }
 }
 
-static inline StrCharInfo utf_ptr2StrCharInfo(char *ptr)
-  REAL_FATTR_NONNULL_ALL REAL_FATTR_ALWAYS_INLINE REAL_FATTR_PURE;
-
-static inline StrCharInfo utf_ptr2StrCharInfo(char *ptr)
+static inline StrCharInfo utf_ptr2StrCharInfo_len(const char *ptr, int size)
+  FUNC_ATTR_NONNULL_ALL FUNC_ATTR_ALWAYS_INLINE FUNC_ATTR_PURE
 {
-  return (StrCharInfo){ .ptr = ptr, .chr = utf_ptr2CharInfo(ptr) };
+  return (StrCharInfo){ .ptr = ptr, .chr = utf_ptr2CharInfo_len(ptr, size) };
+}
+
+// only c.value is used here but it is a hint that it is the return value of ptr2CharInfo
+// that is expected
+static inline int basechar_cells_impl(CharInfo c)
+{
+  return c.value < 0 ? 4 : (c.value < 0x80 ? ascii2cells(c.value) : utf_char2cells(c.value));
+}
+
+/// When "c" is the first char of a string, determine if it needs to be prefixed
+/// by a space byte to be drawn correctly, and not merge with the space left of
+/// the string.
+static inline bool utf_iscomposing_first(int c)
+  FUNC_ATTR_PURE
+{
+  return c >= 128 && !utf8proc_grapheme_break(' ', c);
+}
+
+/// Return information about the cluster width next character.
+/// Composing and combining characters are considered a part of the current character.
+///
+/// @param[in] cur  Information about the current character in the string.
+static inline ClusterInfo utf_ClusterInfo(StrCharInfo cur)
+  FUNC_ATTR_NONNULL_ALL FUNC_ATTR_ALWAYS_INLINE FUNC_ATTR_PURE
+{
+  // most of the time time caller should already have checked for NUL, so
+  // this will be inlined to nothing. But always be NUL safe.
+  if (EXPECT(*cur.ptr == NUL, false)) {
+    return (ClusterInfo) {
+      .next = cur,
+      .cells = dy_escape_width,
+      .first_compose = false,
+    };
+  }
+
+  uint8_t *next = (uint8_t *)(cur.ptr + cur.chr.len);
+  // handle ASCII case inline
+  if (EXPECT(*next < 0x80U, true)) {
+    return (ClusterInfo) {
+      .next = (StrCharInfo){
+        .ptr = (char *)next,
+        .chr = (CharInfo){ .value = *next, .len = 1 },
+      },
+      .cells = basechar_cells_impl(cur.chr),
+      .first_compose = utf_iscomposing_first(cur.chr.value),
+    };
+  }
+  int scratch = INT_MAX;
+  return utf_ClusterInfo_impl(cur, &scratch);
+}
+
+static inline ClusterInfo utf_ClusterInfo_len(StrCharInfo cur, int *size)
+  FUNC_ATTR_NONNULL_ALL FUNC_ATTR_ALWAYS_INLINE
+{
+  *size -= cur.chr.len;
+  uint8_t *nextptr = (uint8_t *)(cur.ptr + cur.chr.len);
+  int nextval = (*size == 0) ? -1 : *nextptr;
+
+  // handle ASCII and EOS case inline
+  if (EXPECT(nextval < 0x80, true)) {
+    return (ClusterInfo) {
+      .next = (StrCharInfo){
+        .ptr = (const char *)nextptr,
+        .chr = (CharInfo){ .value = nextval, .len = 1 },
+      },
+      .cells = basechar_cells_impl(cur.chr),
+      .first_compose = utf_iscomposing_first(cur.chr.value),
+    };
+  }
+
+  return utf_ClusterInfo_impl(cur, size);
+}
+
+/// Return number of display cells occupied by ASCII byte "b".
+///
+/// chars outside of the range 0 <= b <= 127 is considered unprintable.
+/// Use a proper wrapper for multibyte chars depending on the context, like
+/// char2cells() or ptr2cells()
+/// A TAB is counted as two or four cells: "^I" or "<09>".
+///
+/// @param b
+///
+/// @return Number of display cells.
+static inline int ascii2cells(int b)
+  FUNC_ATTR_PURE
+{
+  return (b >= ' ' && b <= '~') ? 1 : dy_escape_width;
 }

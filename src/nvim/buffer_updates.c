@@ -16,13 +16,12 @@
 #include "nvim/lua/executor.h"
 #include "nvim/memline.h"
 #include "nvim/memory.h"
+#include "nvim/memory_defs.h"
 #include "nvim/msgpack_rpc/channel.h"
 #include "nvim/pos_defs.h"
 #include "nvim/types_defs.h"
 
-#ifdef INCLUDE_GENERATED_DECLARATIONS
-# include "buffer_updates.c.generated.h"
-#endif
+#include "buffer_updates.c.generated.h"  // IWYU pragma: keep
 
 // Register a channel. Return True if the channel was added, or already added.
 // Return False if the channel couldn't be added because the buffer is

@@ -1,5 +1,6 @@
 local t = require('test.unit.testutil')
-local itp = t.gen_itp(it)
+local describe = t.describe
+local itp = t.gen_itp(t.it)
 
 local to_cstr = t.to_cstr
 local eq = t.eq
@@ -11,8 +12,8 @@ local check_ff_value = function(ff)
 end
 
 describe('check_ff_value', function()
-  itp('views empty string as valid', function()
-    eq(1, check_ff_value(''))
+  itp('views empty string as invalid', function()
+    eq(0, check_ff_value(''))
   end)
 
   itp('views "unix", "dos" and "mac" as valid', function()

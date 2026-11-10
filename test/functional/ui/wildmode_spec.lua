@@ -2,6 +2,7 @@ local t = require('test.testutil')
 local n = require('test.functional.testnvim')()
 local Screen = require('test.functional.ui.screen')
 
+local describe, it, before_each, after_each = t.describe, t.it, t.before_each, t.after_each
 local clear, feed, command = n.clear, n.feed, n.command
 local fn = n.fn
 local api = n.api
@@ -16,30 +17,23 @@ describe("'wildmenu'", function()
   before_each(function()
     clear()
     screen = Screen.new(25, 5)
-    screen:set_default_attr_ids {
-      [1] = { foreground = Screen.colors.Blue, bold = true },
-      [2] = { reverse = true },
-      [3] = { bold = true, reverse = true },
-      [5] = { bold = true },
-      [31] = { foreground = Screen.colors.Grey0, background = Screen.colors.Yellow },
+    screen:add_extra_attr_ids {
+      [100] = { background = Screen.colors.Yellow1, foreground = Screen.colors.Black },
     }
-    screen:attach()
   end)
 
   -- oldtest: Test_wildmenu_screendump()
   it('works', function()
-    screen:set_default_attr_ids({
-      [0] = { bold = true, foreground = Screen.colors.Blue }, -- NonText
-      [1] = { foreground = Screen.colors.Black, background = Screen.colors.Yellow }, -- WildMenu
-      [2] = { bold = true, reverse = true }, -- StatusLine
-    })
+    screen:add_extra_attr_ids {
+      [100] = { background = Screen.colors.Yellow1, foreground = Screen.colors.Black },
+    }
     -- Test simple wildmenu
     feed(':sign <Tab>')
     screen:expect {
       grid = [[
                                |
-      {0:~                        }|*2
-      {1:define}{2:  jump  list  >    }|
+      {1:~                        }|*2
+      {100:define}{3:  jump  list  >    }|
       :sign define^             |
     ]],
     }
@@ -48,8 +42,8 @@ describe("'wildmenu'", function()
     screen:expect {
       grid = [[
                                |
-      {0:~                        }|*2
-      {2:define  }{1:jump}{2:  list  >    }|
+      {1:~                        }|*2
+      {3:define  }{100:jump}{3:  list  >    }|
       :sign jump^               |
     ]],
     }
@@ -58,8 +52,8 @@ describe("'wildmenu'", function()
     screen:expect {
       grid = [[
                                |
-      {0:~                        }|*2
-      {2:define  jump  }{1:list}{2:  >    }|
+      {1:~                        }|*2
+      {3:define  jump  }{100:list}{3:  >    }|
       :sign list^               |
     ]],
     }
@@ -69,8 +63,8 @@ describe("'wildmenu'", function()
     screen:expect {
       grid = [[
                                |
-      {0:~                        }|*2
-      {2:define  jump  list  >    }|
+      {1:~                        }|*2
+      {3:define  jump  list  >    }|
       :sign ^                   |
     ]],
     }
@@ -80,7 +74,7 @@ describe("'wildmenu'", function()
     screen:expect {
       grid = [[
                                |
-      {0:~                        }|*3
+      {1:~                        }|*3
       :sign  ^                  |
     ]],
     }
@@ -92,8 +86,8 @@ describe("'wildmenu'", function()
     screen:expect {
       grid = [[
                                |
-      {0:~                        }|*2
-      {1:define}{2:  jump  list  >    }|
+      {1:~                        }|*2
+      {100:define}{3:  jump  list  >    }|
       :sign define^             |
     ]],
     }
@@ -104,7 +98,7 @@ describe("'wildmenu'", function()
     screen:expect {
       grid = [[
       ^                         |
-      {0:~                        }|*3
+      {1:~                        }|*3
                                |
     ]],
     }
@@ -115,7 +109,7 @@ describe("'wildmenu'", function()
     screen:expect([[
                                |
       {1:~                        }|*2
-      {31:define}{3:  jump  list  >    }|
+      {100:define}{3:  jump  list  >    }|
       :sign define^             |
     ]])
     feed('<C-E>')
@@ -131,7 +125,7 @@ describe("'wildmenu'", function()
     screen:expect([[
                                |
       {1:~                        }|*2
-      {31:define}{3:  jump  list  >    }|
+      {100:define}{3:  jump  list  >    }|
       :sign define^             |
     ]])
     feed('<tab><C-Y>')
@@ -148,7 +142,7 @@ describe("'wildmenu'", function()
     screen:expect([[
                                |
       {1:~                        }|*2
-      {31:define}{3:  jump  list  >    }|
+      {100:define}{3:  jump  list  >    }|
       :sign define^             |
     ]])
   end)
@@ -162,7 +156,7 @@ describe("'wildmenu'", function()
     screen:expect([[
                                |
       {1:~                        }|*2
-      {31:define}{3:  jump  list  >    }|
+      {100:define}{3:  jump  list  >    }|
       :sign define^             |
     ]])
     feed('<space>')
@@ -188,7 +182,7 @@ describe("'wildmenu'", function()
     screen:expect([[
                                |
       {1:~                        }|*2
-      {31:!}{3:  #  &  <  =  >  @  >   }|
+      {100:!}{3:  #  &  <  =  >  @  >   }|
       :!^                       |
     ]])
   end)
@@ -199,9 +193,17 @@ describe("'wildmenu'", function()
     feed((':terminal "%s" REP 5000 !terminal_output!<cr>'):format(testprg('shell-test')))
     feed('G') -- Follow :terminal output.
     feed([[:sign <Tab>]]) -- Invoke wildmenu.
+    screen:add_extra_attr_ids {
+      [100] = { foreground = Screen.colors.Black, background = Screen.colors.Yellow },
+      [101] = {
+        bold = true,
+        foreground = Screen.colors.White,
+        background = Screen.colors.DarkGreen,
+      },
+    }
     -- NB: in earlier versions terminal output was redrawn during cmdline mode.
     -- For now just assert that the screen remains unchanged.
-    screen:expect { any = '{31:define}{3:  jump  list  >    }|\n:sign define^             |' }
+    screen:expect { any = '{100:define}{101:  jump  list  >    }|\n:sign define^             |' }
     screen:expect_unchanged()
 
     -- cmdline CTRL-D display should also be preserved.
@@ -232,7 +234,7 @@ describe("'wildmenu'", function()
       grid = [[
                                |
       {1:~                        }|*2
-      {31:define}{3:  jump  list  >    }|
+      {100:define}{3:  jump  list  >    }|
       :sign define^             |
     ]],
     }
@@ -259,9 +261,17 @@ describe("'wildmenu'", function()
 
     feed([[<C-\><C-N>]])
     feed([[:<Tab>]]) -- Invoke wildmenu.
+    screen:add_extra_attr_ids {
+      [100] = { foreground = Screen.colors.Black, background = Screen.colors.Yellow },
+      [101] = {
+        bold = true,
+        foreground = Screen.colors.White,
+        background = Screen.colors.DarkGreen,
+      },
+    }
     -- Check only the last 2 lines, because the shell output is
     -- system-dependent.
-    screen:expect { any = '{31:!}{3:  #  &  <  =  >  @  >   }|\n:!^' }
+    screen:expect { any = '{100:!}{101:  #  &  <  =  >  @  >   }|\n:!^' }
     -- Because this test verifies a _lack_ of activity, we must wait the full timeout.
     -- So make it reasonable.
     screen:expect_unchanged(false, 1000)
@@ -290,7 +300,7 @@ describe("'wildmenu'", function()
       {3:                         }|
       :set wildm               |
       wildmenu  wildmode       |
-      {31:wildmenu}{3:  wildmode       }|
+      {100:wildmenu}{3:  wildmode       }|
       :set wildmenu^            |
     ]])
     feed('<Esc>')
@@ -415,11 +425,39 @@ describe("'wildmenu'", function()
     ]])
   end)
 
+  it("<C-D> doesn't make statuslines disappear with 'nowildmenu' #36053", function()
+    screen:try_resize(60, 10)
+    command('set laststatus=2 nowildmenu')
+    feed(':sign <C-D>')
+    screen:expect([[
+                                                                  |
+      {1:~                                                           }|*5
+      {3:                                                            }|
+      :sign                                                       |
+      define    jump      list      place     undefine  unplace   |
+      :sign ^                                                      |
+    ]])
+    feed('<Esc>')
+    screen:expect([[
+      ^                                                            |
+      {1:~                                                           }|*7
+      {3:[No Name]                                                   }|
+                                                                  |
+    ]])
+    command('mode')
+    screen:expect_unchanged()
+    feed('ifoobar<Esc>')
+    screen:expect([[
+      fooba^r                                                      |
+      {1:~                                                           }|*7
+      {3:[No Name] [+]                                               }|
+                                                                  |
+    ]])
+  end)
+
   it('works with c_CTRL_Z standard mapping', function()
-    screen:set_default_attr_ids {
-      [1] = { bold = true, foreground = Screen.colors.Blue1 },
-      [2] = { foreground = Screen.colors.Grey0, background = Screen.colors.Yellow },
-      [3] = { bold = true, reverse = true },
+    screen:add_extra_attr_ids {
+      [100] = { background = Screen.colors.Yellow1, foreground = Screen.colors.Black },
     }
 
     -- Wildcharm? where we are going we aint't no need no wildcharm.
@@ -436,7 +474,7 @@ describe("'wildmenu'", function()
       grid = [[
                                |
       {1:~                        }|*2
-      {2:case}{3:  clear  cluster  >  }|
+      {100:case}{3:  clear  cluster  >  }|
       :syntax case^             |
     ]],
     }
@@ -481,12 +519,9 @@ describe('command line completion', function()
   before_each(function()
     clear()
     screen = Screen.new(40, 5)
-    screen:set_default_attr_ids({
-      [1] = { bold = true, foreground = Screen.colors.Blue1 },
-      [2] = { foreground = Screen.colors.Grey0, background = Screen.colors.Yellow },
-      [3] = { bold = true, reverse = true },
-    })
-    screen:attach()
+    screen:add_extra_attr_ids {
+      [100] = { background = Screen.colors.Yellow1, foreground = Screen.colors.Black },
+    }
   end)
   after_each(function()
     os.remove('Xtest-functional-viml-compl-dir')
@@ -513,7 +548,7 @@ describe('command line completion', function()
     screen:expect([[
                                               |
       {1:~                                       }|*2
-      {2:XTEST_1}{3:  XTEST_2                        }|
+      {100:XTEST_1}{3:  XTEST_2                        }|
       :!echo $XTEST_1^                         |
     ]])
   end)
@@ -529,7 +564,7 @@ describe('command line completion', function()
     screen:expect([[
                                               |
       {1:~                                       }|*2
-      {2:XTEST_1AaあB}{3:  XTEST_2                   }|
+      {100:XTEST_1AaあB}{3:  XTEST_2                   }|
       :!echo $XTEST_1AaあB^                    |
     ]])
   end)
@@ -579,6 +614,31 @@ describe('command line completion', function()
       :sign unplace^                           |
     ]])
   end)
+
+  it("lists multibyte tag kinds with 'wildoptions' tagfile", function()
+    local tagfile = 'Xtest-functional-tagfile-tags'
+    t.write_file(
+      tagfile,
+      'foo1\tXfoo1.c\t/^foo1/;"\tƒ\n'
+        .. 'foo2\tXfoo2.c\t/^foo2/;"\tkind:λ\n'
+        .. 'foo3\tXfoo3.c\t/^foo3/;"\tv\n'
+    )
+    t.finally(function()
+      os.remove(tagfile)
+    end)
+    command('set tags=' .. tagfile .. ' wildoptions=tagfile')
+    screen:add_extra_attr_ids {
+      [101] = { bold = true, foreground = Screen.colors.Magenta1 },
+    }
+    feed(':tj foo<C-D>')
+    screen:expect([[
+      {101:tagname kind file}                       |
+      {18:foo1} ƒ {18:Xfoo1.c}                          |
+      {18:foo2} λ {18:Xfoo2.c}                          |
+      {18:foo3} v {18:Xfoo3.c}                          |
+      :tj foo^                                 |
+    ]])
+  end)
 end)
 
 describe('ui/ext_wildmenu', function()
@@ -586,11 +646,10 @@ describe('ui/ext_wildmenu', function()
 
   before_each(function()
     clear()
-    screen = Screen.new(25, 5)
-    screen:attach({ rgb = true, ext_wildmenu = true })
+    screen = Screen.new(25, 5, { rgb = true, ext_wildmenu = true })
   end)
 
-  it('works with :sign <tab>', function()
+  local function test_ext_wildmenu_sign_cmd()
     local expected = {
       'define',
       'jump',
@@ -647,12 +706,53 @@ describe('ui/ext_wildmenu', function()
     }
 
     feed('a')
-    screen:expect {
-      grid = [[
+    screen:expect([[
                                |
       {1:~                        }|*3
       :sign definea^            |
+    ]])
+
+    feed('<Esc>')
+    command('set wildmode=longest,full')
+    feed(':sign u<tab>')
+    screen:expect([[
+                               |
+      {1:~                        }|*3
+      :sign un^                 |
+    ]])
+
+    feed('<tab>')
+    local s_undefine_unplace_0 = {
+      grid = [[
+                               |
+      {1:~                        }|*3
+      :sign undefine^           |
     ]],
+      wildmenu_items = { 'undefine', 'unplace' },
+      wildmenu_pos = 0,
     }
+    screen:expect(s_undefine_unplace_0)
+
+    feed('<Esc>')
+    screen:expect([[
+      ^                         |
+      {1:~                        }|*3
+                               |
+    ]])
+
+    feed(':sign un<tab>')
+    screen:expect(s_undefine_unplace_0)
+  end
+
+  describe('works with :sign <tab>', function()
+    it('with wildoptions=pum', function()
+      command('set wildoptions=pum')
+      test_ext_wildmenu_sign_cmd()
+    end)
+
+    it('with wildoptions=', function()
+      command('set wildoptions=')
+      test_ext_wildmenu_sign_cmd()
+    end)
   end)
 end)

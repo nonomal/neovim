@@ -2,6 +2,7 @@ local t = require('test.testutil')
 local n = require('test.functional.testnvim')()
 local Screen = require('test.functional.ui.screen')
 
+local describe, it, before_each = t.describe, t.it, t.before_each
 local api = n.api
 local clear = n.clear
 local eq = t.eq
@@ -239,7 +240,6 @@ describe("'inccommand' for user commands", function()
   before_each(function()
     clear()
     screen = Screen.new(40, 17)
-    screen:attach()
     exec_lua(setup_replace_cmd)
     command('set cmdwinheight=5')
     insert [[
@@ -254,18 +254,62 @@ describe("'inccommand' for user commands", function()
     ]]
   end)
 
+  it("can preview 'nomodifiable' buffer", function()
+    exec_lua([[
+      vim.api.nvim_create_user_command("PreviewTest", function() end, {
+        preview = function(ev)
+          vim.bo.modifiable = true
+          vim.api.nvim_buf_set_lines(0, 0, -1, false, {"cats"})
+          return 2
+        end,
+      })
+    ]])
+    command('set inccommand=split')
+
+    command('set nomodifiable')
+    eq(false, api.nvim_get_option_value('modifiable', { buf = 0 }))
+
+    feed(':PreviewTest')
+
+    screen:expect([[
+      cats                                    |
+      {1:~                                       }|*8
+      {3:[No Name] [+]                           }|
+                                              |
+      {1:~                                       }|*4
+      {2:[Preview]                               }|
+      :PreviewTest^                            |
+    ]])
+    feed('<Esc>')
+    screen:expect([[
+      text on line 1                          |
+      more text on line 2                     |
+      oh no, even more text                   |
+      will the text ever stop                 |
+      oh well                                 |
+      did the text stop                       |
+      why won't it stop                       |
+      make the text stop                      |
+      ^                                        |
+      {1:~                                       }|*7
+                                              |
+    ]])
+
+    eq(false, api.nvim_get_option_value('modifiable', { buf = 0 }))
+  end)
+
   it('works with inccommand=nosplit', function()
     command('set inccommand=nosplit')
     feed(':Replace text cats')
     screen:expect([[
-        {10:cats} on line 1                        |
-        more {10:cats} on line 2                   |
-        oh no, even more {10:cats}                 |
-        will the {10:cats} ever stop               |
-        oh well                               |
-        did the {10:cats} stop                     |
-        why won't it stop                     |
-        make the {10:cats} stop                    |
+      {10:cats} on line 1                          |
+      more {10:cats} on line 2                     |
+      oh no, even more {10:cats}                   |
+      will the {10:cats} ever stop                 |
+      oh well                                 |
+      did the {10:cats} stop                       |
+      why won't it stop                       |
+      make the {10:cats} stop                      |
                                               |
       {1:~                                       }|*7
       :Replace text cats^                      |
@@ -276,21 +320,21 @@ describe("'inccommand' for user commands", function()
     command('set inccommand=split')
     feed(':Replace text cats')
     screen:expect([[
-        {10:cats} on line 1                        |
-        more {10:cats} on line 2                   |
-        oh no, even more {10:cats}                 |
-        will the {10:cats} ever stop               |
-        oh well                               |
-        did the {10:cats} stop                     |
-        why won't it stop                     |
-        make the {10:cats} stop                    |
+      {10:cats} on line 1                          |
+      more {10:cats} on line 2                     |
+      oh no, even more {10:cats}                   |
+      will the {10:cats} ever stop                 |
+      oh well                                 |
+      did the {10:cats} stop                       |
+      why won't it stop                       |
+      make the {10:cats} stop                      |
                                               |
       {3:[No Name] [+]                           }|
-      |1|   {10:cats} on line 1                    |
-      |2|   more {10:cats} on line 2               |
-      |3|   oh no, even more {10:cats}             |
-      |4|   will the {10:cats} ever stop           |
-      |6|   did the {10:cats} stop                 |
+      |1| {10:cats} on line 1                      |
+      |2| more {10:cats} on line 2                 |
+      |3| oh no, even more {10:cats}               |
+      |4| will the {10:cats} ever stop             |
+      |6| did the {10:cats} stop                   |
       {2:[Preview]                               }|
       :Replace text cats^                      |
     ]])
@@ -300,14 +344,14 @@ describe("'inccommand' for user commands", function()
     command('set inccommand=split')
     feed(':Replace text cats<Esc>')
     screen:expect([[
-        text on line 1                        |
-        more text on line 2                   |
-        oh no, even more text                 |
-        will the text ever stop               |
-        oh well                               |
-        did the text stop                     |
-        why won't it stop                     |
-        make the text stop                    |
+      text on line 1                          |
+      more text on line 2                     |
+      oh no, even more text                   |
+      will the text ever stop                 |
+      oh well                                 |
+      did the text stop                       |
+      why won't it stop                       |
+      make the text stop                      |
       ^                                        |
       {1:~                                       }|*7
                                               |
@@ -318,14 +362,14 @@ describe("'inccommand' for user commands", function()
     command('set inccommand=split')
     feed(':Replace text cats<CR>')
     screen:expect([[
-        cats on line 1                        |
-        more cats on line 2                   |
-        oh no, even more cats                 |
-        will the cats ever stop               |
-        oh well                               |
-        did the cats stop                     |
-        why won't it stop                     |
-        make the cats stop                    |
+      cats on line 1                          |
+      more cats on line 2                     |
+      oh no, even more cats                   |
+      will the cats ever stop                 |
+      oh well                                 |
+      did the cats stop                       |
+      why won't it stop                       |
+      make the cats stop                      |
       ^                                        |
       {1:~                                       }|*7
       :Replace text cats                      |
@@ -336,21 +380,21 @@ describe("'inccommand' for user commands", function()
     command('set inccommand=split')
     feed('gg:.Replace text cats')
     screen:expect([[
-        {10:cats} on line 1                        |
-        more text on line 2                   |
-        oh no, even more text                 |
-        will the text ever stop               |
-        oh well                               |
-        did the text stop                     |
-        why won't it stop                     |
-        make the text stop                    |
+      {10:cats} on line 1                          |
+      more text on line 2                     |
+      oh no, even more text                   |
+      will the text ever stop                 |
+      oh well                                 |
+      did the text stop                       |
+      why won't it stop                       |
+      make the text stop                      |
                                               |
       {1:~                                       }|*7
       :.Replace text cats^                     |
     ]])
   end)
 
-  it('does not crash on ambiguous command #18825', function()
+  it('no crash on ambiguous command #18825', function()
     command('set inccommand=split')
     command('command Reply echo 1')
     feed(':R')
@@ -389,14 +433,14 @@ describe("'inccommand' for user commands", function()
     ]])
     feed(':C')
     screen:expect([[
-      {10:  cats on line 1}                        |
-        more cats on line 2                   |
-        oh no, even more cats                 |
-        will the cats ever stop               |
-        oh well                               |
-        did the cats stop                     |
-        why won't it stop                     |
-        make the cats stop                    |
+      {10:cats on line 1}                          |
+      more cats on line 2                     |
+      oh no, even more cats                   |
+      will the cats ever stop                 |
+      oh well                                 |
+      did the cats stop                       |
+      why won't it stop                       |
+      make the cats stop                      |
                                               |
       {1:~                                       }|*7
       :C^                                      |
@@ -439,42 +483,42 @@ describe("'inccommand' for user commands", function()
     ]])
     feed(':Test a.a.a.a.')
     screen:expect([[
-        text on line 1                        |
-        more text on line 2                   |
-        oh no, even more text                 |
-        will the text ever stop               |
-        oh well                               |
-        did the text stop                     |
-        why won't it stop                     |
-        make the text stop                    |
+      text on line 1                          |
+      more text on line 2                     |
+      oh no, even more text                   |
+      will the text ever stop                 |
+      oh well                                 |
+      did the text stop                       |
+      why won't it stop                       |
+      make the text stop                      |
       a.a.a.a.                                |
       {1:~                                       }|*7
       :Test a.a.a.a.^                          |
     ]])
     feed('<C-V><Esc>u')
     screen:expect([[
-        text on line 1                        |
-        more text on line 2                   |
-        oh no, even more text                 |
-        will the text ever stop               |
-        oh well                               |
-        did the text stop                     |
-        why won't it stop                     |
-        make the text stop                    |
+      text on line 1                          |
+      more text on line 2                     |
+      oh no, even more text                   |
+      will the text ever stop                 |
+      oh well                                 |
+      did the text stop                       |
+      why won't it stop                       |
+      make the text stop                      |
       a.a.a.                                  |
       {1:~                                       }|*7
       :Test a.a.a.a.{18:^[}u^                       |
     ]])
     feed('<Esc>')
     screen:expect([[
-        text on line 1                        |
-        more text on line 2                   |
-        oh no, even more text                 |
-        will the text ever stop               |
-        oh well                               |
-        did the text stop                     |
-        why won't it stop                     |
-        make the text stop                    |
+      text on line 1                          |
+      more text on line 2                     |
+      oh no, even more text                   |
+      will the text ever stop                 |
+      oh well                                 |
+      did the text stop                       |
+      why won't it stop                       |
+      make the text stop                      |
       ^                                        |
       {1:~                                       }|*7
                                               |
@@ -508,6 +552,89 @@ describe("'inccommand' for user commands", function()
     feed(':Test')
     eq('nosplit', api.nvim_get_option_value('inccommand', {}))
   end)
+
+  it('does not flush intermediate cursor position at end of message grid', function()
+    exec_lua([[
+      vim.api.nvim_create_user_command('Test', function() end, {
+        nargs = '*',
+        preview = function(_, _, _)
+          vim.api.nvim_buf_set_text(0, 0, 0, 1, -1, { "Preview" })
+          vim.cmd.sleep("1m")
+          return 1
+        end
+      })
+    ]])
+    local cursor_goto = screen._handle_grid_cursor_goto
+    screen._handle_grid_cursor_goto = function(...)
+      cursor_goto(...)
+      assert(screen._cursor.col < 12)
+    end
+    feed(':Test baz<Left><Left>arb')
+    screen:expect([[
+      Preview                                 |
+      oh no, even more text                   |
+      will the text ever stop                 |
+      oh well                                 |
+      did the text stop                       |
+      why won't it stop                       |
+      make the text stop                      |
+                                              |
+      {1:~                                       }|*8
+      :Test barb^az                            |
+    ]])
+  end)
+
+  it('works when CmdlineChanged calls wildtrigger() #35246', function()
+    api.nvim_buf_set_text(0, 0, 0, 1, -1, { '' })
+    exec_lua([[
+      vim.api.nvim_create_user_command("Repro", function() end, {
+        nargs = '+',
+        preview = function(opts, ns, buf)
+          vim.api.nvim_buf_set_lines(0, 0, -1, true, { opts.args })
+          return 2
+        end
+      })
+    ]])
+    command([[autocmd CmdlineChanged [:/\?] call wildtrigger()]])
+    command('set wildmode=noselect:lastused,full wildoptions=pum')
+    feed(':Repro ')
+    screen:expect([[
+                                              |
+      {1:~                                       }|*15
+      :Repro ^                                 |
+    ]])
+    feed('a')
+    screen:expect([[
+      a                                       |
+      {1:~                                       }|*15
+      :Repro a^                                |
+    ]])
+    feed('bc')
+    screen:expect([[
+      abc                                     |
+      {1:~                                       }|*15
+      :Repro abc^                              |
+    ]])
+  end)
+
+  it('no crash with % + preview + file completion #28851', function()
+    exec_lua([[
+      local function callback() end
+      local function preview()
+        return 0
+      end
+
+      vim.api.nvim_create_user_command('TestCommand', callback, {
+        nargs = '?',
+        complete = 'file',
+        preview = preview,
+      })
+
+      vim.cmd.edit('Xtestscript')
+    ]])
+    feed(':TestCommand %')
+    assert_alive()
+  end)
 end)
 
 describe("'inccommand' with multiple buffers", function()
@@ -516,7 +643,6 @@ describe("'inccommand' with multiple buffers", function()
   before_each(function()
     clear()
     screen = Screen.new(40, 17)
-    screen:attach()
     exec_lua(setup_replace_cmd)
     command('set cmdwinheight=10')
     insert [[
@@ -536,9 +662,9 @@ describe("'inccommand' with multiple buffers", function()
     command('set inccommand=nosplit')
     feed(':Replace foo bar')
     screen:expect([[
-        bar baz {10:bar}       │  {10:bar} bar baz      |
-        baz {10:bar} bar       │  bar baz {10:bar}      |
-        {10:bar} bar baz       │  baz {10:bar} bar      |
+      bar baz {10:bar}         │{10:bar} bar baz        |
+      baz {10:bar} bar         │bar baz {10:bar}        |
+      {10:bar} bar baz         │baz {10:bar} bar        |
                           │                   |
       {1:~                   }│{1:~                  }|*11
       {3:[No Name] [+]        }{2:[No Name] [+]      }|
@@ -546,9 +672,9 @@ describe("'inccommand' with multiple buffers", function()
     ]])
     feed('<CR>')
     screen:expect([[
-        bar baz bar       │  bar bar baz      |
-        baz bar bar       │  bar baz bar      |
-        bar bar baz       │  baz bar bar      |
+      bar baz bar         │bar bar baz        |
+      baz bar bar         │bar baz bar        |
+      bar bar baz         │baz bar bar        |
       ^                    │                   |
       {1:~                   }│{1:~                  }|*11
       {3:[No Name] [+]        }{2:[No Name] [+]      }|
@@ -560,19 +686,19 @@ describe("'inccommand' with multiple buffers", function()
     command('set inccommand=split')
     feed(':Replace foo bar')
     screen:expect([[
-        bar baz {10:bar}       │  {10:bar} bar baz      |
-        baz {10:bar} bar       │  bar baz {10:bar}      |
-        {10:bar} bar baz       │  baz {10:bar} bar      |
+      bar baz {10:bar}         │{10:bar} bar baz        |
+      baz {10:bar} bar         │bar baz {10:bar}        |
+      {10:bar} bar baz         │baz {10:bar} bar        |
                           │                   |
       {3:[No Name] [+]        }{2:[No Name] [+]      }|
       Buffer #1:                              |
-      |1|   {10:bar} bar baz                       |
-      |2|   bar baz {10:bar}                       |
-      |3|   baz {10:bar} bar                       |
+      |1| {10:bar} bar baz                         |
+      |2| bar baz {10:bar}                         |
+      |3| baz {10:bar} bar                         |
       Buffer #2:                              |
-      |1|   bar baz {10:bar}                       |
-      |2|   baz {10:bar} bar                       |
-      |3|   {10:bar} bar baz                       |
+      |1| bar baz {10:bar}                         |
+      |2| baz {10:bar} bar                         |
+      |3| {10:bar} bar baz                         |
                                               |
       {1:~                                       }|
       {2:[Preview]                               }|
@@ -580,9 +706,9 @@ describe("'inccommand' with multiple buffers", function()
     ]])
     feed('<CR>')
     screen:expect([[
-        bar baz bar       │  bar bar baz      |
-        baz bar bar       │  bar baz bar      |
-        bar bar baz       │  baz bar bar      |
+      bar baz bar         │bar bar baz        |
+      baz bar bar         │bar baz bar        |
+      bar bar baz         │baz bar bar        |
       ^                    │                   |
       {1:~                   }│{1:~                  }|*11
       {3:[No Name] [+]        }{2:[No Name] [+]      }|

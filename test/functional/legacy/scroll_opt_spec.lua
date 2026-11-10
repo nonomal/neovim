@@ -1,10 +1,16 @@
 local n = require('test.functional.testnvim')()
+local t = require('test.testutil')
 local Screen = require('test.functional.ui.screen')
 
+local describe, it, before_each = t.describe, t.it, t.before_each
 local clear = n.clear
 local exec = n.exec
 local feed = n.feed
 local assert_alive = n.assert_alive
+local api = n.api
+local fn = n.fn
+local command = n.command
+local eq = t.eq
 
 before_each(clear)
 
@@ -13,7 +19,6 @@ describe('smoothscroll', function()
 
   before_each(function()
     screen = Screen.new(40, 12)
-    screen:attach()
   end)
 
   -- oldtest: Test_CtrlE_CtrlY_stop_at_end()
@@ -373,6 +378,108 @@ describe('smoothscroll', function()
     screen:expect_unchanged()
     feed('<C-E>')
     screen:expect_unchanged()
+  end)
+
+  -- oldtest: Test_smoothscroll_diff_change_line()
+  it('works in diff mode when changing line', function()
+    screen:try_resize(55, 20)
+    exec([[
+      set diffopt+=followwrap smoothscroll
+      call setline(1, repeat(' abc', &columns))
+      call setline(2, 'bar')
+      call setline(3, repeat(' abc', &columns))
+      vnew
+      call setline(1, repeat(' abc', &columns))
+      call setline(2, 'foo')
+      call setline(3, 'bar')
+      call setline(4, repeat(' abc', &columns))
+      windo exe "normal! 2gg5\<C-E>"
+      windo diffthis
+    ]])
+
+    screen:expect([[
+      {1:<<<}bc abc abc abc abc abc a│{1:<<<}bc abc abc abc abc abc a|
+      {7:  }bc abc abc abc abc abc ab│{7:  }bc abc abc abc abc abc ab|
+      {7:  }c abc abc abc abc abc abc│{7:  }c abc abc abc abc abc abc|
+      {7:  } abc abc abc abc abc     │{7:  } abc abc abc abc abc     |
+      {7:  }{22:foo                      }│{7:  }{23:-------------------------}|
+      {7:  }bar                      │{7:  }^bar                      |
+      {7:  } abc abc abc abc abc abc │{7:  } abc abc abc abc abc abc |
+      {7:  }abc abc abc abc abc abc a│{7:  }abc abc abc abc abc abc a|
+      {7:  }bc abc abc abc abc abc ab│{7:  }bc abc abc abc abc abc ab|
+      {7:  }c abc abc abc abc abc abc│{7:  }c abc abc abc abc abc abc|
+      {7:  } abc abc abc abc abc abc │{7:  } abc abc abc abc abc abc |
+      {7:  }abc abc abc abc abc abc a│{7:  }abc abc abc abc abc abc a|
+      {7:  }bc abc abc abc abc abc ab│{7:  }bc abc abc abc abc abc ab|
+      {7:  }c abc abc abc abc abc abc│{7:  }c abc abc abc abc abc abc|
+      {7:  } abc abc abc abc abc     │{7:  } abc abc abc abc abc     |
+      {1:~                          }│{1:~                          }|*3
+      {2:[No Name] [+]               }{3:[No Name] [+]              }|
+                                                             |
+    ]])
+    feed('Abar')
+    screen:expect([[
+      {1:<<<}bc abc abc abc abc abc a│{1:<<<}bc abc abc abc abc abc a|
+      {7:  }bc abc abc abc abc abc ab│{7:  }bc abc abc abc abc abc ab|
+      {7:  }c abc abc abc abc abc abc│{7:  }c abc abc abc abc abc abc|
+      {7:  } abc abc abc abc abc     │{7:  } abc abc abc abc abc     |
+      {7:  }{22:foo                      }│{7:  }{23:-------------------------}|
+      {7:  }bar                      │{7:  }barbar^                   |
+      {7:  } abc abc abc abc abc abc │{7:  } abc abc abc abc abc abc |
+      {7:  }abc abc abc abc abc abc a│{7:  }abc abc abc abc abc abc a|
+      {7:  }bc abc abc abc abc abc ab│{7:  }bc abc abc abc abc abc ab|
+      {7:  }c abc abc abc abc abc abc│{7:  }c abc abc abc abc abc abc|
+      {7:  } abc abc abc abc abc abc │{7:  } abc abc abc abc abc abc |
+      {7:  }abc abc abc abc abc abc a│{7:  }abc abc abc abc abc abc a|
+      {7:  }bc abc abc abc abc abc ab│{7:  }bc abc abc abc abc abc ab|
+      {7:  }c abc abc abc abc abc abc│{7:  }c abc abc abc abc abc abc|
+      {7:  } abc abc abc abc abc     │{7:  } abc abc abc abc abc     |
+      {1:~                          }│{1:~                          }|*3
+      {2:[No Name] [+]               }{3:[No Name] [+]              }|
+      {5:-- INSERT --}                                           |
+    ]])
+    feed('<Esc>')
+    screen:expect([[
+      {1:<<<}bc abc abc abc abc abc a│{1:<<<}bc abc abc abc abc abc a|
+      {7:  }bc abc abc abc abc abc ab│{7:  }bc abc abc abc abc abc ab|
+      {7:  }c abc abc abc abc abc abc│{7:  }c abc abc abc abc abc abc|
+      {7:  } abc abc abc abc abc     │{7:  } abc abc abc abc abc     |
+      {7:  }{22:foo                      }│{7:  }{23:-------------------------}|
+      {7:  }{4:bar                      }│{7:  }{4:bar}{27:ba^r}{4:                   }|
+      {7:  } abc abc abc abc abc abc │{7:  } abc abc abc abc abc abc |
+      {7:  }abc abc abc abc abc abc a│{7:  }abc abc abc abc abc abc a|
+      {7:  }bc abc abc abc abc abc ab│{7:  }bc abc abc abc abc abc ab|
+      {7:  }c abc abc abc abc abc abc│{7:  }c abc abc abc abc abc abc|
+      {7:  } abc abc abc abc abc abc │{7:  } abc abc abc abc abc abc |
+      {7:  }abc abc abc abc abc abc a│{7:  }abc abc abc abc abc abc a|
+      {7:  }bc abc abc abc abc abc ab│{7:  }bc abc abc abc abc abc ab|
+      {7:  }c abc abc abc abc abc abc│{7:  }c abc abc abc abc abc abc|
+      {7:  } abc abc abc abc abc     │{7:  } abc abc abc abc abc     |
+      {1:~                          }│{1:~                          }|*3
+      {2:[No Name] [+]               }{3:[No Name] [+]              }|
+                                                             |
+    ]])
+    feed('yyp')
+    screen:expect([[
+      {1:<<<}bc abc abc abc abc abc a│{1:<<<}bc abc abc abc abc abc a|
+      {7:  }bc abc abc abc abc abc ab│{7:  }bc abc abc abc abc abc ab|
+      {7:  }c abc abc abc abc abc abc│{7:  }c abc abc abc abc abc abc|
+      {7:  } abc abc abc abc abc     │{7:  } abc abc abc abc abc     |
+      {7:  }{27:foo}{4:                      }│{7:  }{27:barbar}{4:                   }|
+      {7:  }{4:bar                      }│{7:  }{4:^bar}{27:bar}{4:                   }|
+      {7:  } abc abc abc abc abc abc │{7:  } abc abc abc abc abc abc |
+      {7:  }abc abc abc abc abc abc a│{7:  }abc abc abc abc abc abc a|
+      {7:  }bc abc abc abc abc abc ab│{7:  }bc abc abc abc abc abc ab|
+      {7:  }c abc abc abc abc abc abc│{7:  }c abc abc abc abc abc abc|
+      {7:  } abc abc abc abc abc abc │{7:  } abc abc abc abc abc abc |
+      {7:  }abc abc abc abc abc abc a│{7:  }abc abc abc abc abc abc a|
+      {7:  }bc abc abc abc abc abc ab│{7:  }bc abc abc abc abc abc ab|
+      {7:  }c abc abc abc abc abc abc│{7:  }c abc abc abc abc abc abc|
+      {7:  } abc abc abc abc abc     │{7:  } abc abc abc abc abc     |
+      {1:~                          }│{1:~                          }|*3
+      {2:[No Name] [+]               }{3:[No Name] [+]              }|
+                                                             |
+    ]])
   end)
 
   -- oldtest: Test_smoothscroll_wrap_scrolloff_zero()
@@ -913,6 +1020,137 @@ describe('smoothscroll', function()
     assert_alive()
   end)
 
+  -- oldtest: Test_smoothscroll_insert_bottom()
+  it('works in Insert mode at bottom of window', function()
+    screen:try_resize(40, 9)
+    exec([[
+      call setline(1, repeat([repeat('A very long line ...', 10)], 5))
+      set wrap smoothscroll scrolloff=0
+    ]])
+    feed('Go123456789<CR>')
+    screen:expect([[
+      {1:<<<}ery long line ...A very long line ...|
+      A very long line ...A very long line ...|*5
+      123456789                               |
+      ^                                        |
+      {5:-- INSERT --}                            |
+    ]])
+  end)
+
+  -- oldtest: Test_smoothscroll_in_qf_window()
+  it('works in quickfix window when changing quickfix list', function()
+    screen:try_resize(60, 20)
+    exec([[
+      set nocompatible display=lastline
+      copen 5
+      setlocal number smoothscroll
+      let g:l = [{'text': 'foo'}] + repeat([{'text': join(range(30))}], 10)
+      call setqflist(g:l, 'r')
+      normal! G
+      wincmd t
+      let g:l1 = [{'text': join(range(1000))}]
+    ]])
+    screen:expect([[
+      ^                                                            |
+      {1:~                                                           }|*11
+      {3:[No Name]                                                   }|
+      {1:<<<}{8: }21 22 23 24 25 26 27 28 29                              |
+      {8: 10 }|| 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 |
+      {8:    }21 22 23 24 25 26 27 28 29                              |
+      {8: 11 }|| 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 |
+      {8:    }21 22 23 24 25 26 27 28 29                              |
+      {2:[Quickfix List] [-]                                         }|
+                                                                  |
+    ]])
+
+    feed([[:call setqflist([], 'r')<CR>]])
+    local screen_empty = [[
+      ^                                                            |
+      {1:~                                                           }|*11
+      {3:[No Name]                                                   }|
+      {8:  1 }                                                        |
+      {1:~                                                           }|*4
+      {2:[Quickfix List] [-]                                         }|
+      :call setqflist([], 'r')                                    |
+    ]]
+    screen:expect(screen_empty)
+
+    feed([[:call setqflist(g:l, 'r')<CR>]])
+    local screen_l_top = [[
+      ^                                                            |
+      {1:~                                                           }|*11
+      {3:[No Name]                                                   }|
+      {8:  1 }{10:|| foo                                                  }|
+      {8:  2 }|| 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 |
+      {8:    }21 22 23 24 25 26 27 28 29                              |
+      {8:  3 }|| 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 |
+      {8:    }21 22 23 24 25 26 27 28 29                              |
+      {2:[Quickfix List] [-]                                         }|
+      :call setqflist(g:l, 'r')                                   |
+    ]]
+    screen:expect(screen_l_top)
+
+    feed([[:call setqflist(g:l1, 'r')<CR>]])
+    local screen_l1_top = [[
+      ^                                                            |
+      {1:~                                                           }|*11
+      {3:[No Name]                                                   }|
+      {8:  1 }{10:|| 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 }|
+      {8:    }{10:21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39}|
+      {8:    }{10: 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 5}|
+      {8:    }{10:8 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 }|
+      {8:    }{10:77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95}|
+      {2:[Quickfix List] [-]                                         }|
+      :call setqflist(g:l1, 'r')                                  |
+    ]]
+    screen:expect(screen_l1_top)
+
+    feed('<C-W>b$<C-W>t')
+    local screen_l1_bot = [[
+      ^                                                            |
+      {1:~                                                           }|*11
+      {3:[No Name]                                                   }|
+      {1:<<<}{8: }{10: 937 938 939 940 941 942 943 944 945 946 947 948 949 950}|
+      {8:    }{10: 951 952 953 954 955 956 957 958 959 960 961 962 963 964}|
+      {8:    }{10: 965 966 967 968 969 970 971 972 973 974 975 976 977 978}|
+      {8:    }{10: 979 980 981 982 983 984 985 986 987 988 989 990 991 992}|
+      {8:    }{10: 993 994 995 996 997 998 999                            }|
+      {2:[Quickfix List] [-]                                         }|
+      :call setqflist(g:l1, 'r')                                  |
+    ]]
+    screen:expect(screen_l1_bot)
+
+    feed([[:call setqflist([], 'r')<CR>]])
+    screen:expect(screen_empty)
+
+    feed([[:call setqflist(g:l1, 'r')<CR>]])
+    screen:expect(screen_l1_top)
+
+    feed('<C-W>b$<C-W>t')
+    screen:expect(screen_l1_bot)
+
+    feed([[:call setqflist(g:l, 'r')<CR>]])
+    screen:expect(screen_l_top)
+  end)
+
+  -- oldtest: Test_smoothscroll_textoff_showbreak()
+  it('does not crash when resizing to textoff with showbreak', function()
+    exec([[
+      set noswapfile scrolloff=0
+
+      call setline(1, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')
+      set number wrap smoothscroll showbreak=>
+      vsplit
+
+      let textoff = getwininfo(win_getid())[0].textoff
+      execute "normal! 0\<C-E>"
+      redraw
+      execute 'vertical resize' textoff
+      redraw
+    ]])
+    assert_alive()
+  end)
+
   it('works with virt_lines above and below', function()
     screen:try_resize(55, 7)
     exec([=[
@@ -986,32 +1224,11 @@ describe('smoothscroll', function()
     ]])
   end)
 
-  it('works in Insert mode at bottom of window', function()
-    screen:try_resize(40, 9)
-    exec([[
-      call setline(1, repeat([repeat('A very long line ...', 10)], 5))
-      set wrap smoothscroll scrolloff=0
-    ]])
-    feed('Go123456789<CR>')
-    screen:expect([[
-      {1:<<<}ery long line ...A very long line ...|
-      A very long line ...A very long line ...|*5
-      123456789                               |
-      ^                                        |
-      {5:-- INSERT --}                            |
-    ]])
-  end)
-
   it('<<< marker shows with tabline, winbar and splits', function()
     screen:try_resize(40, 12)
-    screen:set_default_attr_ids({
-      [1] = { foreground = Screen.colors.Blue1, bold = true },
-      [2] = { reverse = true },
-      [3] = { bold = true, reverse = true },
-      [4] = { background = Screen.colors.LightMagenta },
-      [5] = { bold = true },
-      [31] = { foreground = Screen.colors.Fuchsia, bold = true },
-    })
+    screen:add_extra_attr_ids {
+      [100] = { foreground = Screen.colors.Magenta1, bold = true },
+    }
     exec([[
       call setline(1, ['Line' .. (' with some text'->repeat(7))]->repeat(7))
       set smoothscroll scrolloff=0
@@ -1032,9 +1249,8 @@ describe('smoothscroll', function()
                                               |
     ]])
     exec('set showtabline=2')
-    feed('<C-E>')
     screen:expect([[
-      {5: }{31:2}{5:+ [No Name] }{2:                          }|
+      {5: }{100:2}{5:+ [No Name] }{2:                          }|
       {1:<<<}e text with some text with some text |
       with some text with some text           |
       Line with some text with some text with |
@@ -1048,9 +1264,9 @@ describe('smoothscroll', function()
                                               |
     ]])
     exec('set winbar=winbar')
-    feed('<C-w>k<C-E>')
+    feed('<C-w>k')
     screen:expect([[
-      {5: }{31:2}{5:+ [No Name] }{2:                          }|
+      {5: }{100:2}{5:+ [No Name] }{2:                          }|
       {5:winbar                                  }|
       {1:<<<}e text with some text with some text |
       ^with some text with some text           |
@@ -1099,5 +1315,574 @@ describe('smoothscroll', function()
       {8:    }924;Lo;0;L;7280;;;;N;;;;;           |
                                               |
     ]])
+  end)
+
+  it('works with very long line and scrolloff', function()
+    screen:try_resize(40, 8)
+    exec([[
+      set smoothscroll scrolloff=3
+      call setline(1, ['one', 'two long '->repeat(100), 'three', 'four', 'five', 'six'])
+    ]])
+    feed(':norm j721|<CR>')
+    screen:expect([[
+      {1:<<<}two long two long two long two long t|
+      wo long two long two long two long two l|
+      ong two long two long two long two long |
+      ^two long two long two long two long two |
+      long two long two long two long two long|
+       two long two long two long two long two|
+       long two long two long two long two lon|
+      :norm j721|                             |
+    ]])
+    feed('gj')
+    screen:expect([[
+      {1:<<<}two long two long two long two long t|
+      wo long two long two long two long two l|
+      ong two long two long two long two long |
+      two long two long two long two long two |
+      ^long two long two long two long two long|
+       two long two long two long two long two|
+       long two long two long two long two lon|
+      :norm j721|                             |
+    ]])
+    feed('gj')
+    screen:expect([[
+      {1:<<<}long two long two long two long two l|
+      ong two long two long two long two long |
+      two long two long two long two long two |
+      long two long two long two long two long|
+      ^ two long two long two long two long two|
+       long two long two long two long two lon|
+      g two long two long                     |
+      :norm j721|                             |
+    ]])
+    feed('gj')
+    screen:expect([[
+      {1:<<<}long two long two long two long two l|
+      ong two long two long two long two long |
+      two long two long two long two long two |
+      long two long two long two long two long|
+       two long two long two long two long two|
+      ^ long two long two long two long two lon|
+      g two long two long                     |
+      :norm j721|                             |
+    ]])
+    feed('gj')
+    screen:expect([[
+      {1:<<<}long two long two long two long two l|
+      ong two long two long two long two long |
+      two long two long two long two long two |
+      long two long two long two long two long|
+       two long two long two long two long two|
+       long two long two long two long two lon|
+      ^g two long two long                     |
+      :norm j721|                             |
+    ]])
+    feed('gj')
+    screen:expect([[
+      {1:<<<} long two long two long two long two |
+      long two long two long two long two long|
+       two long two long two long two long two|
+       long two long two long two long two lon|
+      g two long two long                     |
+      ^three                                   |
+      four                                    |
+      :norm j721|                             |
+    ]])
+    feed('gk')
+    screen:expect([[
+      {1:<<<}long two long two long two long two l|
+      ong two long two long two long two long |
+      two long two long two long two long two |
+      long two long two long two long two long|
+       two long two long two long two long two|
+       long two long two long two long two lon|
+      ^g two long two long                     |
+      :norm j721|                             |
+    ]])
+  end)
+
+  it('winrestview() with only "topline" drops the skipcol of the previous topline', function()
+    exec([[
+      set smoothscroll
+      call setline(1, ['line1', 'line2'->repeat(20)])
+    ]])
+    -- Checked before a redraw, which repairs the view.
+    eq(
+      { 40, 0 },
+      n.exec_lua(function()
+        vim.fn.winrestview({ lnum = 2, col = 60, topline = 2, skipcol = 40 })
+        local skipcol = vim.fn.winsaveview().skipcol
+        vim.fn.winrestview({ topline = 1 })
+        return { skipcol, vim.fn.winsaveview().skipcol }
+      end)
+    )
+  end)
+end)
+
+describe('scrolloffpad', function()
+  local screen
+
+  before_each(function()
+    screen = Screen.new(78, 20)
+  end)
+
+  -- oldtest: Test_scrolloffpad_basic()
+  it('works', function()
+    exec([[
+      set scrolloff=10
+      set scrolloffpad=5
+      enew!
+      call setline(1, map(range(1, 100), 'printf("line %d", v:val)'))
+      normal! gg
+    ]])
+
+    -- Enabled: scrolloffpad > 0, expect EOF centering/padding
+    exec('normal! G')
+    screen:expect([[
+      line 91                                                                       |
+      line 92                                                                       |
+      line 93                                                                       |
+      line 94                                                                       |
+      line 95                                                                       |
+      line 96                                                                       |
+      line 97                                                                       |
+      line 98                                                                       |
+      line 99                                                                       |
+      ^line 100                                                                      |
+      {1:~                                                                             }|*9
+                                                                                    |
+    ]])
+
+    -- Beginning-of-file is unchanged (Top)
+    exec('normal! gg')
+    screen:expect([[
+      ^line 1                                                                        |
+      line 2                                                                        |
+      line 3                                                                        |
+      line 4                                                                        |
+      line 5                                                                        |
+      line 6                                                                        |
+      line 7                                                                        |
+      line 8                                                                        |
+      line 9                                                                        |
+      line 10                                                                       |
+      line 11                                                                       |
+      line 12                                                                       |
+      line 13                                                                       |
+      line 14                                                                       |
+      line 15                                                                       |
+      line 16                                                                       |
+      line 17                                                                       |
+      line 18                                                                       |
+      line 19                                                                       |
+                                                                                    |
+    ]])
+
+    -- Gating: disable scrolloffpad, then go to EOF again
+    -- Expect normal EOF behavior (no extra centering/padding)
+    exec('set scrolloffpad=0')
+    exec('normal! G')
+    screen:expect([[
+      line 82                                                                       |
+      line 83                                                                       |
+      line 84                                                                       |
+      line 85                                                                       |
+      line 86                                                                       |
+      line 87                                                                       |
+      line 88                                                                       |
+      line 89                                                                       |
+      line 90                                                                       |
+      line 91                                                                       |
+      line 92                                                                       |
+      line 93                                                                       |
+      line 94                                                                       |
+      line 95                                                                       |
+      line 96                                                                       |
+      line 97                                                                       |
+      line 98                                                                       |
+      line 99                                                                       |
+      ^line 100                                                                      |
+                                                                                    |
+    ]])
+  end)
+
+  -- oldtest: Test_scrolloffpad_smoothscroll()
+  it('works with smoothscroll', function()
+    exec([[
+      set smoothscroll scrolloff=10 scrolloffpad=1
+      enew!
+      call setline(1, map(range(1, 100), 'printf("line %d", v:val)'))
+      normal! gg
+    ]])
+
+    exec('normal! G')
+    screen:expect([[
+      line 91                                                                       |
+      line 92                                                                       |
+      line 93                                                                       |
+      line 94                                                                       |
+      line 95                                                                       |
+      line 96                                                                       |
+      line 97                                                                       |
+      line 98                                                                       |
+      line 99                                                                       |
+      ^line 100                                                                      |
+      {1:~                                                                             }|*9
+                                                                                    |
+    ]])
+
+    exec([[call setline(line('$'), repeat('LONG ', 30))]])
+    exec('normal! 41|')
+    screen:expect([[
+      line 92                                                                       |
+      line 93                                                                       |
+      line 94                                                                       |
+      line 95                                                                       |
+      line 96                                                                       |
+      line 97                                                                       |
+      line 98                                                                       |
+      line 99                                                                       |
+      LONG LONG LONG LONG LONG LONG LONG LONG ^LONG LONG LONG LONG LONG LONG LONG LON|
+      G LONG LONG LONG LONG LONG LONG LONG LONG LONG LONG LONG LONG LONG LONG       |
+      {1:~                                                                             }|*9
+                                                                                    |
+    ]])
+  end)
+
+  -- oldtest: Test_scrolloffpad_with_folds()
+  it('works with folds', function()
+    exec([[
+      set scrolloff=10
+      set scrolloffpad=1
+
+      enew
+      call setline(1, map(range(1, 120), {_, v -> 'line ' . v}))
+
+      " Create a large fold near the end of the file.
+      " Fold lines 60-110, leaving 111-120 visible after the fold.
+      set foldmethod=manual
+      set foldenable
+      normal! gg
+      normal! 60G
+      normal! zf50j
+      normal! gg
+    ]])
+
+    -- Case 1: Jump to end-of-file
+    -- With folds present, scrolloffpad should still
+    -- keep the cursor positioned with padding below EOF
+    exec('normal! G')
+    local s1 = [[
+      line 111                                                                      |
+      line 112                                                                      |
+      line 113                                                                      |
+      line 114                                                                      |
+      line 115                                                                      |
+      line 116                                                                      |
+      line 117                                                                      |
+      line 118                                                                      |
+      line 119                                                                      |
+      ^line 120                                                                      |
+      {1:~                                                                             }|*9
+                                                                                    |
+    ]]
+    screen:expect(s1)
+
+    -- Case 2: Move to the folded line to ensure the fold is actually in view
+    exec('normal! 60G')
+    screen:expect([[
+      line 51                                                                       |
+      line 52                                                                       |
+      line 53                                                                       |
+      line 54                                                                       |
+      line 55                                                                       |
+      line 56                                                                       |
+      line 57                                                                       |
+      line 58                                                                       |
+      line 59                                                                       |
+      {13:^+-- 51 lines: line 60·························································}|
+      line 111                                                                      |
+      line 112                                                                      |
+      line 113                                                                      |
+      line 114                                                                      |
+      line 115                                                                      |
+      line 116                                                                      |
+      line 117                                                                      |
+      line 118                                                                      |
+      line 119                                                                      |
+                                                                                    |
+    ]])
+
+    -- Case 3: Close the fold explicitly and go to EOF again
+    -- Behavior should remain stable with closed folds
+    exec('normal! zc')
+    exec('normal! G')
+    screen:expect(s1)
+  end)
+
+  it("uses the target window's value, not the current window's", function()
+    exec([[
+      set scrolloff=10 scrolloffpad=0
+      enew!
+      call setline(1, map(range(1, 100), 'printf("line %d", v:val)'))
+      split
+      setlocal scrolloffpad=5
+      normal! G
+      wincmd j
+      silent 1,60d
+    ]])
+    -- The upper window turned 'scrolloffpad' on for itself, so its own value
+    -- decides how far its cursor is padded from the end of the buffer, even
+    -- though the current window leaves the option at the global 0.
+    t.eq(36, n.fn.line('w0', n.fn.win_getid(1)))
+  end)
+end)
+
+describe('scroll_cursor_halfway()', function()
+  local screen
+
+  before_each(function()
+    screen = Screen.new(40, 12)
+  end)
+
+  it('weighs lines by their screen height', function()
+    exec([[
+      set nosmoothscroll scrolloff=0
+      call setline(1, map(range(1, 20), '"short " .. v:val'))
+      call append(20, 'CURSOR')
+      call append(21, map(range(1, 8), 'repeat("x", 200)'))
+    ]])
+    feed('21Gzz')
+    -- The lines below the cursor wrap to five rows each, so only one of them
+    -- fits under the cursor once it sits on row 6 of this 11 row window.
+    screen:expect([[
+      short 16                                |
+      short 17                                |
+      short 18                                |
+      short 19                                |
+      short 20                                |
+      ^CURSOR                                  |
+      xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx|*5
+                                              |
+    ]])
+  end)
+end)
+
+describe('window motions and scrolling with conceal-aware wrap (#14409)', function()
+  -- Line `lnum` reflows from 36 raw cells to 30 displayed cells.
+  local function reflowing_buf(count, lnum)
+    local ns = api.nvim_create_namespace('conceal_wrap_scroll')
+    local lines = {}
+    for i = 1, count do
+      lines[i] = i == lnum and (('a'):rep(10) .. 'HIDDEN' .. ('b'):rep(20)) or ('L%02d'):format(i)
+    end
+    api.nvim_buf_set_lines(0, 0, -1, true, lines)
+    api.nvim_buf_set_extmark(0, ns, lnum - 1, 10, { end_col = 16, conceal = '' })
+  end
+
+  it('L and M target the correct reflowed row', function()
+    local screen = Screen.new(30, 8)
+    command('set wrap conceallevel=2 concealcursor=nvic')
+    reflowing_buf(10, 3)
+
+    api.nvim_win_set_cursor(0, { 1, 0 })
+    feed('zt')
+    -- Line 3 reflows to one row, so seven buffer lines fit instead of six.
+    screen:expect([[
+      ^L01                           |
+      L02                           |
+      aaaaaaaaaabbbbbbbbbbbbbbbbbbbb|
+      L04                           |
+      L05                           |
+      L06                           |
+      L07                           |
+                                    |
+    ]])
+
+    feed('L')
+    eq({ 7, 0 }, api.nvim_win_get_cursor(0))
+    feed('gg')
+    feed('M')
+    eq({ 4, 0 }, api.nvim_win_get_cursor(0))
+    command('set conceallevel=0')
+    feed('ggL')
+    eq({ 6, 0 }, api.nvim_win_get_cursor(0))
+    feed('ggM')
+    eq({ 3, 0 }, api.nvim_win_get_cursor(0))
+  end)
+
+  it('centers a concealed long line for scrolloff without changing raw desired columns', function()
+    Screen.new(20, 7)
+    command('set wrap smoothscroll scrolloff=3 conceallevel=2 concealcursor=nvic')
+    local text = ('abcdefghij'):rep(28)
+    api.nvim_buf_set_lines(0, 0, -1, true, {
+      text:sub(1, 5) .. ('X'):rep(40) .. text:sub(6),
+      text,
+    })
+    api.nvim_buf_set_extmark(0, api.nvim_create_namespace(''), 0, 5, {
+      end_col = 45,
+      conceal = '',
+    })
+    api.nvim_win_set_cursor(0, { 1, 168 })
+    feed('g0')
+    eq({ 1, 160 }, api.nvim_win_get_cursor(0))
+    eq(60, fn.winsaveview().skipcol)
+    eq(4, fn.winline())
+    feed('j')
+    eq({ 2, 160 }, api.nvim_win_get_cursor(0))
+  end)
+
+  it('scroll commands count the displayed cursor row', function()
+    Screen.new(20, 7)
+    command('set wrap scrolloff=0 conceallevel=2 concealcursor=nvic')
+    local ns = api.nvim_create_namespace('')
+    for _, case in ipairs({
+      { 6, '<C-Y>', 2, { 5, 2 } },
+      { 6, 'i<C-X><C-Y><Esc>', 3, { 6, 74 } },
+      { 4, 'i<C-X><C-E><Esc>', 4, { 4, 74 } },
+    }) do
+      api.nvim_buf_clear_namespace(0, ns, 0, -1)
+      local lines = {}
+      for i = 1, 10 do
+        lines[i] = ('L%02d'):format(i)
+      end
+      lines[case[1]] = 'abcde' .. ('X'):rep(40) .. ('abcdefghij'):rep(4) .. 'abcde'
+      api.nvim_buf_set_lines(0, 0, -1, true, lines)
+      api.nvim_buf_set_extmark(0, ns, case[1] - 1, 5, { end_col = 45, conceal = '' })
+      api.nvim_win_set_cursor(0, { case[1], 75 })
+      fn.winrestview({ topline = 3 })
+      command('redraw')
+      feed(case[2])
+      eq(case[3], fn.line('w0'))
+      eq(case[4], api.nvim_win_get_cursor(0))
+    end
+  end)
+
+  it(
+    "sum_scroll_delta accounts for 'smoothscroll' Ctrl-E landing mid-way through a reflowed line",
+    function()
+      local screen = Screen.new(21, 8, { ext_multigrid = true })
+      command('set wrap conceallevel=2 concealcursor=nvic smoothscroll')
+      reflowing_buf(20, 5)
+      api.nvim_win_set_cursor(0, { 1, 0 })
+
+      -- 4 presses reach line 5 (the reflowed line) as topline.
+      feed('4<C-E>')
+      screen:expect({
+        grid = [[
+        ## grid 1
+          [2:---------------------]|*7
+          [3:---------------------]|
+        ## grid 2
+          ^aaaaaaaaaabbbbbbbbbbb|
+          bbbbbbbbb            |
+          L06                  |
+          L07                  |
+          L08                  |
+          L09                  |
+          L10                  |
+        ## grid 3
+                               |
+        ]],
+        win_viewport = {
+          [2] = {
+            win = 1000,
+            topline = 4,
+            botline = 11,
+            curline = 4,
+            curcol = 0,
+            linecount = 20,
+            sum_scroll_delta = 4,
+          },
+        },
+      })
+
+      -- A 5th press must skip into the reflowed line's own 2nd row (skipcol): topline stays on line
+      -- 5 (0-indexed 4), only the screen view advances by the single reflowed row.
+      feed('<C-E>')
+      screen:expect({
+        grid = [[
+        ## grid 1
+          [2:---------------------]|*7
+          [3:---------------------]|
+        ## grid 2
+          {1:<<<}bbbbb^b            |
+          L06                  |
+          L07                  |
+          L08                  |
+          L09                  |
+          L10                  |
+          L11                  |
+        ## grid 3
+                               |
+        ]],
+        win_viewport = {
+          [2] = {
+            win = 1000,
+            topline = 4,
+            botline = 12,
+            curline = 4,
+            curcol = 35,
+            linecount = 20,
+            sum_scroll_delta = 5,
+          },
+        },
+      })
+    end
+  )
+
+  it("'smoothscroll' does not retain a row removed by conceal", function()
+    Screen.new(21, 8)
+    command('set wrap smoothscroll scrolloff=0 conceallevel=2 concealcursor=nvic')
+    local lines = { ('x'):rep(42) }
+    for i = 2, 20 do
+      lines[i] = ('L%02d'):format(i)
+    end
+    api.nvim_buf_set_lines(0, 0, -1, true, lines)
+    local ns = api.nvim_create_namespace('conceal_smoothscroll_removed_row')
+    api.nvim_buf_set_extmark(0, ns, 0, 0, { end_col = 21, conceal = '' })
+    api.nvim_win_set_cursor(0, { 1, 21 })
+
+    feed('<C-E>')
+    eq({ 2, 0 }, { fn.line('w0'), fn.winsaveview().skipcol })
+
+    feed('<C-Y>')
+    eq({ 1, 0 }, { fn.line('w0'), fn.winsaveview().skipcol })
+  end)
+
+  it('adjust_skipcol uses the displayed cursor column', function()
+    Screen.new(22, 7)
+    command(
+      'set wrap linebreak breakindent breakindentopt=shift:2,min:0,sbr '
+        .. 'showbreak=>> smoothscroll scrolloff=0 conceallevel=3 concealcursor=nvic '
+        .. 'number relativenumber numberwidth=4'
+    )
+    local text = '- **Alpha** Beta Gamma Delta Epsilon Zeta Eta Theta Iota Kappa Lambda Mu Nu Xi'
+    api.nvim_buf_set_lines(0, 0, -1, true, { text, 'Q' })
+    local ns = api.nvim_create_namespace('conceal_adjust_skipcol')
+    api.nvim_buf_set_extmark(0, ns, 0, 2, { end_col = 4, conceal = '' })
+    api.nvim_buf_set_extmark(0, ns, 0, 9, { end_col = 11, conceal = '' })
+    api.nvim_win_set_cursor(0, { 1, 0 })
+
+    feed('<C-E>')
+    eq(
+      { 1, 18, 1, 7 },
+      { api.nvim_win_get_cursor(0)[1], fn.winsaveview().skipcol, fn.winline(), fn.wincol() }
+    )
+
+    -- So does update_topline(): a cursor entering the topline above the skipped part scrolls back.
+    command('set nolinebreak nobreakindent showbreak= nonumber norelativenumber conceallevel=2')
+    api.nvim_buf_clear_namespace(0, ns, 0, -1)
+    api.nvim_buf_set_lines(0, 0, -1, true, {
+      ('%s%s%s%s'):format(('H'):rep(10), ('a'):rep(15), ('b'):rep(20), ('c'):rep(20)),
+      'END',
+    })
+    api.nvim_buf_set_extmark(0, ns, 0, 0, { end_col = 10, conceal = '' })
+    api.nvim_win_set_cursor(0, { 1, 10 })
+    feed('<C-E>j')
+    eq(22, fn.winsaveview().skipcol)
+    api.nvim_win_set_cursor(0, { 1, 28 })
+    eq({ 0, 1, 19 }, { fn.winsaveview().skipcol, fn.winline(), fn.wincol() })
   end)
 end)

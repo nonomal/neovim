@@ -1,6 +1,8 @@
 local n = require('test.functional.testnvim')()
+local t = require('test.testutil')
 local Screen = require('test.functional.ui.screen')
 
+local describe, it, before_each = t.describe, t.it, t.before_each
 local clear = n.clear
 local command = n.command
 local exec = n.exec
@@ -18,7 +20,6 @@ describe("'cursorbind'", function()
       [3] = { reverse = true }, -- StatusLineNC
       [4] = { background = Screen.colors.Grey90 }, -- CursorLine, CursorColumn
     })
-    screen:attach()
     exec([[
       call setline(1, 'aa bb cc dd ee ff gg hh ii jj kk ll mm' ..
       \ ' nn oo pp qq rr ss tt uu vv ww xx yy zz')

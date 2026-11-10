@@ -2,6 +2,7 @@ local t = require('test.testutil')
 local n = require('test.functional.testnvim')()
 
 local snippet = require('vim.lsp._snippet_grammar')
+local describe, it, before_each = t.describe, t.it, t.before_each
 local type = snippet.NodeType
 
 local eq = t.eq
@@ -9,11 +10,11 @@ local exec_lua = n.exec_lua
 
 describe('vim.lsp._snippet_grammar', function()
   before_each(n.clear)
-  after_each(n.clear)
 
   local parse = function(...)
-    local res = exec_lua('return require("vim.lsp._snippet_grammar").parse(...)', ...)
-    return res.data.children
+    local results = exec_lua('return { require("vim.lsp._snippet_grammar").parse(...) }', ...)
+    eq(1, #results)
+    return results[1].data.children
   end
 
   it('parses only text', function()

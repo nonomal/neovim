@@ -1,7 +1,7 @@
 " Vim syntax file
 " Language:     TypeScript
 " Maintainer:   Herrington Darkholme
-" Last Change:  2023 Aug 13
+" Last Change:  2024 May 24
 " Based On:     Herrington Darkholme's yats.vim
 " Changes:      Go to https://github.com/HerringtonDarkholme/yats.vim for recent changes.
 " Origin:       https://github.com/othree/yajs
@@ -41,6 +41,12 @@ source <sfile>:h/shared/typescriptcommon.vim
 let b:current_syntax = "typescript"
 if main_syntax == 'typescript'
   unlet main_syntax
+endif
+
+" Svelte 5 runes ($state, $derived, $props, ...) inside .svelte.ts modules.
+if expand('%:t') =~# '\.svelte\.ts$'
+  syntax match svelteRune "\$\w\+" containedin=ALL
+  highlight default link svelteRune Statement
 endif
 
 let &cpo = s:cpo_save

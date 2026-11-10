@@ -70,35 +70,19 @@
   ] @keyword.function)
 
 ; Operators
+(binary_expression
+  operator: _ @operator)
+
+(unary_expression
+  operator: _ @operator)
+
+"=" @operator
+
 [
   "and"
   "not"
   "or"
 ] @keyword.operator
-
-[
-  "+"
-  "-"
-  "*"
-  "/"
-  "%"
-  "^"
-  "#"
-  "=="
-  "~="
-  "<="
-  ">="
-  "<"
-  ">"
-  "="
-  "&"
-  "~"
-  "|"
-  "<<"
-  ">>"
-  "//"
-  ".."
-] @operator
 
 ; Punctuations
 [
@@ -151,8 +135,6 @@
 ((identifier) @constant
   (#lua-match? @constant "^[A-Z][A-Z_0-9]*$"))
 
-(vararg_expression) @constant
-
 (nil) @constant.builtin
 
 [
@@ -162,7 +144,7 @@
 
 ; Tables
 (field
-  name: (identifier) @variable.member)
+  name: (identifier) @property)
 
 (dot_index_expression
   field: (identifier) @variable.member)

@@ -1,8 +1,9 @@
 local t = require('test.testutil')
 local n = require('test.functional.testnvim')()
 
-local screen = require('test.functional.ui.screen')
+local Screen = require('test.functional.ui.screen')
 
+local describe, it, before_each = t.describe, t.it, t.before_each
 local testprg = n.testprg
 local command = n.command
 local fn = n.fn
@@ -13,12 +14,6 @@ local matches = t.matches
 local pesc = vim.pesc
 
 describe(':edit term://*', function()
-  local get_screen = function(columns, lines)
-    local scr = screen.new(columns, lines)
-    scr:attach({ rgb = false })
-    return scr
-  end
-
   before_each(function()
     clear()
     api.nvim_set_option_value('shell', testprg('shell-test'), {})
@@ -31,13 +26,13 @@ describe(':edit term://*', function()
     command('edit term://')
     local termopen_runs = api.nvim_get_var('termopen_runs')
     eq(1, #termopen_runs)
-    local cwd = fn.fnamemodify('.', ':p:~'):gsub([[[\/]*$]], '')
+    local cwd = fn.fnamemodify('.', ':p:~'):gsub([[/*$]], '')
     matches('^term://' .. pesc(cwd) .. '//%d+:$', termopen_runs[1])
   end)
 
   it("runs TermOpen early enough to set buffer-local 'scrollback'", function()
     local columns, lines = 20, 4
-    local scr = get_screen(columns, lines)
+    local scr = Screen.new(columns, lines, { rgb = false })
     local rep = 97
     api.nvim_set_option_value('shellcmdflag', 'REP ' .. rep, {})
     command('set shellxquote=') -- win: avoid extra quotes
@@ -49,12 +44,11 @@ describe(':edit term://*', function()
 
     local bufcontents = {}
     local winheight = api.nvim_win_get_height(0)
-    local buf_cont_start = rep - sb - winheight + 2
+    local buf_cont_start = rep - sb - winheight + 1
     for i = buf_cont_start, (rep - 1) do
       bufcontents[#bufcontents + 1] = ('%d: foobar'):format(i)
     end
     bufcontents[#bufcontents + 1] = ''
-    bufcontents[#bufcontents + 1] = '[Process exited 0]'
 
     local exp_screen = '\n'
     for i = 1, (winheight - 1) do

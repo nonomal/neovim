@@ -1,6 +1,7 @@
 local t = require('test.testutil')
 local n = require('test.functional.testnvim')()
 
+local describe, it, before_each = t.describe, t.it, t.before_each
 local NIL = vim.NIL
 local clear = n.clear
 local command = n.command
@@ -15,38 +16,32 @@ local feed = n.feed
 local fn = n.fn
 
 describe('nvim_get_commands', function()
-  local cmd_dict = {
-    addr = NIL,
-    bang = false,
-    bar = false,
-    complete = NIL,
-    complete_arg = NIL,
-    count = NIL,
+  local function command_info(overrides)
+    return vim.tbl_extend('force', {
+      addr = NIL,
+      bang = false,
+      bar = false,
+      complete = NIL,
+      complete_arg = NIL,
+      count = NIL,
+      desc = '',
+      range = NIL,
+      register = false,
+      keepscript = false,
+      script_id = 0,
+    }, overrides)
+  end
+
+  local cmd_dict = command_info({
     definition = 'echo "Hello World"',
     name = 'Hello',
     nargs = '1',
-    preview = false,
-    range = NIL,
-    register = false,
-    keepscript = false,
-    script_id = 0,
-  }
-  local cmd_dict2 = {
-    addr = NIL,
-    bang = false,
-    bar = false,
-    complete = NIL,
-    complete_arg = NIL,
-    count = NIL,
+  })
+  local cmd_dict2 = command_info({
     definition = 'pwd',
     name = 'Pwd',
     nargs = '?',
-    preview = false,
-    range = NIL,
-    register = false,
-    keepscript = false,
-    script_id = 0,
-  }
+  })
   before_each(clear)
 
   it('gets empty list if no commands were defined', function()
@@ -86,86 +81,71 @@ describe('nvim_get_commands', function()
   end)
 
   it('gets various command attributes', function()
-    local cmd0 = {
+    local cmd0 = command_info({
       addr = 'arguments',
-      bang = false,
-      bar = false,
       complete = 'dir',
-      complete_arg = NIL,
       count = '10',
       definition = 'pwd <args>',
       name = 'TestCmd',
       nargs = '1',
-      preview = false,
       range = '10',
-      register = false,
-      keepscript = false,
-      script_id = 0,
-    }
-    local cmd1 = {
-      addr = NIL,
-      bang = false,
-      bar = false,
+    })
+    local cmd1 = command_info({
       complete = 'custom',
       complete_arg = 'ListUsers',
-      count = NIL,
       definition = '!finger <args>',
       name = 'Finger',
       nargs = '+',
-      preview = false,
-      range = NIL,
-      register = false,
-      keepscript = false,
       script_id = 1,
-    }
-    local cmd2 = {
-      addr = NIL,
+    })
+    local cmd2 = command_info({
       bang = true,
-      bar = false,
-      complete = NIL,
-      complete_arg = NIL,
-      count = NIL,
       definition = 'call \128\253R2_foo(<q-args>)',
       name = 'Cmd2',
       nargs = '*',
-      preview = false,
-      range = NIL,
-      register = false,
-      keepscript = false,
       script_id = 2,
-    }
-    local cmd3 = {
-      addr = NIL,
-      bang = false,
+    })
+    local cmd3 = command_info({
       bar = true,
-      complete = NIL,
-      complete_arg = NIL,
-      count = NIL,
       definition = 'call \128\253R3_ohyeah()',
       name = 'Cmd3',
       nargs = '0',
-      preview = false,
-      range = NIL,
-      register = false,
-      keepscript = false,
       script_id = 3,
-    }
-    local cmd4 = {
-      addr = NIL,
-      bang = false,
-      bar = false,
-      complete = NIL,
-      complete_arg = NIL,
-      count = NIL,
+    })
+    local cmd4 = command_info({
       definition = 'call \128\253R4_just_great()',
       name = 'Cmd4',
       nargs = '0',
-      preview = false,
-      range = NIL,
       register = true,
-      keepscript = false,
       script_id = 4,
-    }
+    })
+    local previewCmd = command_info({
+      complete = 'customlist',
+      complete_arg = 's:cpt',
+      definition = '',
+      name = 'PreviewCmd',
+      nargs = '1',
+      script_id = 5,
+    })
+    local previewLuaCmd = command_info({
+      -- RPC serializes Lua func as "<Lua N>" (normalized below).
+      callback = '<Lua ?>',
+      complete = '<Lua ?>',
+      preview = '<Lua ?>',
+      definition = '',
+      desc = 'Preview Lua Cmd',
+      name = 'PreviewLuaCmd',
+      nargs = '1',
+      script_id = -8, -- Lua
+    })
+    local withDesc = command_info({
+      definition = 'echo "hi"',
+      desc = 'Says hi',
+      name = 'WithDesc',
+      nargs = '0',
+      script_id = -8,
+    })
+
     source([[
       let s:foo = 1
       command -complete=custom,ListUsers -nargs=+ Finger !finger <args>
@@ -189,21 +169,129 @@ describe('nvim_get_commands', function()
       endfunction
       command -register Cmd4 call <SID>just_great()
     ]])
+    source([[
+      function! s:cpt() abort
+        return 1
+      endfunction
+      command -nargs=1 -complete=customlist,s:cpt PreviewCmd
+    ]])
+    source([[
+      lua << EOF
+      vim.api.nvim_create_user_command(
+        'PreviewLuaCmd',
+        function() end,
+        {
+          nargs = 1,
+          complete = function() return 3 end,
+          preview = function() return 4 end,
+          desc = 'Preview Lua Cmd'
+        }
+      )
+      vim.api.nvim_create_user_command(
+        'WithDesc',
+        'echo "hi"',
+        { desc = 'Says hi' }
+      )
+      EOF
+    ]])
     -- TODO(justinmk): Order is stable but undefined. Sort before return?
-    eq(
-      { Cmd2 = cmd2, Cmd3 = cmd3, Cmd4 = cmd4, Finger = cmd1, TestCmd = cmd0 },
-      api.nvim_get_commands({ builtin = false })
-    )
+    local commands = api.nvim_get_commands({ builtin = false })
+    -- Normalize the volatile ref id in the "<Lua N>" funcref hints.
+    for _, k in ipairs({ 'callback', 'complete', 'preview' }) do
+      commands.PreviewLuaCmd[k] = (commands.PreviewLuaCmd[k]:gsub('<Lua %d+.->', '<Lua ?>'))
+    end
+    eq({
+      Cmd2 = cmd2,
+      Cmd3 = cmd3,
+      Cmd4 = cmd4,
+      Finger = cmd1,
+      TestCmd = cmd0,
+      PreviewCmd = previewCmd,
+      PreviewLuaCmd = previewLuaCmd,
+      WithDesc = withDesc,
+    }, commands)
+  end)
+
+  it('gets callbacks defined as Lua functions', function()
+    exec_lua [[
+      vim.api.nvim_create_user_command('CommandWithLuaCallback', function(opts)
+        return 3
+      end, {
+        nargs = 1,
+        preview = function() return 4 end,
+        complete = function() return 5 end,
+      })
+
+      local cmd = vim.api.nvim_get_commands({})["CommandWithLuaCallback"]
+      assert(cmd["callback"]() == 3)
+      assert(cmd["preview"]() == 4)
+      assert(cmd["complete"]() == 5)
+    ]]
   end)
 end)
 
 describe('nvim_create_user_command', function()
+  local function eq_callback(expected, actual)
+    eq(
+      t.mergedicts_copy({
+        bang = false,
+        line1 = 1,
+        line2 = 1,
+        mods = '',
+        range = 0,
+        reg = '',
+        smods = {
+          browse = false,
+          confirm = false,
+          emsg_silent = false,
+          filter = { force = false, pattern = '' },
+          hide = false,
+          horizontal = false,
+          keepalt = false,
+          keepjumps = false,
+          keepmarks = false,
+          keeppatterns = false,
+          lockmarks = false,
+          noautocmd = false,
+          noswapfile = false,
+          sandbox = false,
+          silent = false,
+          split = '',
+          tab = -1,
+          unsilent = false,
+          verbose = -1,
+          vertical = false,
+        },
+      }, expected),
+      actual
+    )
+  end
+
   before_each(clear)
 
   it('works with strings', function()
     api.nvim_create_user_command('SomeCommand', 'let g:command_fired = <args>', { nargs = 1 })
     command('SomeCommand 42')
     eq(42, api.nvim_eval('g:command_fired'))
+  end)
+
+  it('does not leak `preview` LuaRef on invalid `cmd`', function()
+    local released = exec_lua(function()
+      local weak = setmetatable({}, { __mode = 'v' })
+      for i = 1, 10 do
+        local cb = function() end
+        weak[i] = cb
+        pcall(vim.api.nvim_create_user_command, 'Bogus' .. i, {}, { preview = cb })
+      end
+      collectgarbage('collect')
+      collectgarbage('collect')
+      local n = 0
+      for _ in pairs(weak) do
+        n = n + 1
+      end
+      return n
+    end)
+    eq(0, released)
   end)
 
   it('works with Lua functions', function()
@@ -218,39 +306,13 @@ describe('nvim_create_user_command', function()
       })
     ]]
 
-    eq(
+    eq_callback(
       {
         name = 'CommandWithLuaCallback',
         args = [[this\  is    a\ test]],
         fargs = { 'this ', 'is', 'a test' },
-        bang = false,
-        line1 = 1,
-        line2 = 1,
-        mods = '',
-        smods = {
-          browse = false,
-          confirm = false,
-          emsg_silent = false,
-          hide = false,
-          horizontal = false,
-          keepalt = false,
-          keepjumps = false,
-          keepmarks = false,
-          keeppatterns = false,
-          lockmarks = false,
-          noautocmd = false,
-          noswapfile = false,
-          sandbox = false,
-          silent = false,
-          split = '',
-          tab = -1,
-          unsilent = false,
-          verbose = -1,
-          vertical = false,
-        },
-        range = 0,
+        nargs = '*',
         count = 2,
-        reg = '',
       },
       exec_lua [=[
       vim.api.nvim_command([[CommandWithLuaCallback this\  is    a\ test]])
@@ -258,39 +320,13 @@ describe('nvim_create_user_command', function()
     ]=]
     )
 
-    eq(
+    eq_callback(
       {
         name = 'CommandWithLuaCallback',
         args = [[this   includes\ a backslash: \\]],
         fargs = { 'this', 'includes a', 'backslash:', '\\' },
-        bang = false,
-        line1 = 1,
-        line2 = 1,
-        mods = '',
-        smods = {
-          browse = false,
-          confirm = false,
-          emsg_silent = false,
-          hide = false,
-          horizontal = false,
-          keepalt = false,
-          keepjumps = false,
-          keepmarks = false,
-          keeppatterns = false,
-          lockmarks = false,
-          noautocmd = false,
-          noswapfile = false,
-          sandbox = false,
-          silent = false,
-          split = '',
-          tab = -1,
-          unsilent = false,
-          verbose = -1,
-          vertical = false,
-        },
-        range = 0,
+        nargs = '*',
         count = 2,
-        reg = '',
       },
       exec_lua [=[
       vim.api.nvim_command([[CommandWithLuaCallback this   includes\ a backslash: \\]])
@@ -298,39 +334,13 @@ describe('nvim_create_user_command', function()
     ]=]
     )
 
-    eq(
+    eq_callback(
       {
         name = 'CommandWithLuaCallback',
         args = 'a\\b',
         fargs = { 'a\\b' },
-        bang = false,
-        line1 = 1,
-        line2 = 1,
-        mods = '',
-        smods = {
-          browse = false,
-          confirm = false,
-          emsg_silent = false,
-          hide = false,
-          horizontal = false,
-          keepalt = false,
-          keepjumps = false,
-          keepmarks = false,
-          keeppatterns = false,
-          lockmarks = false,
-          noautocmd = false,
-          noswapfile = false,
-          sandbox = false,
-          silent = false,
-          split = '',
-          tab = -1,
-          unsilent = false,
-          verbose = -1,
-          vertical = false,
-        },
-        range = 0,
+        nargs = '*',
         count = 2,
-        reg = '',
       },
       exec_lua [=[
       vim.api.nvim_command('CommandWithLuaCallback a\\b')
@@ -338,7 +348,7 @@ describe('nvim_create_user_command', function()
     ]=]
     )
 
-    eq(
+    eq_callback(
       {
         name = 'CommandWithLuaCallback',
         args = 'h\tey ',
@@ -347,30 +357,15 @@ describe('nvim_create_user_command', function()
         line1 = 10,
         line2 = 10,
         mods = 'confirm unsilent botright horizontal',
+        nargs = '*',
         smods = {
-          browse = false,
           confirm = true,
-          emsg_silent = false,
-          hide = false,
           horizontal = true,
-          keepalt = false,
-          keepjumps = false,
-          keepmarks = false,
-          keeppatterns = false,
-          lockmarks = false,
-          noautocmd = false,
-          noswapfile = false,
-          sandbox = false,
-          silent = false,
           split = 'botright',
-          tab = -1,
           unsilent = true,
-          verbose = -1,
-          vertical = false,
         },
         range = 1,
         count = 10,
-        reg = '',
       },
       exec_lua [=[
       vim.api.nvim_command('unsilent horizontal botright confirm 10CommandWithLuaCallback! h\tey ')
@@ -378,39 +373,15 @@ describe('nvim_create_user_command', function()
     ]=]
     )
 
-    eq(
+    eq_callback(
       {
         name = 'CommandWithLuaCallback',
         args = 'h',
         fargs = { 'h' },
-        bang = false,
-        line1 = 1,
         line2 = 42,
-        mods = '',
-        smods = {
-          browse = false,
-          confirm = false,
-          emsg_silent = false,
-          hide = false,
-          horizontal = false,
-          keepalt = false,
-          keepjumps = false,
-          keepmarks = false,
-          keeppatterns = false,
-          lockmarks = false,
-          noautocmd = false,
-          noswapfile = false,
-          sandbox = false,
-          silent = false,
-          split = '',
-          tab = -1,
-          unsilent = false,
-          verbose = -1,
-          vertical = false,
-        },
+        nargs = '*',
         range = 1,
         count = 42,
-        reg = '',
       },
       exec_lua [[
       vim.api.nvim_command('CommandWithLuaCallback 42 h')
@@ -418,39 +389,13 @@ describe('nvim_create_user_command', function()
     ]]
     )
 
-    eq(
+    eq_callback(
       {
         name = 'CommandWithLuaCallback',
         args = '',
         fargs = {}, -- fargs works without args
-        bang = false,
-        line1 = 1,
-        line2 = 1,
-        mods = '',
-        smods = {
-          browse = false,
-          confirm = false,
-          emsg_silent = false,
-          hide = false,
-          horizontal = false,
-          keepalt = false,
-          keepjumps = false,
-          keepmarks = false,
-          keeppatterns = false,
-          lockmarks = false,
-          noautocmd = false,
-          noswapfile = false,
-          sandbox = false,
-          silent = false,
-          split = '',
-          tab = -1,
-          unsilent = false,
-          verbose = -1,
-          vertical = false,
-        },
-        range = 0,
+        nargs = '*',
         count = 2,
-        reg = '',
       },
       exec_lua [[
       vim.api.nvim_command('CommandWithLuaCallback')
@@ -470,39 +415,13 @@ describe('nvim_create_user_command', function()
       })
     ]]
 
-    eq(
+    eq_callback(
       {
         name = 'CommandWithOneOrNoArg',
         args = "hello I'm one argument",
         fargs = { "hello I'm one argument" }, -- Doesn't split args
-        bang = false,
-        line1 = 1,
-        line2 = 1,
-        mods = '',
-        smods = {
-          browse = false,
-          confirm = false,
-          emsg_silent = false,
-          hide = false,
-          horizontal = false,
-          keepalt = false,
-          keepjumps = false,
-          keepmarks = false,
-          keeppatterns = false,
-          lockmarks = false,
-          noautocmd = false,
-          noswapfile = false,
-          sandbox = false,
-          silent = false,
-          split = '',
-          tab = -1,
-          unsilent = false,
-          verbose = -1,
-          vertical = false,
-        },
-        range = 0,
+        nargs = '?',
         count = 2,
-        reg = '',
       },
       exec_lua [[
       vim.api.nvim_command('CommandWithOneOrNoArg hello I\'m one argument')
@@ -511,39 +430,13 @@ describe('nvim_create_user_command', function()
     )
 
     -- f-args is an empty table if no args were passed
-    eq(
+    eq_callback(
       {
         name = 'CommandWithOneOrNoArg',
         args = '',
         fargs = {},
-        bang = false,
-        line1 = 1,
-        line2 = 1,
-        mods = '',
-        smods = {
-          browse = false,
-          confirm = false,
-          emsg_silent = false,
-          hide = false,
-          horizontal = false,
-          keepalt = false,
-          keepjumps = false,
-          keepmarks = false,
-          keeppatterns = false,
-          lockmarks = false,
-          noautocmd = false,
-          noswapfile = false,
-          sandbox = false,
-          silent = false,
-          split = '',
-          tab = -1,
-          unsilent = false,
-          verbose = -1,
-          vertical = false,
-        },
-        range = 0,
+        nargs = '?',
         count = 2,
-        reg = '',
       },
       exec_lua [[
       vim.api.nvim_command('CommandWithOneOrNoArg')
@@ -563,39 +456,13 @@ describe('nvim_create_user_command', function()
         register = true,
       })
     ]]
-    eq(
+    eq_callback(
       {
         name = 'CommandWithNoArgs',
         args = '',
         fargs = {},
-        bang = false,
-        line1 = 1,
-        line2 = 1,
-        mods = '',
-        smods = {
-          browse = false,
-          confirm = false,
-          emsg_silent = false,
-          hide = false,
-          horizontal = false,
-          keepalt = false,
-          keepjumps = false,
-          keepmarks = false,
-          keeppatterns = false,
-          lockmarks = false,
-          noautocmd = false,
-          noswapfile = false,
-          sandbox = false,
-          silent = false,
-          split = '',
-          tab = -1,
-          unsilent = false,
-          verbose = -1,
-          vertical = false,
-        },
-        range = 0,
+        nargs = '0',
         count = 2,
-        reg = '',
       },
       exec_lua [[
       vim.cmd('CommandWithNoArgs')
@@ -603,37 +470,12 @@ describe('nvim_create_user_command', function()
     ]]
     )
     -- register can be specified
-    eq(
+    eq_callback(
       {
         name = 'CommandWithNoArgs',
         args = '',
         fargs = {},
-        bang = false,
-        line1 = 1,
-        line2 = 1,
-        mods = '',
-        smods = {
-          browse = false,
-          confirm = false,
-          emsg_silent = false,
-          hide = false,
-          horizontal = false,
-          keepalt = false,
-          keepjumps = false,
-          keepmarks = false,
-          keeppatterns = false,
-          lockmarks = false,
-          noautocmd = false,
-          noswapfile = false,
-          sandbox = false,
-          silent = false,
-          split = '',
-          tab = -1,
-          unsilent = false,
-          verbose = -1,
-          vertical = false,
-        },
-        range = 0,
+        nargs = '0',
         count = 2,
         reg = '+',
       },
@@ -650,6 +492,11 @@ describe('nvim_create_user_command', function()
     matches('Not an editor command: Hello', pcall_err(command, 'Hello'))
     api.nvim_set_current_buf(bufnr)
     command('Hello')
+    assert_alive()
+    eq(
+      'Invalid buffer id: 1234',
+      pcall_err(api.nvim_buf_create_user_command, 1234, 'Hello', '', {})
+    )
     assert_alive()
   end)
 
@@ -676,7 +523,30 @@ describe('nvim_create_user_command', function()
     eq('Test bbb', fn.getcmdline())
   end)
 
-  it('does not allow invalid command names', function()
+  it('no crash when Lua complete function errors #33447', function()
+    exec_lua([[
+      vim.api.nvim_create_user_command('Test','', {
+          nargs = 1,
+          complete = function() error() end
+      })
+    ]])
+    feed(':Test <Tab>')
+    eq('E5108: Lua function: nil', api.nvim_get_vvar('errmsg'))
+    eq('Test ', fn.getcmdline())
+    assert_alive()
+  end)
+
+  it('validation', function()
+    matches(
+      "Invalid 'desc'",
+      pcall_err(
+        exec_lua,
+        [[
+        vim.api.nvim_create_user_command('Bad', 'echo "hi"', { desc = 123 })
+      ]]
+      )
+    )
+
     eq(
       "Invalid command name (must start with uppercase): 'test'",
       pcall_err(
@@ -754,6 +624,13 @@ describe('nvim_create_user_command', function()
     eq(5, #api.nvim_list_tabpages())
     eq(1, fn.tabpagenr())
   end)
+
+  it('"addr" flag allows ranges without explicit "range" flag', function()
+    exec_lua([[
+      vim.api.nvim_create_user_command('Test2', 'echo "hello <line1><line2>"', { addr = 'other' })
+    ]])
+    eq('hello 12', n.exec_capture('1,2Test2'))
+  end)
 end)
 
 describe('nvim_del_user_command', function()
@@ -771,5 +648,9 @@ describe('nvim_del_user_command', function()
     command('Hello')
     api.nvim_buf_del_user_command(0, 'Hello')
     matches('Not an editor command: Hello', pcall_err(command, 'Hello'))
+    eq('Invalid command (not found): Hello', pcall_err(api.nvim_buf_del_user_command, 0, 'Hello'))
+    eq('Invalid command (not found): Bye', pcall_err(api.nvim_buf_del_user_command, 0, 'Bye'))
+    eq('Invalid buffer id: 1234', pcall_err(api.nvim_buf_del_user_command, 1234, 'Hello'))
+    assert_alive()
   end)
 end)

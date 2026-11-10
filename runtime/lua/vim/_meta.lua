@@ -1,4 +1,6 @@
 --- @meta
+-- This file is NOT generated, edit it directly.
+error('Cannot require a meta file')
 
 --- @alias elem_or_list<T> T|T[]
 
@@ -9,28 +11,46 @@ vim.uv = ...
 
 vim.F = require('vim.F')
 vim._watch = require('vim._watch')
+---@diagnostic disable-next-line: no-unknown
+vim.async = require('vim.async')
 vim.diagnostic = require('vim.diagnostic')
 vim.filetype = require('vim.filetype')
 vim.fs = require('vim.fs')
 vim.func = require('vim.func')
 vim.glob = require('vim.glob')
 vim.health = require('vim.health')
-vim.highlight = require('vim.highlight')
+vim.hl = require('vim.hl')
+vim.inspect = require('vim.inspect')
 vim.iter = require('vim.iter')
 vim.keymap = require('vim.keymap')
 vim.loader = require('vim.loader')
+vim.log = require('vim.log')
 vim.lsp = require('vim.lsp')
+vim.net = require('vim.net')
+vim.pack = require('vim.pack')
+vim.pos = require('vim.pos')
+vim.range = require('vim.range')
 vim.re = require('vim.re')
 vim.secure = require('vim.secure')
 vim.snippet = require('vim.snippet')
 vim.text = require('vim.text')
 vim.treesitter = require('vim.treesitter')
+vim.tty = require('vim.tty')
 vim.ui = require('vim.ui')
+vim.uri = require('vim.uri')
 vim.version = require('vim.version')
 
-local uri = require('vim.uri')
+--- @deprecated
+vim.uri_decode = vim.uri.decode
+--- @deprecated
+vim.uri_encode = vim.uri.encode
+--- @deprecated
+vim.uri_from_bufnr = vim.uri.from_buf
+--- @deprecated
+vim.uri_from_fname = vim.uri.from_fname
+--- @deprecated
+vim.uri_to_bufnr = vim.uri.to_buf
+--- @deprecated
+vim.uri_to_fname = vim.uri.to_fname
 
-vim.uri_from_fname = uri.uri_from_fname
-vim.uri_from_bufnr = uri.uri_from_bufnr
-vim.uri_to_fname = uri.uri_to_fname
-vim.uri_to_bufnr = uri.uri_to_bufnr
+vim.provider = require('vim.provider')

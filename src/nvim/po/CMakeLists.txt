@@ -1,3 +1,8 @@
+option(ENABLE_TRANSLATIONS "Localizations to build" OFF)
+if(NOT ENABLE_TRANSLATIONS)
+  return()
+endif()
+
 find_package(Gettext REQUIRED)
 find_program(XGETTEXT_PRG xgettext)
 find_program(ICONV_PRG iconv)
@@ -7,10 +12,10 @@ mark_as_advanced(
   ICONV_PRG
   XGETTEXT_PRG)
 
-option(ENABLE_LANGUAGES "Localizations to build" ON)
-if(ENABLE_LANGUAGES)
+if(HAVE_WORKING_LIBINTL AND GETTEXT_FOUND AND XGETTEXT_PRG AND ICONV_PRG)
   set(LANGUAGES
     af
+    az
     ca
     cs
     da
@@ -36,9 +41,7 @@ if(ENABLE_LANGUAGES)
     vi
     zh_CN.UTF-8
     zh_TW.UTF-8)
-endif()
 
-if(HAVE_WORKING_LIBINTL AND GETTEXT_FOUND AND XGETTEXT_PRG AND ICONV_PRG)
   set(ENV{OLD_PO_FILE_INPUT} yes)
   set(ENV{OLD_PO_FILE_OUTPUT} yes)
 
@@ -53,14 +56,13 @@ if(HAVE_WORKING_LIBINTL AND GETTEXT_FOUND AND XGETTEXT_PRG AND ICONV_PRG)
   list(SORT NVIM_RELATIVE_SOURCES)
   add_custom_command(
     OUTPUT ${NVIM_POT}
-    COMMAND $<TARGET_FILE:nvim_bin> -u NONE -i NONE -n --headless --cmd "set cpo+=+"
-      -S ${CMAKE_CURRENT_SOURCE_DIR}/tojavascript.vim ${NVIM_POT} ${PROJECT_SOURCE_DIR}/runtime/optwin.vim
     COMMAND ${XGETTEXT_PRG} -o ${NVIM_POT} --default-domain=nvim
-      --add-comments --keyword=_ --keyword=N_ --keyword=NGETTEXT:1,2
+      --keyword=_ --keyword=N_ --keyword=NGETTEXT:1,2 --no-location
       -D ${CMAKE_CURRENT_SOURCE_DIR} -D ${CMAKE_CURRENT_BINARY_DIR}
-      ${NVIM_RELATIVE_SOURCES} optwin.js
-    COMMAND $<TARGET_FILE:nvim_bin> -u NONE -i NONE -n --headless --cmd "set cpo+=+"
-      -S ${CMAKE_CURRENT_SOURCE_DIR}/fixfilenames.vim ${NVIM_POT} ../../../runtime/optwin.vim
+      ${NVIM_RELATIVE_SOURCES} ${PROJECT_SOURCE_DIR}/runtime/scripts/optwin.lua
+      ${PROJECT_SOURCE_DIR}/runtime/lua/vim/_core/ex_cmd.lua
+      ${PROJECT_SOURCE_DIR}/runtime/lua/vim/_core/time.lua
+      ${PROJECT_SOURCE_DIR}/runtime/lua/vim/pack.lua
     VERBATIM
     DEPENDS ${NVIM_SOURCES} nvim_bin nvim_runtime_deps)
 

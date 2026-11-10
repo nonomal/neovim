@@ -1,6 +1,7 @@
 local t = require('test.testutil')
 local n = require('test.functional.testnvim')()
 
+local describe, it, setup = t.describe, t.it, t.setup
 local eq = t.eq
 local eval = n.eval
 local command = n.command
@@ -8,7 +9,7 @@ local clear = n.clear
 local fn = n.fn
 local pcall_err = t.pcall_err
 
-before_each(clear)
+setup(clear)
 for _, func in ipairs({ 'min', 'max' }) do
   describe(func .. '()', function()
     it('gives a single error message when multiple values failed conversions', function()

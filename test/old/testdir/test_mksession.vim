@@ -31,10 +31,50 @@ func Test__mksession_arglocal()
   call delete('Xtest_mks.out')
 endfunc
 
+func Test_mksession_arglocal_localdir()
+  argglobal
+  %argdelete
+
+  call mkdir('Xa', 'R')
+  call writefile(['This is Xb'], 'Xa/Xb.txt', 'D')
+  let olddir = getcwd()
+  let oldargs = argv()
+
+  for tabpage in [v:false, v:true]
+    let msg = tabpage ? 'tabpage-local' : 'window-local'
+
+    exe tabpage ? 'tabnew' : 'botright new'
+    exe tabpage ? 'tcd Xa' : 'lcd Xa'
+    let localdir = getcwd()
+    arglocal
+    $argadd Xb.txt
+    let localargs = argv()
+    exe tabpage ? 'tabprev' : 'wincmd p'
+    call assert_equal(olddir, getcwd(), msg)
+    call assert_equal(oldargs, argv(), msg)
+    mksession! Xtest_mks_localdir.out
+    exe tabpage ? '+tabclose' : '$close'
+    bwipe! Xa/Xb.txt
+
+    source Xtest_mks_localdir.out
+    exe tabpage ? 'tabnext' : 'wincmd b'
+    call assert_equal(localdir, getcwd(), msg)
+    call assert_equal(localargs, argv(), msg)
+    $argument
+    call assert_equal('This is Xb', getline(1), msg)
+
+    bwipe!
+    call assert_equal(olddir, getcwd(), msg)
+    call assert_equal(oldargs, argv(), msg)
+    call delete('Xtest_mks_localdir.out')
+  endfor
+endfunc
+
 func Test_mksession()
   tabnew
   let wrap_save = &wrap
   set sessionoptions=buffers splitbelow fileencoding=latin1
+  defer execute('set sessionoptions& splitbelow&')
   call setline(1, [
     \   'start:',
     \   'no multibyte chAracter',
@@ -127,13 +167,14 @@ func Test_mksession()
   call delete('Xtest_mks.out')
   call delete(tmpfile)
   let &wrap = wrap_save
-  set sessionoptions&
 endfunc
 
 func Test_mksession_winheight()
   new
   set winheight=10
+  defer execute('set winheight&')
   set winminheight=2
+  defer execute('set winminheight&')
   mksession! Xtest_mks.out
   source Xtest_mks.out
 
@@ -142,6 +183,7 @@ endfunc
 
 func Test_mksession_large_winheight()
   set winheight=999
+  defer execute('set winheight&')
   mksession! Xtest_mks_winheight.out
   set winheight&
   source Xtest_mks_winheight.out
@@ -150,6 +192,7 @@ endfunc
 
 func Test_mksession_zero_winheight()
   set winminheight=0
+  defer execute('set winminheight&')
   edit SomeFile
   split
   wincmd _
@@ -207,6 +250,9 @@ func Test_mksession_arglist()
 endfunc
 
 func Test_mksession_one_buffer_two_windows()
+  set splitbelow
+  defer execute('set splitbelow&')
+
   edit Xtest1
   new Xtest2
   split
@@ -315,6 +361,9 @@ func Test_mksession_blank_tabs()
 endfunc
 
 func Test_mksession_buffer_count()
+  argglobal
+  %argdelete
+
   set hidden
 
   " Edit exactly three files in the current session.
@@ -960,9 +1009,13 @@ endfunc
 
 " Test for mksession without options restores winminheight
 func Test_mksession_winminheight()
+  set winheight=10 winwidth=10 winminheight& winminwidth&
+  defer execute('set winheight& winwidth&')
   set sessionoptions-=options
+  defer execute('set sessionoptions&')
   split
   mksession! Xtest_mks.out
+  defer delete('Xtest_mks.out')
   let found_restore = 0
   let lines = readfile('Xtest_mks.out')
   for line in lines
@@ -971,9 +1024,18 @@ func Test_mksession_winminheight()
     endif
   endfor
   call assert_equal(2, found_restore)
-  call delete('Xtest_mks.out')
-  close
-  set sessionoptions&
+  " Test with multiple tabpages
+  tab split | split | tab split | split
+  call assert_equal(3, tabpagenr('$'))
+  mksession! Xtest_mks.out
+  tabclose | tabclose | close
+  call assert_equal(1, tabpagenr('$'))
+  set winminheight=2 winminwidth=2
+  defer execute('set winminheight& winminwidth&')
+  source Xtest_mks.out
+  call assert_equal(3, tabpagenr('$'))
+  call assert_equal([2, 2], [&winminheight, &winminwidth])
+  tabclose | tabclose | close
 endfunc
 
 " Test for mksession with and without options restores shortmess
@@ -1086,10 +1148,10 @@ endfunc
 func Test_mkvimrc()
   let entries = [
         \ ['', 'nothing', '<Nop>'],
-        \ ['n', 'normal', 'NORMAL'],
-        \ ['v', 'visual', 'VISUAL'],
-        \ ['s', 'select', 'SELECT'],
-        \ ['x', 'visualonly', 'VISUALONLY'],
+        \ ['n', 'normal', 'NORMAL<Up>'],
+        \ ['v', 'visual', 'VISUAL<S-Down>'],
+        \ ['s', 'select', 'SELECT<C-Left>'],
+        \ ['x', 'visualonly', 'VISUALONLY<M-Right>'],
         \ ['o', 'operator', 'OPERATOR'],
         \ ['i', 'insert', 'INSERT'],
         \ ['l', 'lang', 'LANG'],
@@ -1120,7 +1182,7 @@ func Test_mkvimrc()
   " set pastetoggle=<F5>
   set wildchar=<F6>
   set wildcharm=<F7>
-  call assert_fails('mkvimrc Xtestvimrc')
+  call assert_fails('mkvimrc Xtestvimrc', 'E189: "Xtestvimrc" exists')
   mkvimrc! Xtestvimrc
   " call assert_notequal(-1, index(readfile('Xtestvimrc'), 'set pastetoggle=<F5>'))
   call assert_notequal(-1, index(readfile('Xtestvimrc'), 'set wildchar=<F6>'))
@@ -1170,8 +1232,8 @@ endfunc
 
 " Test for creating views with manual folds
 func Test_mkview_manual_fold()
-  call writefile(range(1,10), 'Xfile')
-  new Xfile
+  call writefile(range(1,10), 'Xmkvfile', 'D')
+  new Xmkvfile
   " create recursive folds
   5,6fold
   4,7fold
@@ -1194,9 +1256,377 @@ func Test_mkview_manual_fold()
   source Xview
   call assert_equal([-1, -1, -1, -1, -1, -1], [foldclosed(3), foldclosed(4),
         \ foldclosed(5), foldclosed(6), foldclosed(7), foldclosed(8)])
-  call delete('Xfile')
   call delete('Xview')
   bw!
+endfunc
+
+" Test for handling invalid folds within views
+func Test_mkview_ignore_invalid_folds()
+  call writefile(range(1,10), 'Xmkvfile', 'D')
+  new Xmkvfile
+  " create some folds
+  5,6fold
+  4,7fold
+  mkview Xview
+  normal zE
+  " delete lines to make folds invalid
+  call deletebufline('', 6, '$')
+  source Xview
+  call assert_equal([-1, -1, -1, -1, -1, -1], [foldclosed(3), foldclosed(4),
+        \ foldclosed(5), foldclosed(6), foldclosed(7), foldclosed(8)])
+  call delete('Xview')
+  bw!
+endfunc
+
+" Test default 'viewdir' value
+func Test_mkview_default_home()
+  throw 'Skipped: N/A'
+  if has('win32')
+    " use escape() to handle backslash path separators
+    call assert_match('^' .. escape($ORIGHOME, '\') .. '/vimfiles', &viewdir)
+  elseif has('unix')
+    call assert_match(
+          \ '^' .. $ORIGHOME .. '/.vim\|' ..
+          \ '^' .. $XDG_CONFIG_HOME .. '/vim'
+          \ , &viewdir)
+  elseif has('amiga')
+    call assert_match('^home:vimfiles', &viewdir)
+  elseif has('mac')
+    call assert_match('^' .. $VIM .. '/vimfiles', &viewdir)
+  endif
+endfunc
+
+" Test vim9 expression mappings
+func Test_mksession_vim9_expr_mappings()
+  throw 'Skipped: Vim9 script is N/A'
+  CheckFeature packages
+
+  " Create a dummy vim9 plugin
+  const base = getcwd() . '/rtdir'
+  const root = base . '/pack/test/opt/dummy9'
+  call mkdir(root . '/plugin', 'p')
+  let plugin_sources =<< trim END
+    vim9script
+    import autoload 'dummy9.vim'
+    nnoremap <expr> dummy-test dummy9.Test() .. "<CR>"
+  END
+  call writefile(plugin_sources, root . '/plugin/dummy9.vim')
+
+  call mkdir(root . '/autoload', 'p')
+  let auto_sources =<< trim END
+    vim9script
+    const ref_txt = 'Hello from vim9 dummy plugin!'
+    export def Test(): string
+      writefile([ref_txt], 'XDummyOutput')
+      return has("gui_running") ? '' : $':echomsg "{ref_txt}"'
+    enddef
+  END
+  call writefile(auto_sources, root . '/autoload/dummy9.vim')
+
+  " clean up later
+  defer delete(base, 'rf')
+
+  " Load and check the plugin
+  const ref_txt = 'Hello from vim9 dummy plugin!'
+  let orig_packpath = &packpath
+  let &packpath .= ',' . base
+  let orig_runtimepath = &runtimepath
+  packadd dummy9
+  defer execute('let &packpath = orig_runtimepath')
+  defer execute('let &runtimepath = orig_runtimepath')
+  messages clear
+  normal dummy-test
+
+  if !has('gui_running')
+    call assert_match(ref_txt, execute('messages'), 'No vim9 plugin dummy.Test() execution')
+  endif
+  call assert_true(filereadable('XDummyOutput'), 'Output file was not created by Vim9 plugin')
+  call assert_equal([ref_txt], readfile('XDummyOutput'))
+  call delete('XDummyOutput')
+
+  " Create a session file
+  mksession! XDummySession.vim
+  defer delete('XDummySession.vim')
+  call assert_true(filereadable('XDummySession.vim'), 'Session file was not created')
+
+  " Check the session file mappings are operational
+  let test_sources =<< trim END
+    " load session
+    source XDummySession.vim
+    " execute vim9 expression mapping
+    normal dummy-test
+    " on my way
+    cq
+  END
+  call writefile(test_sources, 'XTest.vim', 'D')
+  " spawn a new Vim instance to load the session and execute the mapping
+  call system(GetVimCommand('XTest.vim'))
+  defer delete('XDummyOutput')
+  call assert_true(filereadable('XDummyOutput'),
+        \ 'Expected output file was not created by Vim9 plugin')
+  call assert_equal([ref_txt], readfile('XDummyOutput'))
+
+endfunc
+
+" Test legacy vimscript expression mappings
+func Test_mksession_legacy_expr_mappings()
+
+  CheckFeature packages
+
+  " Create a dummy vim9 plugin
+  const base = getcwd() . '/rtdir'
+  const root = base . '/pack/test/opt/dummy'
+  call mkdir(root . '/plugin', 'p')
+
+  " clean up later
+  defer delete(base, 'rf')
+
+  let plugin_sources =<< trim END
+    nnoremap <expr> dummy-test dummy#Test() . "<CR>"
+  END
+  call writefile(plugin_sources, root . '/plugin/dummy.vim')
+
+  call mkdir(root . '/autoload', 'p')
+  let auto_sources =<< trim END
+    const s:ref_txt = 'Hello from good old dummy plugin!'
+    func dummy#Test()
+      call writefile([s:ref_txt], 'XDummyOutput')
+      return has("gui_running") ? '' : $':echomsg "{s:ref_txt}"'
+    endfunc
+  END
+  call writefile(auto_sources, root . '/autoload/dummy.vim')
+
+  " Load and check the plugin
+  const ref_txt = 'Hello from good old dummy plugin!'
+  let orig_packpath = &packpath
+  let &packpath .= ',' . base
+  let orig_runtimepath = &runtimepath
+  packadd dummy
+  defer execute('let &packpath = orig_runtimepath')
+  defer execute('let &runtimepath = orig_runtimepath')
+  messages clear
+  normal dummy-test
+
+  if !has("gui_running")
+    call assert_match(ref_txt, execute('messages'), 'No vim9 plugin dummy.Test() execution')
+  endif
+  call assert_true(filereadable('XDummyOutput'), 'Output file was not created by legacy plugin')
+  call assert_equal([ref_txt], readfile('XDummyOutput'))
+  call delete('XDummyOutput')
+
+  " Create a session file
+  mksession! XDummySession.vim
+  defer delete('XDummySession.vim')
+  call assert_true(filereadable('XDummySession.vim'), 'Session file was not created')
+
+  " Check the session file mappings are operational
+  let test_sources =<< trim END
+    " load session
+    source XDummySession.vim
+    " execute legacy vimscript expression mapping
+    normal dummy-test
+    " on my way
+    cq
+  END
+  call writefile(test_sources, 'XTest.vim', 'D')
+  " spawn a new Vim instance to load the session and execute the mapping
+  call system(GetVimCommand('XTest.vim'))
+  defer delete('XDummyOutput')
+  call assert_true(filereadable('XDummyOutput'),
+        \ 'Expected output file was not created by legacy vim plugin')
+  call assert_equal([ref_txt], readfile('XDummyOutput'))
+
+endfunc
+
+" Test sessions cursor position management
+func Test_mksession_cursor_position()
+
+  " Set windows test scenario
+  let files = []
+  for i in range(10)
+      let file = $'Xfile{i}'
+      exe $"{i ? 'split' : 'edit'} {file}"
+      call append(0, $"Session file cursor position testing {i}")
+      " Force cursor position restoring commands
+      setlocal nowrap
+      normal dd29zl
+      " Check expected position
+      call assert_equal([0, 1, 30, 0], getpos('.'), $"Fail to set cursor position for {file}")
+      write!
+      let files += [file]
+  endfor
+
+  " Save session
+  mksession! Xtest_curpos
+
+  " Test restoring session
+  %bwipe!
+  try
+      source Xtest_curpos
+  catch
+      call assert_report("Failure sourcing session file")
+  endtry
+
+  " Check cursor position
+  for file in files
+      exe $"drop {file}"
+      call assert_equal([0, 1, 30, 0], getpos('.'), $"Cursor position not restored correctly for {file}")
+  endfor
+
+  " Clean up
+  call delete('Xtest_curpos')
+  for file in files
+      call delete(file)
+  endfor
+
+  %bwipe
+endfunc
+
+func Test_mksession_with_Ctrl_I_map()
+  set sessionoptions=options
+
+  " <Tab> and g<Tab> not mapped explicitly
+  imapclear
+  inoremap <C-I> foo
+  inoremap g<C-I> bar
+  imap <F2> <C-I>
+  imap g<F2> g<C-I>
+  mksession! Xtest_mks.out
+
+  " Check that the session doesn't create spurious simplified mappings
+  imapclear
+  source Xtest_mks.out
+  call assert_equal('i  <C-I>       * foo', execute('imap <C-I>')->trim())
+  call assert_equal('No mapping found', execute('imap <Tab>')->trim())
+  call assert_equal('i  g<C-I>      * bar', execute('imap g<C-I>')->trim())
+  call assert_equal('No mapping found', execute('imap g<Tab>')->trim())
+
+  " Check that the restored mappings are working properly
+  new
+  call feedkeys("i\<*C-I>\<F2>g\<*C-I>g\<F2>\<Esc>", 'tx')
+  call assert_equal('foofoobarbar', getline('.'))
+  bwipe!
+
+  " <Tab> and g<Tab> mapped explicitly
+  imapclear
+  inoremap <C-I> foo
+  inoremap <Tab> FOO
+  inoremap g<C-I> bar
+  inoremap g<Tab> BAR
+  mksession! Xtest_mks.out
+
+  " Check that the session restores mappings properly
+  imapclear
+  source Xtest_mks.out
+  call assert_equal('i  <C-I>       * foo', execute('imap <C-I>')->trim())
+  call assert_equal('i  <Tab>       * FOO', execute('imap <Tab>')->trim())
+  call assert_equal('i  g<C-I>      * bar', execute('imap g<C-I>')->trim())
+  call assert_equal('i  g<Tab>      * BAR', execute('imap g<Tab>')->trim())
+
+  " Check that the restored mappings are working properly
+  new
+  call feedkeys("i\<*C-I>\<Tab>g\<*C-I>g\<Tab>\<Esc>", 'tx')
+  call assert_equal('fooFOObarBAR', getline('.'))
+  bwipe!
+
+  call delete('Xtest_mks.out')
+  imapclear
+  set sessionoptions&
+endfunc
+
+" Test sessions global and local mappings
+func Test_mksession_localmappings()
+
+  " Create sessions. Mapping execution is tested running a file
+  let valid_sessions = [] " keep map info
+  let invalid_sessions = [] " do not keep map info
+  " localoptions requires a buffer
+  setlocal noswapfile
+  silent write XDummy
+  defer delete('XDummy')
+
+  " Nvim: default 'sessionoptions' doesn't include "options"
+  "for option in ["&", "=options", "=localoptions"]
+  for option in ["=options", "=localoptions"]
+    for global in [0, 1]
+
+      try
+        " select options
+        exe "set sessionoptions" .. option
+
+        " mapping
+        exe "nnoremap" . (global ? " " : " <buffer> ")
+              \ . "dummy-test <Cmd>silent write XDummyOutput<CR>"
+        let case = $"mapping_{global ? "global" : "local"}_{option}"
+
+        " test mapping
+        normal dummy-test
+        call assert_true(filereadable("XDummyOutput"), $"Output file was not created by {case}")
+
+        " session
+        let sessionfile = "XSession_" . case
+        exe $"mksession {sessionfile}"
+
+        if global && option =~ "localoptions"
+          let invalid_sessions += [sessionfile]
+        else
+          let valid_sessions += [sessionfile]
+        endif
+
+      finally
+        call delete("XDummyOutput")
+
+        " clear mappings
+        nmapclear
+        nmapclear <buffer>
+        set sessionoptions&
+      endtry
+
+    endfor
+  endfor
+
+  " Check the session files are operational
+  for session in valid_sessions
+
+    let test_sources =<< trim eval END
+      " load session
+      silent source {session}
+      " execute legacy vimscript expression mapping
+      normal dummy-test
+      " on my way
+      cq
+    END
+
+    call writefile(test_sources, 'XTest.vim')
+    call system(GetVimCommand('XTest.vim'))
+    call assert_true(filereadable('XDummyOutput'),
+          \ $"Expected map not defined in session file {session}")
+    call delete('XDummyOutput')
+    call delete(session)
+
+  endfor
+
+  for session in invalid_sessions
+
+    let test_sources =<< trim eval END
+      " load session
+      silent source {session}
+      " execute legacy vimscript expression mapping
+      normal dummy-test
+      " on my way
+      cq
+    END
+
+    call writefile(test_sources, 'XTest.vim')
+    call system(GetVimCommand('XTest.vim'))
+    call assert_false(filereadable('XDummyOutput'),
+          \ $"Unexpected map defined in session file {session}")
+    if filereadable('XDummyOutput')
+      call delete('XDummyOutput')
+    endif
+    call delete(session)
+  endfor
+
 endfunc
 
 " vim: shiftwidth=2 sts=2 expandtab

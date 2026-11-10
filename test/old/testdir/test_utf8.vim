@@ -1,5 +1,5 @@
 " Tests for Unicode manipulations
- 
+
 source check.vim
 source view_util.vim
 source screendump.vim
@@ -112,7 +112,7 @@ func Test_list2str_str2list_latin1()
 
   let save_encoding = &encoding
   " set encoding=latin1
-  
+
   let lres = str2list(s, 1)
   let sres = list2str(l, 1)
   call assert_equal([65, 66, 67], str2list("ABC"))
@@ -228,6 +228,9 @@ func Test_setcellwidths()
     call setcellwidths([[0x2103, 0x2103, 2]])
     redraw
     call assert_equal(19, wincol())
+    call setcellwidths([])
+    redraw
+    call assert_equal((aw == 'single') ? 10 : 19, wincol())
   endfor
   set ambiwidth& isprint&
 
@@ -252,15 +255,21 @@ func Test_setcellwidths()
 
   call assert_fails('call setcellwidths([[0x33, 0x44, 2]])', 'E1114:')
 
-  set listchars=tab:--\\u2192
+  set listchars=tab:--\\u2192 fillchars=stl:\\u2501
   call assert_fails('call setcellwidths([[0x2192, 0x2192, 2]])', 'E834:')
-
-  set fillchars=stl:\\u2501
   call assert_fails('call setcellwidths([[0x2501, 0x2501, 2]])', 'E835:')
 
+  call setcellwidths([[0x201c, 0x201d, 1]])
+  set listchars& fillchars& ambiwidth=double
+
+  set listchars=nbsp:\\u201c fillchars=vert:\\u201d
+  call assert_fails('call setcellwidths([])', 'E834:')
   set listchars&
+  call assert_fails('call setcellwidths([])', 'E835:')
   set fillchars&
+
   call setcellwidths([])
+  set ambiwidth&
   bwipe!
 endfunc
 
@@ -285,6 +294,7 @@ func Test_getcellwidths()
 endfunc
 
 func Test_setcellwidths_dump()
+  CheckScreendump
   CheckRunVimInTerminal
 
   let lines =<< trim END
@@ -302,6 +312,7 @@ endfunc
 
 " Test setcellwidths() on characters that are not targets of 'ambiwidth'.
 func Test_setcellwidths_with_non_ambiwidth_character_dump()
+  CheckScreendump
   CheckRunVimInTerminal
 
   let lines =<< trim END
@@ -324,6 +335,7 @@ endfunc
 " For some reason this test causes Test_customlist_completion() to fail on CI,
 " so run it as the last test.
 func Test_zz_ambiwidth_hl_dump()
+  CheckScreendump
   CheckRunVimInTerminal
 
   let lines =<< trim END
@@ -359,6 +371,33 @@ func Test_print_overlong()
   call setline(1, 'axxxxxxxxxxxxxxxxxxxxxxxxxxxxxx')
   s/x/\=nr2char(1629)/g
   print
+  bwipe!
+endfunc
+
+" A screen cell can hold a character of up to six bytes plus 'maxcombine'
+" composing characters of up to four bytes each.  This used to be more than
+" MB_MAXBYTES, overflowing the buffers that are sized with it.
+func Test_composing_chars_four_bytes()
+  new
+  let save_mco = &maxcombine
+  set maxcombine=6
+
+  " Six composing characters in the supplementary planes, four bytes each.
+  let cc = ''
+  for c in [0x101fd, 0x102e0, 0x10376, 0x10377, 0x10378, 0x10379]
+    let cc ..= nr2char(c)
+  endfor
+
+  " A four byte and a six byte base character.
+  for base in [0x1F600, 0x4000000]
+    let text = nr2char(base) .. cc
+    call setline(1, text)
+    redraw
+    call assert_equal(text, screenstring(1, 1))
+    call assert_equal(7, len(screenchars(1, 1)))
+  endfor
+
+  let &maxcombine = save_mco
   bwipe!
 endfunc
 

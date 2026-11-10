@@ -1,7 +1,7 @@
 if exists('g:loaded_node_provider')
   finish
 endif
-let g:loaded_node_provider = 1
+let g:loaded_node_provider = 0
 
 function! s:is_minimum_version(version, min_version) abort
   if empty(a:version)
@@ -83,6 +83,22 @@ function! provider#node#Detect() abort
     let pnpm_opts.job_id = jobstart('pnpm --loglevel silent root -g', pnpm_opts)
   endif
 
+  if executable('bun')
+    let bun_bin_dir = trim(system(['bun', 'pm', 'bin', '-g']))
+    if v:shell_error == 0 && !empty(bun_bin_dir)
+      if has('win32')
+        "On Windows Node.js cannot execute the .cmd shims created by Bun.
+        let bun_root_dir = fnamemodify(bun_bin_dir, ':h')
+        let bun_default_path = bun_root_dir . '/install/global/node_modules/neovim/bin/cli.js'
+      else
+        let bun_default_path = bun_bin_dir . '/neovim-node-host'
+      endif
+      if filereadable(bun_default_path)
+        return [bun_default_path, '']
+      endif
+    endif
+  endif
+
   " npm returns the directory faster, so let's check that first
   if !empty(npm_opts)
     let result = jobwait([npm_opts.job_id])
@@ -152,7 +168,7 @@ endfunction
 
 let s:err = ''
 let [s:prog, s:_] = provider#node#Detect()
-let g:loaded_node_provider = empty(s:prog) ? 1 : 2
+let g:loaded_node_provider = empty(s:prog) ? 0 : 2
 
 if g:loaded_node_provider != 2
   let s:err = 'Cannot find the "neovim" node package. Try :checkhealth'

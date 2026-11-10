@@ -1,7 +1,7 @@
 " Test for the gf and gF (goto file) commands
 
 " This is a test if a URL is recognized by "gf", with the cursor before and
-" after the "://".  Also test ":\\".
+" after the "://".  Nvim: ":\\" is not a URL.
 func Test_gf_url()
   enew!
   call append(0, [
@@ -22,10 +22,11 @@ func Test_gf_url()
   set isf=@,48-57,/,.,-,_,+,,,$,~,\
   call search("^third")
   call search("name")
-  call assert_equal("URL:\\\\machine.name\\vimtest2c", expand("<cfile>"))
+  " Nvim: Backslashes "\" not supported in URLs, thus "URL:" is ignored.
+  call assert_equal("\\\\machine.name\\vimtest2c", expand("<cfile>"))
   call search("^fourth")
   call search("URL")
-  call assert_equal("URL:\\\\machine.name\\tmp\\vimtest2d", expand("<cfile>"))
+  call assert_equal("URL", expand("<cfile>"))
 
   call search("^fifth")
   call search("URL")
@@ -199,10 +200,9 @@ func Test_gf_error()
     au OptionSet diff norm! gf
   augroup END
   call setline(1, ['Xfile1', 'line2', 'line3', 'line4'])
-  " Nvim does not support test_override()
-  " call test_override('starting', 1)
-  " call assert_fails('diffthis', 'E788:')
-  " call test_override('starting', 0)
+  call Ntest_override('starting', 1)
+  call assert_fails('diffthis', 'E788:')
+  call Ntest_override('starting', 0)
   augroup Test_gf
     au!
   augroup END
@@ -359,6 +359,38 @@ func Test_gf_switchbuf()
   set switchbuf=
   set isfname&
   %bw!
+endfunc
+
+func Test_gf_with_suffixesadd()
+  let cwd = getcwd()
+  let dir = 'Xtestgf_sua_dir'
+  call mkdir(dir, 'R')
+  call chdir(dir)
+
+  call writefile([], 'foo.c', 'D')
+  call writefile([], 'bar.cpp', 'D')
+  call writefile([], 'baz.cc', 'D')
+  call writefile([], 'foo.o', 'D')
+  call writefile([], 'bar.o', 'D')
+  call writefile([], 'baz.o', 'D')
+
+  new
+  setlocal path=,, suffixesadd=.c,.cpp
+  call setline(1, ['./foo', './bar', './baz'])
+  exe "normal! gg\<C-W>f"
+  call assert_equal('foo.c', expand('%:t'))
+  close
+  exe "normal! 2gg\<C-W>f"
+  call assert_equal('bar.cpp', expand('%:t'))
+  close
+  call assert_fails('exe "normal! 3gg\<C-W>f"', 'E447:')
+  setlocal suffixesadd+=.cc
+  exe "normal! 3gg\<C-W>f"
+  call assert_equal('baz.cc', expand('%:t'))
+  close
+
+  %bwipe!
+  call chdir(cwd)
 endfunc
 
 " vim: shiftwidth=2 sts=2 expandtab

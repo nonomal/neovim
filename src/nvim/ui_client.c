@@ -1,18 +1,19 @@
 /// Nvim's own UI client, which attaches to a child or remote Nvim server.
 
+#include <assert.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 
 #include "nvim/api/keysets_defs.h"
 #include "nvim/api/private/defs.h"
-#include "nvim/api/private/dispatch.h"
 #include "nvim/api/private/helpers.h"
 #include "nvim/channel.h"
 #include "nvim/channel_defs.h"
-#include "nvim/eval.h"
 #include "nvim/eval/typval_defs.h"
 #include "nvim/event/multiqueue.h"
+#include "nvim/event/socket.h"
 #include "nvim/globals.h"
 #include "nvim/highlight.h"
 #include "nvim/highlight_defs.h"
@@ -22,7 +23,8 @@
 #include "nvim/memory_defs.h"
 #include "nvim/msgpack_rpc/channel.h"
 #include "nvim/msgpack_rpc/channel_defs.h"
-#include "nvim/os/os_defs.h"
+#include "nvim/os/os.h"
+#include "nvim/profile.h"
 #include "nvim/tui/tui.h"
 #include "nvim/tui/tui_defs.h"
 #include "nvim/ui.h"
@@ -34,23 +36,24 @@
 #endif
 
 static TUIData *tui = NULL;
-static bool ui_client_is_remote = false;
+static int tui_width = 0;
+static int tui_height = 0;
+static char *tui_term = "";
+static bool tui_rgb = false;
+static char *detached_addr = NULL;  ///< Server address from which `:detach` disconnected.
 
 // uncrustify:off
-#ifdef INCLUDE_GENERATED_DECLARATIONS
-# include "ui_client.c.generated.h"
-# include "ui_events_client.generated.h"
-#endif
+#include "ui_client.c.generated.h"
+#include "ui_events_client.generated.h"
 // uncrustify:on
 
-uint64_t ui_client_start_server(int argc, char **argv)
+uint64_t ui_client_start_server(const char *exepath, size_t argc, char **argv)
 {
-  varnumber_T exit_status;
-  char **args = xmalloc(((size_t)(2 + argc)) * sizeof(char *));
+  char **args = xmalloc((2 + argc) * sizeof(char *));
   int args_idx = 0;
   args[args_idx++] = xstrdup(argv[0]);
   args[args_idx++] = xstrdup("--embed");
-  for (int i = 1; i < argc; i++) {
+  for (size_t i = 1; i < argc; i++) {
     args[args_idx++] = xstrdup(argv[i]);
   }
   args[args_idx++] = NULL;
@@ -58,13 +61,16 @@ uint64_t ui_client_start_server(int argc, char **argv)
   CallbackReader on_err = CALLBACK_READER_INIT;
   on_err.fwd_err = true;
 
-  Channel *channel = channel_job_start(args, get_vim_var_str(VV_PROGPATH),
+  bool detach = true;
+  varnumber_T exit_status;
+  Channel *channel = channel_job_start(args, exepath,
                                        CALLBACK_READER_INIT, on_err, CALLBACK_NONE,
-                                       false, true, true, false, kChannelStdinPipe,
+                                       false, true, true, detach, kChannelStdinPipe,
                                        NULL, 0, 0, NULL, &exit_status);
   if (!channel) {
     return 0;
   }
+  channel->trust = false;  // Security.
 
   // If stdin is not a pty, it is forwarded to the client.
   // Replace stdin in the TUI process with the tty fd.
@@ -80,12 +86,15 @@ uint64_t ui_client_start_server(int argc, char **argv)
   return channel->id;
 }
 
+/// Attaches this client to the UI channel, and sets its client info.
 void ui_client_attach(int width, int height, char *term, bool rgb)
 {
+  //
+  // nvim_ui_attach
+  //
   MAXSIZE_TEMP_ARRAY(args, 3);
   ADD_C(args, INTEGER_OBJ(width));
   ADD_C(args, INTEGER_OBJ(height));
-
   MAXSIZE_TEMP_DICT(opts, 9);
   PUT_C(opts, "rgb", BOOLEAN_OBJ(rgb));
   PUT_C(opts, "ext_linegrid", BOOLEAN_OBJ(true));
@@ -93,20 +102,51 @@ void ui_client_attach(int width, int height, char *term, bool rgb)
   if (term) {
     PUT_C(opts, "term_name", CSTR_AS_OBJ(term));
   }
-
   PUT_C(opts, "term_colors", INTEGER_OBJ(t_colors));
-  if (!ui_client_is_remote) {
-    PUT_C(opts, "stdin_tty", BOOLEAN_OBJ(stdin_isatty));
-    PUT_C(opts, "stdout_tty", BOOLEAN_OBJ(stdout_isatty));
-    if (ui_client_forward_stdin) {
-      PUT_C(opts, "stdin_fd", INTEGER_OBJ(UI_CLIENT_STDIN_FD));
-      ui_client_forward_stdin = false;  // stdin shouldn't be forwarded again #22292
-    }
+  PUT_C(opts, "stdin_tty", BOOLEAN_OBJ(stdin_isatty));
+  PUT_C(opts, "stdout_tty", BOOLEAN_OBJ(stdout_isatty));
+  if (ui_client_forward_stdin) {
+    PUT_C(opts, "stdin_fd", INTEGER_OBJ(UI_CLIENT_STDIN_FD));
+    ui_client_forward_stdin = false;  // stdin shouldn't be forwarded again #22292
   }
-  ADD_C(args, DICTIONARY_OBJ(opts));
+  ADD_C(args, DICT_OBJ(opts));
 
   rpc_send_event(ui_client_channel_id, "nvim_ui_attach", args);
   ui_client_attached = true;
+
+  TIME_MSG("nvim_ui_attach");
+
+  //
+  // nvim_set_client_info
+  //
+  MAXSIZE_TEMP_ARRAY(args2, 5);
+  ADD_C(args2, CSTR_AS_OBJ("nvim-tui"));            // name
+  Object m = api_metadata();
+  Dict version = { 0 };
+  assert(m.data.dict.size > 0);
+  for (size_t i = 0; i < m.data.dict.size; i++) {
+    if (strequal(m.data.dict.items[i].key.data, "version")) {
+      version = m.data.dict.items[i].value.data.dict;
+      break;
+    } else if (i + 1 == m.data.dict.size) {
+      abort();
+    }
+  }
+  ADD_C(args2, DICT_OBJ(version));                  // version
+  ADD_C(args2, CSTR_AS_OBJ("ui"));                  // type
+  // We don't send api_metadata.functions as the "methods" because:
+  // 1. it consumes memory.
+  // 2. it is unlikely to be useful, since the peer can just call `nvim_get_api`.
+  // 3. nvim_set_client_info expects a dict instead of an array.
+  ADD_C(args2, ARRAY_OBJ((Array)ARRAY_DICT_INIT));  // methods
+  MAXSIZE_TEMP_DICT(info, 9);                       // attributes
+  PUT_C(info, "website", CSTR_AS_OBJ("https://neovim.io"));
+  PUT_C(info, "license", CSTR_AS_OBJ("Apache 2"));
+  PUT_C(info, "pid", INTEGER_OBJ(os_get_pid()));
+  ADD_C(args2, DICT_OBJ(info));               // attributes
+  rpc_send_event(ui_client_channel_id, "nvim_set_client_info", args2);
+
+  TIME_MSG("nvim_set_client_info");
 }
 
 void ui_client_detach(void)
@@ -115,27 +155,53 @@ void ui_client_detach(void)
   ui_client_attached = false;
 }
 
-void ui_client_run(bool remote_ui)
+/// Sets `addr` (nvim_chan_set) on the server: the address this client connected to, e.g. a tunnel
+/// to the server. :restart sends it back, so the UI reconnects through it.
+static void set_chan_addr(const char *addr)
+{
+  MAXSIZE_TEMP_DICT(config, 1);
+  PUT_C(config, "addr", CSTR_AS_OBJ(addr));
+  MAXSIZE_TEMP_ARRAY(args, 2);
+  ADD_C(args, INTEGER_OBJ(0));
+  ADD_C(args, DICT_OBJ(config));
+  rpc_send_event(ui_client_channel_id, "nvim_chan_set", args);
+}
+
+/// @param server_addr Address of the server (`--server`), or NULL if the client started it (stdio).
+void ui_client_run(const char *server_addr)
   FUNC_ATTR_NORETURN
 {
-  ui_client_is_remote = remote_ui;
-  int width, height;
-  char *term;
-  bool rgb;
-  tui_start(&tui, &width, &height, &term, &rgb);
+  if (server_addr) {
+    set_chan_addr(server_addr);
+  }
+  tui_start(&tui, &tui_width, &tui_height, &tui_term, &tui_rgb);
+  ui_client_attach(tui_width, tui_height, tui_term, tui_rgb);
 
-  ui_client_attach(width, height, term, rgb);
+  // TODO(justinmk): this is for log_spec. Can remove this after nvim_log #7062 is merged.
+  if (os_env_exists(ENV_TEST_LOG, true)) {
+    ELOG("test log message");
+  }
+
+  time_finish();
 
   // os_exit() will be invoked when the client channel detaches
   while (true) {
-    LOOP_PROCESS_EVENTS(&main_loop, resize_events, -1);
+    // Need to process main_loop.events,
+    // otherwise channels closed due to server restart are never freed.
+    LOOP_PROCESS_EVENTS(&main_loop, main_loop.events, -1);
   }
 }
 
 void ui_client_stop(void)
 {
+  ui_client_attached = false;
   if (!tui_is_stopped(tui)) {
     tui_stop(tui);
+  }
+  if (detached_addr) {
+    fprintf(stderr, "Detached from: %s\nTo reattach run :connect or nvim +\"connect <address>\"\n",
+            detached_addr);
+    XFREE_CLEAR(detached_addr);
   }
 }
 
@@ -148,6 +214,8 @@ void ui_client_set_size(int width, int height)
     ADD_C(args, INTEGER_OBJ((int)height));
     rpc_send_event(ui_client_channel_id, "nvim_ui_try_resize", args);
   }
+  tui_width = width;
+  tui_height = height;
 }
 
 UIClientHandler ui_client_get_redraw_handler(const char *name, size_t name_len, Error *error)
@@ -170,16 +238,16 @@ Object handle_ui_client_redraw(uint64_t channel_id, Array args, Arena *arena, Er
   return NIL;
 }
 
-static HlAttrs ui_client_dict2hlattrs(Dictionary d, bool rgb)
+static HlAttrs ui_client_dict2hlattrs(Dict d, bool rgb)
 {
   Error err = ERROR_INIT;
   Dict(highlight) dict = KEYDICT_INIT;
-  if (!api_dict_to_keydict(&dict, KeyDict_highlight_get_field, d, &err)) {
+  if (!api_dict_to_keydict(&dict, DictHash(highlight), d, &err)) {
     // TODO(bfredl): log "err"
     return HLATTRS_INIT;
   }
 
-  HlAttrs attrs = dict2hlattrs(&dict, rgb, NULL, &err);
+  HlAttrs attrs = dict2hlattrs(&dict, rgb, NULL, NULL, &err);
 
   if (HAS_KEY(&dict, highlight, url)) {
     attrs.url = tui_add_url(tui, dict.url.data);
@@ -231,10 +299,167 @@ void ui_client_event_raw_line(GridLineEvent *g)
                (const schar_T *)grid_line_buf_char, grid_line_buf_attr);
 }
 
+/// Handles the "connect" ui-event.
+void ui_client_event_connect(Array args)
+{
+  if (args.size < 1 || args.items[0].type != kObjectTypeString) {
+    ELOG("Error handling UI event 'connect'");
+    return;
+  }
+
+  String s = args.items[0].data.string;
+  char *server_addr = xmemdupz(s.data, s.size);
+  multiqueue_put(main_loop.fast_events, channel_connect_event, server_addr);
+  // Set a dummy channel ID to prevent client exit when server detaches.
+  ui_client_channel_id = UINT64_MAX;
+}
+
+static void channel_connect_event(void **argv)
+{
+  char *server_addr = argv[0];
+
+  const char *err = "";
+  bool is_tcp = socket_address_tcp_host_end(server_addr) != NULL;
+  CallbackReader on_data = CALLBACK_READER_INIT;
+  uint64_t chan = channel_connect(is_tcp, server_addr, true, false, on_data, 50, &err);
+
+  if (!strequal(err, "")) {
+    ELOG("Cannot connect to server %s: %s", server_addr, err);
+    ui_client_stop();  // Leave the alternate screen, so the message is visible.
+    fprintf(stderr, "Cannot connect to server %s: %s\n", server_addr, err);
+    xfree(server_addr);
+    ui_client_exit_status = 1;
+    os_exit(1);
+  }
+
+  XFREE_CLEAR(detached_addr);  // Attached to the new server instead.
+  ui_client_channel_id = chan;
+  set_chan_addr(server_addr);
+  ui_client_attach(tui_width, tui_height, tui_term, tui_rgb);
+
+  ILOG("Connected to server %s on channel %" PRId64, server_addr, chan);
+  xfree(server_addr);
+}
+
+/// When a "restart" ui-event is received, its arguments are saved here when
+/// waiting for the server to exit.
+static Array restart_args = ARRAY_DICT_INIT;
+static bool restart_pending = false;
+
+// A server might indicate in advance how a new server should be restarted
+// in cases it crashes due to an unexpected error.
+static Array restart_args_after_crash_exit = ARRAY_DICT_INIT;
+
+/// Handles the "restart" ui-event.
+void ui_client_event_restart(Array args)
+{
+  // NB: don't send nvim_ui_detach to server, as it may have already exited.
+  // ui_client_detach();
+
+  // Save the arguments for ui_client_attach_to_restarted_server() later.
+  api_free_array(restart_args);
+  restart_args = copy_array(args, NULL);
+  restart_pending = true;
+}
+
+void ui_client_event__set_restart_on_crash_exit(Array args)
+{
+  // Save the arguments for ui_client_may_restart_server() later.
+  api_free_array(restart_args_after_crash_exit);
+  restart_args_after_crash_exit = copy_array(args, NULL);
+}
+
+/// Called during "restart" when the old server just exited.
+void ui_client_attach_to_restarted_server(bool error_restart)
+{
+  Array args = restart_args;
+  bool start_server = false;  // Server crashed; start one ourselves (`_set_restart_on_crash_exit`).
+  if (!restart_pending) {
+    if (error_restart && ui_client_error_exit == -1 && restart_args_after_crash_exit.size > 0) {
+      start_server = true;
+      args = restart_args_after_crash_exit;
+    } else {
+      return;
+    }
+  }
+
+  restart_pending = false;
+
+  if (args.size < 1 || args.items[0].type != kObjectTypeString) {
+    ELOG("Error handling ui event 'restart'");
+    goto cleanup;
+  }
+
+  uint64_t chan_id;
+  const char *first_arg = args.items[0].data.string.data;
+  if (start_server) {  // Restart after server crash.
+    if (args.size < 2 || args.items[1].type != kObjectTypeArray) {
+      ELOG("Error handling ui event 'restart'");
+      goto cleanup;
+    }
+    Array cmdargs = args.items[1].data.array;
+    char **argv = xcalloc(cmdargs.size + 1, sizeof(char *));
+    for (size_t i = 0; i < cmdargs.size; i++) {
+      if (cmdargs.items[i].type == kObjectTypeString) {
+        argv[i] = cmdargs.items[i].data.string.data;
+      }
+      if (argv[i] == NULL) {
+        argv[i] = "";
+      }
+    }
+    chan_id = ui_client_start_server(first_arg, cmdargs.size, argv);
+    xfree(argv);
+    ui_client_error_exit = -1;
+  } else {  // "restart" UI event: connect to the new server.
+    bool is_tcp = socket_address_tcp_host_end(first_arg) != NULL;
+    const char *err = NULL;
+    chan_id = channel_connect(is_tcp, first_arg, true, false, CALLBACK_READER_INIT, 50, &err);
+    if (err != NULL) {
+      ELOG("cannot connect to server %s: %s", first_arg, err);
+      goto cleanup;
+    }
+    if (args.size > 1 && args.items[1].type == kObjectTypeDict) {
+      // Restore channel properties after restart. Before attach, so `:detach!` in user config wins.
+      MAXSIZE_TEMP_ARRAY(chan_args, 2);
+      ADD_C(chan_args, INTEGER_OBJ(0));
+      ADD_C(chan_args, args.items[1]);
+      rpc_send_event(chan_id, "nvim_chan_set", chan_args);
+    }
+  }
+
+  // Client-side server re-attach.
+  ui_client_channel_id = chan_id;
+  ui_client_attach(tui_width, tui_height, tui_term, tui_rgb);
+
+  ILOG("restarted server address=%s id=%" PRId64, first_arg, chan_id);
+cleanup:
+  api_free_array(restart_args);
+  restart_args = (Array)ARRAY_DICT_INIT;
+  api_free_array(restart_args_after_crash_exit);
+  restart_args_after_crash_exit = (Array)ARRAY_DICT_INIT;
+}
+
+/// Handles the "error_exit" ui-event.
+void ui_client_event_error_exit(Array args)
+{
+  if (args.size < 1
+      || args.items[0].type != kObjectTypeInteger) {
+    ELOG("Error handling ui event 'error_exit'");
+    return;
+  }
+  ui_client_error_exit = (int)args.items[0].data.integer;
+  XFREE_CLEAR(detached_addr);
+  if (args.size > 1 && args.items[1].type == kObjectTypeString
+      && args.items[1].data.string.size > 0) {
+    detached_addr = string_to_cstr(args.items[1].data.string);
+  }
+}
+
 #ifdef EXITFREE
 void ui_client_free_all_mem(void)
 {
   tui_free_all_mem(tui);
+  xfree(detached_addr);
   xfree(grid_line_buf_char);
   xfree(grid_line_buf_attr);
 }

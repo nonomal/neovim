@@ -4,8 +4,9 @@ local t = require('test.testutil')
 local n = require('test.functional.testnvim')()
 local Screen = require('test.functional.ui.screen')
 
+local describe, it, before_each = t.describe, t.it, t.before_each
 local clear, feed, insert = n.clear, n.feed, n.insert
-local feed_command, expect, eq, eval, source = n.feed_command, n.expect, t.eq, n.eval, n.source
+local expect, eq, eval, source = n.expect, t.eq, n.eval, n.source
 local command = n.command
 local api = n.api
 
@@ -94,13 +95,6 @@ describe('clipboard', function()
   before_each(function()
     clear()
     screen = Screen.new(72, 4)
-    screen:set_default_attr_ids({
-      [0] = { bold = true, foreground = Screen.colors.Blue },
-      [1] = { foreground = Screen.colors.Grey100, background = Screen.colors.Red },
-      [2] = { bold = true, foreground = Screen.colors.SeaGreen4 },
-      [3] = { bold = true, reverse = true },
-    })
-    screen:attach()
   end)
 
   it('unnamed register works without provider', function()
@@ -114,13 +108,13 @@ describe('clipboard', function()
     feed('"+yl')
     screen:expect([[
       ^a                                                                       |
-      {0:~                                                                       }|*2
+      {1:~                                                                       }|*2
       clipboard: No provider. Try ":checkhealth" or ":h clipboard".           |
     ]])
     feed('"+p')
     screen:expect([[
       a^a                                                                      |
-      {0:~                                                                       }|*2
+      {1:~                                                                       }|*2
       clipboard: No provider. Try ":checkhealth" or ":h clipboard".           |
     ]])
   end)
@@ -132,42 +126,46 @@ describe('clipboard', function()
     feed('yl')
     screen:expect([[
       ^a                                                                       |
-      {0:~                                                                       }|*2
+      {1:~                                                                       }|*2
       clipboard: No provider. Try ":checkhealth" or ":h clipboard".           |
     ]])
     feed(':<CR>')
     screen:expect([[
       ^a                                                                       |
-      {0:~                                                                       }|*2
+      {1:~                                                                       }|*2
       :                                                                       |
     ]])
     feed('p')
     screen:expect([[
       a^a                                                                      |
-      {0:~                                                                       }|*2
+      {1:~                                                                       }|*2
       :                                                                       |
     ]])
   end)
 
   it('`:redir @+>` with invalid g:clipboard shows exactly one error #7184', function()
     command("let g:clipboard = 'bogus'")
-    feed_command('redir @+> | :silent echo system("cat CONTRIBUTING.md") | redir END')
+    n.exec([[
+      redir @+>
+        silent echo system("cat test/functional/fixtures/tty-test.c")
+      redir END
+    ]])
     screen:expect([[
       ^                                                                        |
-      {0:~                                                                       }|*2
+      {1:~                                                                       }|*2
       clipboard: No provider. Try ":checkhealth" or ":h clipboard".           |
     ]])
   end)
 
   it('`:redir @+>|bogus_cmd|redir END` + invalid g:clipboard must not recurse #7184', function()
     command("let g:clipboard = 'bogus'")
-    feed_command('redir @+> | bogus_cmd | redir END')
+    feed(':redir @+> | bogus_cmd | redir END<cr>')
     screen:expect {
       grid = [[
     {3:                                                                        }|
     clipboard: No provider. Try ":checkhealth" or ":h clipboard".           |
-    {1:E492: Not an editor command: bogus_cmd | redir END}                      |
-    {2:Press ENTER or type command to continue}^                                 |
+    {9:E492: Not an editor command: bogus_cmd | redir END}                      |
+    {6:Press ENTER or type command to continue}^                                 |
     ]],
     }
   end)
@@ -179,10 +177,10 @@ describe('clipboard', function()
 
     command("let g:clipboard = 'bogus'")
     -- Explicit clipboard attempt, should show a hint message.
-    feed_command('let @+="foo"')
+    feed(':let @+="foo"<cr>')
     screen:expect([[
       ^                                                                        |
-      {0:~                                                                       }|*2
+      {1:~                                                                       }|*2
       clipboard: No provider. Try ":checkhealth" or ":h clipboard".           |
     ]])
   end)
@@ -206,6 +204,27 @@ describe('clipboard', function()
             \}]])
     eq('custom', eval('provider#clipboard#Executable()'))
     eq('', eval('provider#clipboard#Error()'))
+  end)
+
+  it('pbcopy/pbpaste use UTF-8 if $LANG has no codeset #11432', function()
+    t.skip(not t.is_os('mac'), 'N/A pbcopy provider is only used on macOS')
+    local dir = t.tmpname(false)
+    t.mkdir(dir)
+    t.finally(function()
+      n.rmdir(dir)
+    end)
+    local copied = dir .. '/copied'
+    local script = '#!/bin/sh\nprintf \'%%s\' "$LC_ALL:$LC_CTYPE"%s\n'
+    t.write_file(dir .. '/pbcopy', script:format(' > ' .. copied))
+    t.write_file(dir .. '/pbpaste', script:format(''))
+    vim.uv.fs_chmod(dir .. '/pbcopy', tonumber('755', 8))
+    vim.uv.fs_chmod(dir .. '/pbpaste', tonumber('755', 8))
+
+    clear({ env = { LANG = 'en_GB', LC_ALL = 'C', PATH = dir .. ':' .. os.getenv('PATH') } })
+    command("let g:clipboard = 'pbcopy'")
+    command("call setreg('+', 'x')")
+    eq(':UTF-8', t.read_file(copied))
+    eq(':UTF-8', eval("getreg('+')"))
   end)
 
   it('g:clipboard using Vimscript functions', function()
@@ -303,13 +322,17 @@ describe('clipboard (with fake clipboard.vim)', function()
 
   before_each(function()
     reset()
-    feed_command('call getreg("*")') -- force load of provider
+    command('call getreg("*")') -- force load of provider
   end)
 
   it('`:redir @+>` invokes clipboard once-per-message', function()
     eq(0, eval('g:clip_called_set'))
-    feed_command('redir @+> | :silent echo system("cat CONTRIBUTING.md") | redir END')
-    -- Assuming CONTRIBUTING.md has >100 lines.
+    n.exec([[
+      redir @+>
+        silent echo system("cat test/functional/fixtures/tty-test.c")
+      redir END
+    ]])
+    -- Assuming tty-test.c has >100 lines.
     assert(eval('g:clip_called_set') > 100)
   end)
 
@@ -318,22 +341,21 @@ describe('clipboard (with fake clipboard.vim)', function()
     -- NOT propagate to the clipboard. This is consistent with Vim.
     command('set clipboard=unnamedplus')
     eq(0, eval('g:clip_called_set'))
-    feed_command('redir @"> | :silent echo system("cat CONTRIBUTING.md") | redir END')
+    n.exec([[
+      redir @">
+        silent echo system("cat test/functional/fixtures/tty-test.c")
+      redir END
+    ]])
     eq(0, eval('g:clip_called_set'))
   end)
 
   it('`:redir @+>|bogus_cmd|redir END` must not recurse #7184', function()
     local screen = Screen.new(72, 4)
-    screen:attach()
-    screen:set_default_attr_ids({
-      [0] = { bold = true, foreground = Screen.colors.Blue },
-      [1] = { foreground = Screen.colors.Grey100, background = Screen.colors.Red },
-    })
-    feed_command('redir @+> | bogus_cmd | redir END')
+    feed(':redir @+> | bogus_cmd | redir END<cr>')
     screen:expect([[
       ^                                                                        |
-      {0:~                                                                       }|*2
-      {1:E492: Not an editor command: bogus_cmd | redir END}                      |
+      {1:~                                                                       }|*2
+      {9:E492: Not an editor command: bogus_cmd | redir END}                      |
     ]])
   end)
 
@@ -379,8 +401,8 @@ describe('clipboard (with fake clipboard.vim)', function()
   end)
 
   it('autodetects regtype', function()
-    feed_command("let g:test_clip['*'] = ['linewise stuff','']")
-    feed_command("let g:test_clip['+'] = ['charwise','stuff']")
+    command("let g:test_clip['*'] = ['linewise stuff','']")
+    command("let g:test_clip['+'] = ['charwise','stuff']")
     eq('V', eval("getregtype('*')"))
     eq('v', eval("getregtype('+')"))
     insert('just some text')
@@ -395,7 +417,7 @@ describe('clipboard (with fake clipboard.vim)', function()
     insert([[
       much
       text]])
-    feed_command("let g:test_clip['*'] = [['very','block'],'b']")
+    command("let g:test_clip['*'] = [['very','block'],'b']")
     feed('gg"*P')
     expect([[
       very much
@@ -409,15 +431,15 @@ describe('clipboard (with fake clipboard.vim)', function()
   end)
 
   it('supports setreg()', function()
-    feed_command('call setreg("*", "setted\\ntext", "c")')
-    feed_command('call setreg("+", "explicitly\\nlines", "l")')
+    command('call setreg("*", "setted\\ntext", "c")')
+    command('call setreg("+", "explicitly\\nlines", "l")')
     feed('"+P"*p')
     expect([[
         esetted
         textxplicitly
         lines
         ]])
-    feed_command('call setreg("+", "blocky\\nindeed", "b")')
+    command('call setreg("+", "blocky\\nindeed", "b")')
     feed('"+p')
     expect([[
         esblockyetted
@@ -427,13 +449,13 @@ describe('clipboard (with fake clipboard.vim)', function()
   end)
 
   it('supports :let @+ (issue #1427)', function()
-    feed_command("let @+ = 'some'")
-    feed_command("let @* = ' other stuff'")
+    command("let @+ = 'some'")
+    command("let @* = ' other stuff'")
     eq({ { 'some' }, 'v' }, eval("g:test_clip['+']"))
     eq({ { ' other stuff' }, 'v' }, eval("g:test_clip['*']"))
     feed('"+p"*p')
     expect('some other stuff')
-    feed_command("let @+ .= ' more'")
+    command("let @+ .= ' more'")
     feed('dd"+p')
     expect('some more')
   end)
@@ -441,7 +463,7 @@ describe('clipboard (with fake clipboard.vim)', function()
   it('pastes unnamed register if the provider fails', function()
     insert('the text')
     feed('yy')
-    feed_command('let g:cliperror = 1')
+    command('let g:cliperror = 1')
     feed('"*p')
     expect([[
       the text
@@ -452,7 +474,7 @@ describe('clipboard (with fake clipboard.vim)', function()
     -- the basic behavior of unnamed register should be the same
     -- even when handled by clipboard provider
     before_each(function()
-      feed_command('set clipboard=unnamed')
+      feed(':set clipboard=unnamed<cr>')
     end)
 
     it('works', function()
@@ -460,7 +482,7 @@ describe('clipboard (with fake clipboard.vim)', function()
     end)
 
     it('works with pure text clipboard', function()
-      feed_command('let g:cliplossy = 1')
+      command('let g:cliplossy = 1')
       -- expect failure for block mode
       basic_register_test(true)
     end)
@@ -475,7 +497,7 @@ describe('clipboard (with fake clipboard.vim)', function()
       -- "+ shouldn't have changed
       eq({ '' }, eval("g:test_clip['+']"))
 
-      feed_command("let g:test_clip['*'] = ['linewise stuff','']")
+      command("let g:test_clip['*'] = ['linewise stuff','']")
       feed('p')
       expect([[
         words
@@ -485,7 +507,7 @@ describe('clipboard (with fake clipboard.vim)', function()
     it('does not clobber "0 when pasting', function()
       insert('a line')
       feed('yy')
-      feed_command("let g:test_clip['*'] = ['b line','']")
+      command("let g:test_clip['*'] = ['b line','']")
       feed('"0pp"0p')
       expect([[
         a line
@@ -496,20 +518,20 @@ describe('clipboard (with fake clipboard.vim)', function()
 
     it('supports v:register and getreg() without parameters', function()
       eq('*', eval('v:register'))
-      feed_command("let g:test_clip['*'] = [['some block',''], 'b']")
+      command("let g:test_clip['*'] = [['some block',''], 'b']")
       eq('some block', eval('getreg()'))
       eq('\02210', eval('getregtype()'))
     end)
 
     it('yanks visual selection when pasting', function()
       insert('indeed visual')
-      feed_command("let g:test_clip['*'] = [['clipboard'], 'c']")
+      command("let g:test_clip['*'] = [['clipboard'], 'c']")
       feed('viwp')
       eq({ { 'visual' }, 'v' }, eval("g:test_clip['*']"))
       expect('indeed clipboard')
 
       -- explicit "* should do the same
-      feed_command("let g:test_clip['*'] = [['star'], 'c']")
+      command("let g:test_clip['*'] = [['star'], 'c']")
       feed('viw"*p')
       eq({ { 'clipboard' }, 'v' }, eval("g:test_clip['*']"))
       expect('indeed star')
@@ -518,7 +540,7 @@ describe('clipboard (with fake clipboard.vim)', function()
     it('unnamed operations work even if the provider fails', function()
       insert('the text')
       feed('yy')
-      feed_command('let g:cliperror = 1')
+      command('let g:cliperror = 1')
       feed('p')
       expect([[
         the text
@@ -532,11 +554,11 @@ describe('clipboard (with fake clipboard.vim)', function()
 	match
 	text
       ]])
-      feed_command('g/match/d')
+      command('g/match/d')
       eq('match\n', eval('getreg("*")'))
       feed('u')
       eval('setreg("*", "---")')
-      feed_command('g/test/')
+      command('g/test/')
       feed('<esc>')
       eq('---', eval('getreg("*")'))
     end)
@@ -549,24 +571,44 @@ describe('clipboard (with fake clipboard.vim)', function()
       eq('textstar', api.nvim_get_current_line())
     end)
 
-    it('Block paste works correctly', function()
+    it('block paste works correctly', function()
       insert([[
         aabbcc
         ddeeff
       ]])
       feed('gg^<C-v>') -- Goto start of top line enter visual block mode
       feed('3ljy^k') -- yank 4x2 block & goto initial location
-      feed('P') -- Paste it infront
+      feed('P') -- Paste it before cursor
       expect([[
         aabbaabbcc
         ddeeddeeff
       ]])
     end)
+
+    it('block paste computes block width correctly #35034', function()
+      insert('あいうえお')
+      feed('0<C-V>ly')
+      feed('P')
+      expect('あいあいうえお')
+      feed('A\nxxx\nxx<Esc>')
+      feed('0<C-V>kkly')
+      feed('P')
+      expect([[
+        あいあいあいうえお
+        xxx xxx
+        xx  xx]])
+      feed('G0<C-V>ky')
+      feed('P')
+      expect([[
+        あいあいあいうえお
+        xxxx xxx
+        xxx  xx]])
+    end)
   end)
 
   describe('clipboard=unnamedplus', function()
     before_each(function()
-      feed_command('set clipboard=unnamedplus')
+      feed(':set clipboard=unnamedplus<cr>')
     end)
 
     it('links the "+ and unnamed registers', function()
@@ -579,13 +621,13 @@ describe('clipboard (with fake clipboard.vim)', function()
       -- "* shouldn't have changed
       eq({ '' }, eval("g:test_clip['*']"))
 
-      feed_command("let g:test_clip['+'] = ['three']")
+      command("let g:test_clip['+'] = ['three']")
       feed('p')
       expect('twothree')
     end)
 
     it('and unnamed, yanks to both', function()
-      feed_command('set clipboard=unnamedplus,unnamed')
+      command('set clipboard=unnamedplus,unnamed')
       insert([[
         really unnamed
         text]])
@@ -599,8 +641,8 @@ describe('clipboard (with fake clipboard.vim)', function()
 
       -- unnamedplus takes precedence when pasting
       eq('+', eval('v:register'))
-      feed_command("let g:test_clip['+'] = ['the plus','']")
-      feed_command("let g:test_clip['*'] = ['the star','']")
+      command("let g:test_clip['+'] = ['the plus','']")
+      command("let g:test_clip['*'] = ['the star','']")
       feed('p')
       expect([[
         text
@@ -616,11 +658,11 @@ describe('clipboard (with fake clipboard.vim)', function()
 	match
 	text
       ]])
-      feed_command('g/match/d')
+      command('g/match/d')
       eq('match\n', eval('getreg("+")'))
       feed('u')
       eval('setreg("+", "---")')
-      feed_command('g/test/')
+      command('g/test/')
       feed('<esc>')
       eq('---', eval('getreg("+")'))
     end)
@@ -635,13 +677,13 @@ describe('clipboard (with fake clipboard.vim)', function()
 
   it('supports :put', function()
     insert('a line')
-    feed_command("let g:test_clip['*'] = ['some text']")
-    feed_command("let g:test_clip['+'] = ['more', 'text', '']")
-    feed_command(':put *')
+    command("let g:test_clip['*'] = ['some text']")
+    command("let g:test_clip['+'] = ['more', 'text', '']")
+    command(':put *')
     expect([[
     a line
     some text]])
-    feed_command(':put +')
+    command(':put +')
     expect([[
     a line
     some text
@@ -651,10 +693,9 @@ describe('clipboard (with fake clipboard.vim)', function()
 
   it('supports "+ and "* in registers', function()
     local screen = Screen.new(60, 10)
-    screen:attach()
-    feed_command("let g:test_clip['*'] = ['some', 'star data','']")
-    feed_command("let g:test_clip['+'] = ['such', 'plus', 'stuff']")
-    feed_command('registers')
+    feed(":let g:test_clip['*'] = ['some', 'star data','']<cr>")
+    feed(":let g:test_clip['+'] = ['such', 'plus', 'stuff']<cr>")
+    feed(':registers<cr>')
     screen:expect(
       [[
                                                                   |
@@ -682,17 +723,17 @@ describe('clipboard (with fake clipboard.vim)', function()
     insert('s/s/t/')
     feed('gg"*y$:<c-r>*<cr>')
     expect('t/s/t/')
-    feed_command("let g:test_clip['*'] = ['s/s/u']")
+    command("let g:test_clip['*'] = ['s/s/u']")
     feed(':<c-r>*<cr>')
     expect('t/u/t/')
   end)
 
   it('supports :redir @*>', function()
-    feed_command("let g:test_clip['*'] = ['stuff']")
-    feed_command('redir @*>')
+    command("let g:test_clip['*'] = ['stuff']")
+    command('redir @*>')
     -- it is made empty
     eq({ { '' }, 'v' }, eval("g:test_clip['*']"))
-    feed_command('let g:test = doesnotexist')
+    feed(':let g:test = doesnotexist<cr>')
     feed('<cr>')
     eq(
       { {
@@ -702,7 +743,7 @@ describe('clipboard (with fake clipboard.vim)', function()
       }, 'v' },
       eval("g:test_clip['*']")
     )
-    feed_command(':echo "Howdy!"')
+    feed(':echo "Howdy!"<cr>')
     eq({
       {
         '',
@@ -716,13 +757,9 @@ describe('clipboard (with fake clipboard.vim)', function()
   end)
 
   it('handles middleclick correctly', function()
-    feed_command('set mouse=a')
+    command('set mouse=a')
 
     local screen = Screen.new(30, 5)
-    screen:set_default_attr_ids({
-      [0] = { bold = true, foreground = Screen.colors.Blue },
-    })
-    screen:attach()
     insert([[
       the source
       a target]])
@@ -731,7 +768,7 @@ describe('clipboard (with fake clipboard.vim)', function()
     screen:expect([[
       the ^source                    |
       a target                      |
-      {0:~                             }|*2
+      {1:~                             }|*2
                                     |
     ]])
 
@@ -741,7 +778,7 @@ describe('clipboard (with fake clipboard.vim)', function()
       the a target]])
 
     -- on error, fall back to unnamed register
-    feed_command('let g:cliperror = 1')
+    command('let g:cliperror = 1')
     feed('<MiddleMouse><6,1>')
     expect([[
       the source

@@ -38,15 +38,17 @@ globals = {
   "vim.bo",
   "vim.wo",
   "vim.go",
-  "vim.env"
+  "vim.env",
+  "_",
 }
 
 exclude_files = {
   'test/functional/fixtures/lua/syntax_error.lua',
   'runtime/lua/vim/treesitter/_meta.lua',
-  'runtime/lua/vim/_meta/vimfn.lua',
-  'runtime/lua/vim/_meta/api.lua',
+  'runtime/lua/vim/_meta/vimfn.gen.lua',
+  'runtime/lua/vim/_meta/api.gen.lua',
   'runtime/lua/vim/re.lua',
+  'runtime/lua/uv/_meta.lua',
   'runtime/lua/coxpcall.lua',
   'src/nvim/eval.lua',
 }

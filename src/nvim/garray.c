@@ -5,15 +5,17 @@
 #include <stdint.h>
 #include <string.h>
 
+#include "nvim/errors.h"
 #include "nvim/garray.h"
+#include "nvim/gettext_defs.h"
 #include "nvim/log.h"
+#include "nvim/macros_defs.h"
 #include "nvim/memory.h"
+#include "nvim/message.h"
 #include "nvim/path.h"
 #include "nvim/strings.h"
 
-#ifdef INCLUDE_GENERATED_DECLARATIONS
-# include "garray.c.generated.h"
-#endif
+#include "garray.c.generated.h"  // IWYU pragma: keep
 
 /// Clear an allocated growing array.
 void ga_clear(garray_T *gap)
@@ -78,16 +80,12 @@ void ga_grow(garray_T *gap, int n)
   }
 
   // the garray grows by at least growsize
-  if (n < gap->ga_growsize) {
-    n = gap->ga_growsize;
-  }
+  n = MAX(n, gap->ga_growsize);
 
   // A linear growth is very inefficient when the array grows big.  This
   // is a compromise between allocating memory that won't be used and too
   // many copy operations. A factor of 1.5 seems reasonable.
-  if (n < gap->ga_len / 2) {
-    n = gap->ga_len / 2;
-  }
+  n = MAX(n, gap->ga_len / 2);
 
   int new_maxlen = gap->ga_len + n;
 
@@ -115,7 +113,7 @@ void ga_remove_duplicate_strings(garray_T *gap)
 
   // loop over the growing array in reverse
   for (int i = gap->ga_len - 1; i > 0; i--) {
-    if (path_fnamecmp(fnames[i - 1], fnames[i]) == 0) {
+    if (path_equal(fnames[i - 1], fnames[i], kPathCmpLiteral)) {
       xfree(fnames[i]);
 
       // close the gap (move all strings one slot lower)
@@ -129,13 +127,13 @@ void ga_remove_duplicate_strings(garray_T *gap)
 }
 
 /// For a growing array that contains a list of strings: concatenate all the
-/// strings with sep as separator.
+/// strings with "sep" as separator.
 ///
 /// @param gap
 /// @param sep
 ///
 /// @returns the concatenated strings
-char *ga_concat_strings_sep(const garray_T *gap, const char *sep)
+char *ga_concat_strings(const garray_T *gap, const char *sep)
   FUNC_ATTR_NONNULL_RET
 {
   const size_t nelem = (size_t)gap->ga_len;
@@ -164,17 +162,6 @@ char *ga_concat_strings_sep(const garray_T *gap, const char *sep)
   return ret;
 }
 
-/// For a growing array that contains a list of strings: concatenate all the
-/// strings with a separating comma.
-///
-/// @param gap
-///
-/// @returns the concatenated strings
-char *ga_concat_strings(const garray_T *gap) FUNC_ATTR_NONNULL_RET
-{
-  return ga_concat_strings_sep(gap, ",");
-}
-
 /// Concatenate a string to a growarray which contains characters.
 /// When "s" is NULL does not do anything.
 ///
@@ -201,12 +188,17 @@ void ga_concat(garray_T *gap, const char *restrict s)
 void ga_concat_len(garray_T *const gap, const char *restrict s, const size_t len)
   FUNC_ATTR_NONNULL_ALL
 {
-  if (len) {
-    ga_grow(gap, (int)len);
-    char *data = gap->ga_data;
-    memcpy(data + gap->ga_len, s, len);
-    gap->ga_len += (int)len;
+  if (len == 0) {
+    return;
   }
+  if (len > (size_t)(INT_MAX - gap->ga_len)) {
+    emsg(_(e_resulting_text_too_long));
+    return;
+  }
+  ga_grow(gap, (int)len);
+  char *data = gap->ga_data;
+  memcpy(data + gap->ga_len, s, len);
+  gap->ga_len += (int)len;
 }
 
 /// Append one byte to a growarray which contains bytes.

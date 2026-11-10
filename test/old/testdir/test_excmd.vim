@@ -7,11 +7,24 @@ source screendump.vim
 
 func Test_ex_delete()
   new
+
   call setline(1, ['a', 'b', 'c'])
   2
   " :dl is :delete with the "l" flag, not :dlist
   .dl
   call assert_equal(['a', 'c'], getline(1, 2))
+  %delete _
+
+  " :delete # used to clobber "0
+  call setreg('#', '')
+  call setreg('0', '')
+  call setline(1, ['a', 'b', 'c'])
+  call assert_fails("1delete #", 'E488:')
+  call assert_equal(['a', 'b', 'c'], getline(1, '$'))
+  call assert_equal('', getreg('#'))
+  call assert_equal('', getreg('0'))
+
+  bw!
 endfunc
 
 func Test_range_error()
@@ -71,7 +84,7 @@ func Test_copy()
   exe "normal! gg4:yank\<CR>"
   call assert_equal("L1\nL2\nL1\nL2\n", @")
 
-  close!
+  bw!
 endfunc
 
 " Test for the :file command
@@ -115,7 +128,7 @@ func Test_drop_cmd()
   call assert_equal(1, winnr('$'))
   " Check for setting the argument list
   call assert_equal(['Xdropfile'], argv())
-  enew | only!
+  enew | only! | bw! Xdropfile
 endfunc
 
 " Test for the :append command
@@ -143,7 +156,7 @@ func Test_append_cmd()
   call assert_equal(['  L1', '  L2', '  L3'], getline(1, '$'))
   call assert_true(&autoindent)
   set autoindent&
-  close!
+  bw!
 endfunc
 
 func Test_append_cmd_empty_buf()
@@ -157,14 +170,82 @@ func Test_append_cmd_empty_buf()
     endfunc
     call timer_start(10, 'Timer')
   END
-  call writefile(lines, 'Xtest_append_cmd_empty_buf')
+  call writefile(lines, 'Xtest_append_cmd_empty_buf', 'D')
   let buf = RunVimInTerminal('-S Xtest_append_cmd_empty_buf', {'rows': 6})
   call WaitForAssert({-> assert_equal('bbbbb', term_getline(buf, 2))})
   call WaitForAssert({-> assert_equal('aaaaa', term_getline(buf, 1))})
 
   " clean up
   call StopVimInTerminal(buf)
-  call delete('Xtest_append_cmd_empty_buf')
+endfunc
+
+" Test for :append, :insert and :change in a block that is not executed: the
+" lines up to the "." are skipped, not executed as commands.
+func Test_append_cmd_skipped()
+  let lines =<< trim END
+    if 0
+      append
+    endif
+    .
+    endif
+    let g:skipped = 'append'
+    if 0
+      insert
+    else
+    .
+    endif
+    let g:skipped ..= ' insert'
+    if 0
+      1change
+    endif
+    .
+    endif
+    let g:skipped ..= ' change'
+    while 0
+      append
+    endwhile
+    .
+    endwhile
+    let g:skipped ..= ' while'
+  END
+  call writefile(lines, 'Xappend_skipped', 'D')
+  new
+  call setline(1, 'text')
+  source Xappend_skipped
+  call assert_equal('append insert change while', g:skipped)
+  call assert_equal(['text'], getline(1, '$'))
+
+  " In Vim9 script :append isn't allowed and doesn't consume following lines.
+  let lines =<< trim END
+    vim9script
+    if false
+      append
+    endif
+    g:skipped = 'vim9'
+  END
+  call writefile(lines, 'Xappend_skipped_vim9', 'D')
+  "source Xappend_skipped_vim9
+  "call assert_equal('vim9', g:skipped)
+  call assert_equal(['text'], getline(1, '$'))
+
+  " Compiling a :def function with a skipped :append should still give E1100.
+  let lines =<< trim END
+    vim9script
+    def Foo()
+      if false
+        append
+      endif
+    enddef
+    g:skipped = ''
+    defcompile
+    g:skipped = 'defcompile' # not reached
+  END
+  call writefile(lines, 'Xappend_skipped_def', 'D')
+  "call assert_fails('source Xappend_skipped_def', 'E1100:')
+  "call assert_equal('', g:skipped)
+
+  unlet g:skipped
+  bwipe!
 endfunc
 
 " Test for the :insert command
@@ -192,7 +273,7 @@ func Test_insert_cmd()
   call assert_equal(['  L2', '  L3', '  L1'], getline(1, '$'))
   call assert_true(&autoindent)
   set autoindent&
-  close!
+  bw!
 endfunc
 
 func Test_insert_cmd_empty_buf()
@@ -206,14 +287,13 @@ func Test_insert_cmd_empty_buf()
     endfunc
     call timer_start(10, 'Timer')
   END
-  call writefile(lines, 'Xtest_insert_cmd_empty_buf')
+  call writefile(lines, 'Xtest_insert_cmd_empty_buf', 'D')
   let buf = RunVimInTerminal('-S Xtest_insert_cmd_empty_buf', {'rows': 6})
   call WaitForAssert({-> assert_equal('bbbbb', term_getline(buf, 2))})
   call WaitForAssert({-> assert_equal('aaaaa', term_getline(buf, 1))})
 
   " clean up
   call StopVimInTerminal(buf)
-  call delete('Xtest_insert_cmd_empty_buf')
 endfunc
 
 " Test for the :change command
@@ -241,15 +321,22 @@ func Test_change_cmd()
   call assert_equal(['  L4', '  L5', 'L2', 'L3'], getline(1, '$'))
   call assert_true(&autoindent)
   set autoindent&
-  close!
+  bw!
 endfunc
 
 " Test for the :language command
 func Test_language_cmd()
   CheckFeature multi_lang
 
-  call assert_fails('language ctype non_existing_lang', 'E197:')
-  call assert_fails('language time non_existing_lang', 'E197:')
+  " OpenBSD allows nearly arbitrary locale names, since it largely ignores them
+  " (see setlocale(3)). One useful exception for this test is that in doesn't
+  " allow names containing dots unless they end in '.UTF-8'.
+  "
+  " Windows also allows nonsensical locale names, though it seems to reject
+  " names with multiple underscores (possibly expecting 'language_region', but
+  " not 'language_region_additional').
+  call assert_fails('language ctype non_existing_lang.bad', 'E197:')
+  call assert_fails('language time non_existing_lang.bad', 'E197:')
 endfunc
 
 " Test for the :confirm command dialog
@@ -548,21 +635,22 @@ endfunc
 
 " Test for the :read command
 func Test_read_cmd()
-  call writefile(['one'], 'Xfile')
+  call writefile(['one'], 'Xcmdfile', 'D')
   new
   call assert_fails('read', 'E32:')
-  edit Xfile
+  edit Xcmdfile
   read
   call assert_equal(['one', 'one'], getline(1, '$'))
-  close!
+  bw!
   new
-  read Xfile
+  read Xcmdfile
   call assert_equal(['', 'one'], getline(1, '$'))
-  call deletebufline('', 1, '$')
-  call feedkeys("Qr Xfile\<CR>visual\<CR>", 'xt')
-  call assert_equal(['one'], getline(1, '$'))
-  close!
-  call delete('Xfile')
+  " Nvim: Ex mode is a cmdwin wrapper; cannot run inside feedkeys('x'), and
+  " ":read" no longer deletes the empty first line in Ex mode.
+  "call deletebufline('', 1, '$')
+  "call feedkeys("Qr Xcmdfile\<CR>visual\<CR>", 'xt')
+  "call assert_equal(['one'], getline(1, '$'))
+  bw!
 endfunc
 
 " Test for running Ex commands when text is locked.
@@ -629,7 +717,7 @@ func Test_excmd_delete()
   call assert_equal(['        bar'], split(execute('deletp'), "\n"))
   call setline(1, ['foo', "\tbar"])
   call assert_equal(['        bar'], split(execute('deletep'), "\n"))
-  close!
+  bw!
 endfunc
 
 " Test for commands that are blocked in a sandbox
@@ -665,7 +753,7 @@ func Sandbox_tests()
   if has('clientserver')
     call assert_fails('let s=remote_expr("gvim", "2+2")', 'E48:')
     if !has('win32')
-      " remote_foreground() doesn't thrown an error message on MS-Windows
+      " remote_foreground() doesn't throw an error message on MS-Windows
       call assert_fails('call remote_foreground("gvim")', 'E48:')
     endif
     call assert_fails('let s=remote_peek("gvim")', 'E48:')
@@ -691,6 +779,13 @@ func Sandbox_tests()
   if has('unix')
     call assert_fails('cd `pwd`', 'E48:')
   endif
+  "call assert_fails("call echoraw('test')", 'E48:')
+  "call assert_fails("echoconsole 'test'", 'E48:')
+  call assert_fails("call readfile('Xsomefile')", 'E48:')
+  call assert_fails("call readblob('Xsomefile')", 'E48:')
+  call assert_fails("call readdir('.')", 'E48:')
+  "call assert_fails("call readdirex('.')", 'E48:')
+  call assert_fails("call chdir('.')", 'E48:')
   " some options cannot be changed in a sandbox
   call assert_fails('set exrc', 'E48:')
   call assert_fails('set cdpath', 'E48:')
@@ -718,15 +813,20 @@ func Test_not_break_expression_register()
 endfunc
 
 func Test_address_line_overflow()
-  throw 'Skipped: v:sizeoflong is N/A'  " use legacy/excmd_spec.lua instead
-
-  if v:sizeoflong < 8
+  if !has('nvim') && v:sizeoflong < 8
     throw 'Skipped: only works with 64 bit long ints'
   endif
   new
-  call setline(1, 'text')
+  call setline(1, range(100))
   call assert_fails('|.44444444444444444444444', 'E1247:')
   call assert_fails('|.9223372036854775806', 'E1247:')
+  call assert_fails('.44444444444444444444444d', 'E1247:')
+  call assert_equal(range(100)->map('string(v:val)'), getline(1, '$'))
+
+  $
+  yank 77777777777777777777
+  call assert_equal("99\n", @")
+
   bwipe!
 endfunc
 

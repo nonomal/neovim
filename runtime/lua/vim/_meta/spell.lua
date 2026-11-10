@@ -1,4 +1,6 @@
 --- @meta
+-- This file is NOT generated, edit it directly.
+error('Cannot require a meta file')
 
 -- luacheck: no unused args
 
@@ -20,7 +22,7 @@
 --- ```
 ---
 --- @param str string
---- @return {[1]: string, [2]: 'bad'|'rare'|'local'|'caps', [3]: integer}[]
+--- @return [string, 'bad'|'rare'|'local'|'caps', integer][]
 ---   List of tuples with three items:
 ---     - The badly spelled word.
 ---     - The type of the spelling error:

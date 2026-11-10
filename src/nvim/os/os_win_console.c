@@ -6,15 +6,27 @@
 #include "nvim/os/input.h"
 #include "nvim/os/os.h"
 #include "nvim/os/os_win_console.h"
+#include "nvim/ui.h"
 
-#ifdef INCLUDE_GENERATED_DECLARATIONS
-# include "os/os_win_console.c.generated.h"
-#endif
+#include "os/os_win_console.c.generated.h"
 
 static char origTitle[256] = { 0 };
 static HWND hWnd = NULL;
 static HICON hOrigIconSmall = NULL;
 static HICON hOrigIcon = NULL;
+/// Console (e.g. the TUI's host-terminal) is inherited from the parent: this process dies when
+/// that terminal closes.
+static bool console_inherited = false;
+
+/// Re-enable normal Ctrl-C processing after detached startup.
+///
+/// On Windows, UV_PROCESS_DETACHED implies CREATE_NEW_PROCESS_GROUP, which
+/// disables Ctrl-C handling for the new process. Restore the default behavior
+/// once the embedded server has a console so terminal jobs inherit it.
+void os_enable_ctrl_c(void)
+{
+  SetConsoleCtrlHandler(NULL, false);
+}
 
 int os_open_conin_fd(void)
 {
@@ -29,14 +41,19 @@ int os_open_conin_fd(void)
   return conin_fd;
 }
 
-void os_replace_stdin_to_conin(void)
+void os_clear_hwnd(void)
+{
+  hWnd = NULL;
+}
+
+void os_redirect_stdin_to_conin(void)
 {
   close(STDIN_FILENO);
   const int conin_fd = os_open_conin_fd();
   assert(conin_fd == STDIN_FILENO);
 }
 
-void os_replace_stdout_and_stderr_to_conout(void)
+void os_redirect_stdout_stderr_to_conout(void)
 {
   const HANDLE conout_handle =
     CreateFile("CONOUT$",
@@ -53,20 +70,67 @@ void os_replace_stdout_and_stderr_to_conout(void)
   assert(conerr_fd == STDERR_FILENO);
 }
 
-/// Sets Windows console icon, or pass NULL to restore original icon.
-void os_icon_set(HICON hIconSmall, HICON hIcon)
+/// Points this process's stdio at the current console: enables Ctrl-C handling and replaces
+/// stdin/stdout/stderr with CONIN$/CONOUT$. The caller must have already acquired a console
+/// (via AttachConsole, AllocConsole, etc.).
+void os_reattach_console_stdio(void)
+{
+  os_enable_ctrl_c();
+  os_redirect_stdin_to_conin();
+  os_redirect_stdout_stderr_to_conout();
+}
+
+/// Detach from the current console and switch stdio to a hidden private one.
+///
+/// Used when an embedded server must outlive its parent console, while keeping
+/// CONIN$/CONOUT$ and ConPTY functional for :terminal and stdio writes.
+void os_swap_to_hidden_console(void)
+{
+  FreeConsole();
+  AllocConsole();
+  ShowWindow(GetConsoleWindow(), SW_HIDE);
+  os_reattach_console_stdio();
+  console_inherited = false;
+}
+
+/// Uses the parent's console so CONOUT$ resolves to the real terminal, preserving io.stdout
+/// rendering (e.g. SIXEL/Kitty images). A replacement server started by :restart reuses the
+/// current server's console. Allocates a hidden console only if the parent has none.
+void os_attach_parent_console(void)
+{
+  console_inherited = GetConsoleWindow() != NULL || AttachConsole(ATTACH_PARENT_PROCESS);
+  if (!console_inherited) {
+    ILOG("parent console attach failed: %lu; allocating hidden console", GetLastError());
+    AllocConsole();
+    ShowWindow(GetConsoleWindow(), SW_HIDE);
+  }
+  os_reattach_console_stdio();
+}
+
+/// Calls os_swap_to_hidden_console() if the current console closes with the terminal of a UI that
+/// disconnected, so this process survives that terminal closing. Call when a UI disconnects and
+/// the server keeps running.
+///
+/// @param stdio_ui  The (stdio) UI's host-terminal owns the console.
+void os_detach_ui_console(bool stdio_ui)
+{
+  if (stdio_ui || (console_inherited && !ui_active())) {
+    os_swap_to_hidden_console();
+  }
+}
+
+/// Resets Windows console icon if we got an original one on startup.
+void os_icon_reset(void)
 {
   if (hWnd == NULL) {
     return;
   }
-  hIconSmall = hIconSmall ? hIconSmall : hOrigIconSmall;
-  hIcon = hIcon ? hIcon : hOrigIcon;
 
-  if (hIconSmall != NULL) {
-    SendMessage(hWnd, WM_SETICON, (WPARAM)ICON_SMALL, (LPARAM)hIconSmall);
+  if (hOrigIconSmall) {
+    SendMessage(hWnd, WM_SETICON, (WPARAM)ICON_SMALL, (LPARAM)hOrigIconSmall);
   }
-  if (hIcon != NULL) {
-    SendMessage(hWnd, WM_SETICON, (WPARAM)ICON_BIG, (LPARAM)hIcon);
+  if (hOrigIcon) {
+    SendMessage(hWnd, WM_SETICON, (WPARAM)ICON_BIG, (LPARAM)hOrigIcon);
   }
 }
 
@@ -78,11 +142,8 @@ void os_icon_init(void)
   if ((hWnd = GetConsoleWindow()) == NULL) {
     return;
   }
-  // Save Windows console icon to be restored later.
-  hOrigIconSmall = (HICON)SendMessage(hWnd, WM_GETICON, (WPARAM)ICON_SMALL, (LPARAM)0);
-  hOrigIcon = (HICON)SendMessage(hWnd, WM_GETICON, (WPARAM)ICON_BIG, (LPARAM)0);
 
-  const char *vimruntime = os_getenv("VIMRUNTIME");
+  char *vimruntime = os_getenv("VIMRUNTIME");
   if (vimruntime != NULL) {
     snprintf(NameBuff, MAXPATHL, "%s/neovim.ico", vimruntime);
     if (!os_path_exists(NameBuff)) {
@@ -90,8 +151,10 @@ void os_icon_init(void)
     } else {
       HICON hVimIcon = LoadImage(NULL, NameBuff, IMAGE_ICON, 64, 64,
                                  LR_LOADFROMFILE | LR_LOADMAP3DCOLORS);
-      os_icon_set(hVimIcon, hVimIcon);
+      hOrigIconSmall = (HICON)SendMessage(hWnd, WM_SETICON, (WPARAM)ICON_SMALL, (LPARAM)hVimIcon);
+      hOrigIcon = (HICON)SendMessage(hWnd, WM_SETICON, (WPARAM)ICON_BIG, (LPARAM)hVimIcon);
     }
+    xfree(vimruntime);
   }
 }
 
@@ -117,7 +180,7 @@ void os_title_reset(void)
 /// @param out_fd stdout file descriptor
 void os_tty_guess_term(const char **term, int out_fd)
 {
-  bool conemu_ansi = strequal(os_getenv("ConEmuANSI"), "ON");
+  bool conemu_ansi = strequal(os_getenv_noalloc("ConEmuANSI"), "ON");
   bool vtp = false;
 
   HANDLE handle = (HANDLE)_get_osfhandle(out_fd);

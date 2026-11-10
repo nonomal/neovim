@@ -1,5 +1,60 @@
 " Tests for regexp in utf8 encoding
 
+func Test_regexp_literal_byte_search()
+  let save_encoding = &encoding
+  let save_re = &regexpengine
+  try
+    "for enc in ['latin1', 'utf-8']
+    for enc in ['utf-8']
+      let &encoding = enc
+      for engine in [1, 2]
+        let &regexpengine = engine
+        let chars = ['z', nr2char(0x7f), nr2char(0xff)]
+        if enc == 'utf-8'
+          call add(chars, nr2char(0x100))
+        endif
+        for c in chars
+          let prefix = repeat('x', 4096)
+          call assert_equal(-1, match('', c))
+          call assert_equal(-1, match(prefix, c))
+          call assert_equal(0, match(c .. prefix, c))
+          call assert_equal(4096, match(prefix .. c, c))
+        endfor
+        call assert_equal(-1, match('xxx', '\%d0'))
+      endfor
+    endfor
+  finally
+    let &encoding = save_encoding
+    let &regexpengine = save_re
+  endtry
+endfunc
+
+" ASCII range collections must honor Unicode case folding.
+func Test_ascii_collection_unicode_casefold()
+  let save_encoding = &encoding
+  let save_ic = &ignorecase
+  try
+    set encoding=utf-8 ignorecase
+    for engine in [1, 2]
+      for c in [nr2char(0x17f), nr2char(0x212a)]
+        for [positive, negative] in [['[a-z]', '[^a-z]'],
+              \ ['[A-Z]', '[^A-Z]'],
+              \ ['[a-zA-Z]', '[^a-zA-Z]'],
+              \ ['[a-zA-Z_]', '[^a-zA-Z_]'],
+              \ ['[a-zA-Z0-9_]', '[^a-zA-Z0-9_]']]
+          call assert_equal(0, match(c, '\%#=' .. engine .. positive))
+          call assert_equal(-1, match(c, '\%#=' .. engine .. negative))
+        endfor
+        " No character folds into [0-9a-fA-F], so the hex class is kept.
+        call assert_equal(-1, match(c, '\%#=' .. engine .. '[0-9a-fA-F]'))
+      endfor
+    endfor
+  finally
+    let &encoding = save_encoding
+    let &ignorecase = save_ic
+  endtry
+endfunc
+
 func s:equivalence_test()
   let str = "AÀÁÂÃÄÅĀĂĄǍǞǠǺȂȦȺḀẠẢẤẦẨẪẬẮẰẲẴẶ BƁɃḂḄḆ CÇĆĈĊČƇȻḈꞒ DĎĐƊḊḌḎḐḒ EÈÉÊËĒĔĖĘĚȄȆȨɆḔḖḘḚḜẸẺẼẾỀỂỄỆ FƑḞꞘ GĜĞĠĢƓǤǦǴḠꞠ HĤĦȞḢḤḦḨḪⱧ IÌÍÎÏĨĪĬĮİƗǏȈȊḬḮỈỊ JĴɈ KĶƘǨḰḲḴⱩꝀ LĹĻĽĿŁȽḶḸḺḼⱠ MḾṀṂ NÑŃŅŇǸṄṆṈṊꞤ OÒÓÔÕÖØŌŎŐƟƠǑǪǬǾȌȎȪȬȮȰṌṎṐṒỌỎỐỒỔỖỘỚỜỞỠỢ PƤṔṖⱣ QɊ RŔŖŘȐȒɌṘṚṜṞⱤꞦ SŚŜŞŠȘṠṢṤṦṨⱾꞨ TŢŤŦƬƮȚȾṪṬṮṰ UÙÚÛÜŨŪŬŮŰƯǕǙǛǓǗȔȖɄṲṴṶṸṺỤỦỨỪỬỮỰ  VƲṼṾ WŴẀẂẄẆẈ XẊẌ YÝŶŸƳȲɎẎỲỴỶỸ ZŹŻŽƵẐẒẔⱫ aàáâãäåāăąǎǟǡǻȃȧᶏḁẚạảấầẩẫậắằẳẵặⱥ bƀɓᵬᶀḃḅḇ cçćĉċčƈȼḉꞓꞔ dďđɗᵭᶁᶑḋḍḏḑḓ eèéêëēĕėęěȅȇȩɇᶒḕḗḙḛḝẹẻẽếềểễệ fƒᵮᶂḟꞙ gĝğġģǥǧǵɠᶃḡꞡ hĥħȟḣḥḧḩḫẖⱨꞕ iìíîïĩīĭįǐȉȋɨᶖḭḯỉị jĵǰɉ kķƙǩᶄḱḳḵⱪꝁ lĺļľŀłƚḷḹḻḽⱡ mᵯḿṁṃ nñńņňŉǹᵰᶇṅṇṉṋꞥ oòóôõöøōŏőơǒǫǭǿȍȏȫȭȯȱɵṍṏṑṓọỏốồổỗộớờởỡợ pƥᵱᵽᶈṕṗ qɋʠ rŕŗřȑȓɍɽᵲᵳᶉṛṝṟꞧ sśŝşšșȿᵴᶊṡṣṥṧṩꞩ tţťŧƫƭțʈᵵṫṭṯṱẗⱦ uùúûüũūŭůűųǚǖưǔǘǜȕȗʉᵾᶙṳṵṷṹṻụủứừửữự vʋᶌṽṿ wŵẁẃẅẇẉẘ xẋẍ yýÿŷƴȳɏẏẙỳỵỷỹ zźżžƶᵶᶎẑẓẕⱬ"
   let groups = split(str)
@@ -35,7 +90,7 @@ func s:classes_test()
   if has('win32')
     set iskeyword=@,48-57,_,192-255
   endif
-  set isprint=@,161-255
+  " set isprint=@,161-255
   call assert_equal('Motörhead', matchstr('Motörhead', '[[:print:]]\+'))
 
   let alnumchars = ''
@@ -149,13 +204,13 @@ func s:classes_test()
   call assert_equal("\t", tabchar)
   call assert_equal('0123456789ABCDEFabcdef', xdigitchars)
 
-  if has('win32')
-    let identchars_ok = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz ¡¢£¤¥¦§µÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖØÙÚÛÜÝÞßàáâãäåæçèéêëìíîïðñòóôõöøùúûüýþÿ'
-    let kwordchars_ok = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyzµÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖ×ØÙÚÛÜÝÞßàáâãäåæçèéêëìíîïðñòóôõö÷øùúûüýþÿ'
-  else
+  "if has('win32')
+  "  let identchars_ok = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz ¡¢£¤¥¦§µÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖØÙÚÛÜÝÞßàáâãäåæçèéêëìíîïðñòóôõöøùúûüýþÿ'
+  "  let kwordchars_ok = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyzµÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖ×ØÙÚÛÜÝÞßàáâãäåæçèéêëìíîïðñòóôõö÷øùúûüýþÿ'
+  "else
     let identchars_ok = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyzµÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖ×ØÙÚÛÜÝÞßàáâãäåæçèéêëìíîïðñòóôõö÷øùúûüýþÿ'
     let kwordchars_ok = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyzµÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖ×ØÙÚÛÜÝÞßàáâãäåæçèéêëìíîïðñòóôõö÷øùúûüýþÿ'
-  endif
+  "endif
 
   if has('win32')
     let fnamechars_ok = '!#$%+,-./0123456789:=@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\]_abcdefghijklmnopqrstuvwxyz{}~ ¡¢£¤¥¦§¨©ª«¬­®¯°±²³´µ¶·¸¹º»¼½¾¿ÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖ×ØÙÚÛÜÝÞßàáâãäåæçèéêëìíîïðñòóôõö÷øùúûüýþÿ'
@@ -186,38 +241,6 @@ func Test_classes_re2()
   set re=2
   call s:classes_test()
   set re=0
-endfunc
-
-func Test_recursive_substitute()
-  new
-  s/^/\=execute("s#^##gn")
-  " check we are now not in the sandbox
-  call setwinvar(1, 'myvar', 1)
-  bwipe!
-endfunc
-
-func Test_nested_backrefs()
-  " Check example in change.txt.
-  new
-  for re in range(0, 2)
-    exe 'set re=' . re
-    call setline(1, 'aa ab x')
-    1s/\(\(a[a-d] \)*\)\(x\)/-\1- -\2- -\3-/
-    call assert_equal('-aa ab - -ab - -x-', getline(1))
-
-    call assert_equal('-aa ab - -ab - -x-', substitute('aa ab x', '\(\(a[a-d] \)*\)\(x\)', '-\1- -\2- -\3-', ''))
-  endfor
-  bwipe!
-  set re=0
-endfunc
-
-func Test_eow_with_optional()
-  let expected = ['abc def', 'abc', 'def', '', '', '', '', '', '', '']
-  for re in range(0, 2)
-    exe 'set re=' . re
-    let actual = matchlist('abc def', '\(abc\>\)\?\s*\(def\)')
-    call assert_equal(expected, actual)
-  endfor
 endfunc
 
 func Test_reversed_range()
@@ -393,6 +416,12 @@ func Run_regexp_ignore_case()
   call assert_equal('iIx', substitute('iIİ', '\c\(\%u0130\)', 'x', 'g'))
   call assert_equal('iIx', substitute('iIİ', '\c\([\u0130]\)', 'x', 'g'))
   call assert_equal('iIx', substitute('iIİ', '\c\([\u012f-\u0131]\)', 'x', 'g'))
+
+  " Ignoring case in a literal string that starts with a character longer
+  " than a following one must still match.
+  call assert_equal('Über', matchstr('Überraschung', '\cüber'))
+  call assert_equal('Ünder', matchstr('Ünderdog', '\cünder'))
+  call assert_equal('αaaa', matchstr('αaaaa', '\cαaaa'))
 endfunc
 
 func Test_regexp_ignore_case()
@@ -485,7 +514,7 @@ func Run_regexp_multibyte_magic()
   @w
   call assert_equal('k œ̄ṣ́m̥̄ᾱ̆́', getline(18))
 
-  close!
+  bw!
 endfunc
 
 func Test_regexp_multibyte_magic()
@@ -503,7 +532,7 @@ func Test_split_multibyte_to_bytes()
   call setline(1, 'l äö üᾱ̆́')
   s/ \?/ /g
   call assert_equal(' l ä ö ü ᾱ̆́', getline(1))
-  close!
+  bw!
 endfunc
 
 " Test for matchstr() with multibyte characters
@@ -513,7 +542,7 @@ func Test_matchstr_multibyte()
   call assert_equal('בג', matchstr("אבגד", "..", 0, 2))
   call assert_equal('א', matchstr("אבגד", ".", 0, 0))
   call assert_equal('ג', matchstr("אבגד", ".", 4, -1))
-  close!
+  bw!
 endfunc
 
 " Test for 7.4.636
@@ -524,7 +553,7 @@ func Test_search_with_end_offset()
   exe "normal /(/e+\<CR>"
   normal n"ayn
   call assert_equal("a\ncat(", @a)
-  close!
+  bw!
 endfunc
 
 " Check that "^" matches even when the line starts with a combining char
@@ -591,6 +620,15 @@ func Test_match_invalid_byte()
   call delete('Xinvalid')
 endfunc
 
+func Test_match_illegal_byte()
+  " Text has illegal bytes which need to be set explicitly
+  let lines = ["norm :set no\x01\<CR>", "silent n\xff", "silent norm :b\xff\<CR>"]
+  call writefile(lines, 'Xregexp')
+  call system(GetVimCommand() .. ' -X -Z -e -s -S Xregexp -c qa!')
+
+  call delete('Xregexp')
+endfunc
+
 func Test_match_too_complicated()
   set regexpengine=1
   exe "noswapfile vsplit \xeb\xdb\x99"
@@ -609,6 +647,237 @@ func Test_combining_chars_in_collection()
     %d
   endfor
   bw!
+endfunc
+
+func Test_search_literal_casefold_width()
+  CheckFeature multi_byte
+  let save_encoding = &encoding
+  try
+    set encoding=utf-8
+    new
+    for [text, literal, expected] in [
+          \ ['Ka', 'ka', 0], ['ſa', 'sa', 0],
+          \ ['ka', 'Ka', 0], ['sa', 'ſa', 0],
+          \ ['kxka', 'Ka', 2], ['ssa', 'ſa', 1],
+          \ ['KxKa', 'ka', 4], ['ſxſa', 'sa', 3],
+          \ ['KA', 'ka', 0], ['ka', 'ka', 0]]
+      call setline(1, text)
+      for engine in [0, 1, 2]
+        let pattern = '\%#=' .. engine .. literal
+        let context = string([text, literal, engine])
+        call assert_equal(expected, match(text, pattern .. '\c'), context)
+        call cursor(1, 1)
+        call assert_equal([1, expected + 1],
+              \ searchpos(pattern .. '\c', 'Wc'), context)
+        call assert_equal(stridx(text, literal),
+              \ match(text, pattern .. '\C'), context)
+      endfor
+    endfor
+  finally
+    bwipe!
+    let &encoding = save_encoding
+  endtry
+endfunc
+
+func Test_search_multibyte_match_ascii()
+  new
+  " Match single 'ſ' and 's'
+  call setline(1,  'das abc heraus abc ſich abc ſind')
+  for i in range(0, 2)
+    exe "set re="..i
+    let ic_match = matchbufline('%', '\c\%u17f', 1, '$')->mapnew({idx, val -> val.text})
+    let noic_match = matchbufline('%', '\C\%u17f', 1, '$')->mapnew({idx, val -> val.text})
+    call assert_equal(['s', 's', 'ſ','ſ'], ic_match, "Ignorecase Regex-engine: " .. &re)
+    call assert_equal(['ſ','ſ'], noic_match, "No-Ignorecase Regex-engine: " .. &re)
+  endfor
+  " Match several 'ſſ' and 'ss'
+  call setline(1,  'das abc herauss abc ſſich abc ſind')
+  for i in range(0, 2)
+    exe "set re="..i
+    let ic_match = matchbufline('%', '\c\%u17f\%u17f', 1, '$')->mapnew({idx, val -> val.text})
+    let noic_match = matchbufline('%', '\C\%u17f\%u17f', 1, '$')->mapnew({idx, val -> val.text})
+    let ic_match2 = matchbufline('%', '\c\%u17f\+', 1, '$')->mapnew({idx, val -> val.text})
+    let noic_match2 = matchbufline('%', '\C\%u17f\+', 1, '$')->mapnew({idx, val -> val.text})
+    let ic_match3 = matchbufline('%', '\c[\u17f]\+', 1, '$')->mapnew({idx, val -> val.text})
+    let noic_match3 = matchbufline('%', '\C[\u17f]\+', 1, '$')->mapnew({idx, val -> val.text})
+
+    call assert_equal(['ss', 'ſſ'], ic_match, "Ignorecase Regex-engine: " .. &re)
+    call assert_equal(['ſſ'], noic_match, "No-Ignorecase Regex-engine: " .. &re)
+    call assert_equal(['s', 'ss', 'ſſ', 'ſ'], ic_match2, "Ignorecase Regex-engine: " .. &re)
+    call assert_equal(['ſſ','ſ'], noic_match2, "No-Ignorecase Regex-engine: " .. &re)
+    call assert_equal(['s', 'ss', 'ſſ', 'ſ'], ic_match3, "Ignorecase Collection Regex-engine: " .. &re)
+    call assert_equal(['ſſ','ſ'], noic_match3, "No-Ignorecase Collection Regex-engine: " .. &re)
+  endfor
+  set re&vim
+  bw!
+endfunc
+
+func Test_replace_multibyte_match_in_multi_lines()
+  new
+  let text = ['ab 1c', 'ab 1c', 'def', '是否 a', '是否 a', 'ghi', '是否a', '是否a', '是否 1', '是否 1']
+  let expected = ['', 'def', '', 'ghi', '', '']
+  for i in range(0, 2)
+    exe "set ignorecase re="..i
+    :%d _
+    call setline(1, text)
+    :%s/\(.\+\)\n\1//g
+    call assert_equal(expected, getline(1, '$'))
+  endfor
+  bw!
+  set ignorecase&vim re&vim
+endfun
+
+func Test_regex_collection_range_with_composing_crash()
+  " Regression test: composing char in collection range caused NFA crash/E874
+  new
+  call setline(1, ['00', '0ֻ', '01'])
+  let patterns = [ '0[0-0ֻ]\@<!','0[0ֻ]\@<!']
+
+  for pat in patterns
+    " Should compile and execute without crash or error
+    for re in range(3)
+      let regex = '\%#=' .. re .. pat
+      call search(regex)
+      call assert_fails($"/{regex}\<cr>", 'E486:')
+    endfor
+  endfor
+
+  bwipe!
+endfunc
+
+" A submatch in a look-behind must not start on the previous line.  See
+" issue #20802.
+func Test_lookbehind_submatch_on_second_line()
+  new
+  for re in range(0, 2)
+    exe "set re=" .. re
+    call setline(1, ['testing', 'testing'])
+    %s/\v(.)@<=/[\1]/g
+    call assert_equal(['t[t]e[e]s[s]t[t]i[i]n[n]g',
+	  \ 't[t]e[e]s[s]t[t]i[i]n[n]g'], getline(1, '$'), 're=' .. re)
+    %d _
+
+    " With "\_." the look-behind can match the line break, then the submatch
+    " does start on the previous line.
+    call setline(1, ['abc', 'def'])
+    %s/\v(\_.)@<=/[\1]/g
+    call assert_equal(['a[a]b[b]c[c]', '[]d[d]e[e]f[f]'],
+	  \ getline(1, '$'), 're=' .. re)
+    %d _
+  endfor
+
+  set re&
+  bwipe!
+endfunc
+
+" The old (backtracking) engine converts the negated collections [^0-9],
+" [^a-zA-Z0-9_], [^a-zA-Z_] and [^a-zA-Z] into the \D, \W, \H and \A classes.
+" These classes match a multibyte character, just like the collections do, so
+" the conversion must give the same result.  A Latin1 test cannot exercise this,
+" so check it here with the old engine forced.
+func Test_recognize_char_class_multibyte_old_engine()
+  let mb = 'α'
+  call assert_equal(mb, matchstr('0' .. mb .. '9', '\%#=1[^0-9]\+'))
+  call assert_equal(mb, matchstr('a' .. mb .. 'Z', '\%#=1[^a-zA-Z0-9_]\+'))
+  " The '_' distinguishes [^a-zA-Z_] (\H) from [^a-zA-Z] (\A).
+  call assert_equal('9' .. mb, matchstr('a9' .. mb .. '_z', '\%#=1[^a-zA-Z_]\+'))
+  call assert_equal('9' .. mb .. '_', matchstr('a9' .. mb .. '_z', '\%#=1[^a-zA-Z]\+'))
+  " The positive classes must not match the multibyte character.
+  call assert_equal('12', matchstr('12' .. mb, '\%#=1[0-9]\+'))
+  call assert_equal('ab', matchstr('ab' .. mb, '\%#=1[a-zA-Z0-9_]\+'))
+endfunc
+
+func Test_regexp_casefold_match_length()
+  CheckFeature multi_byte
+  let save_encoding = &encoding
+  try
+    set encoding=utf-8
+    new
+    let longs = "\u017f"   " LATIN SMALL LETTER LONG S
+    let kelvin = "\u212a"  " KELVIN SIGN
+    for [text, literal] in [
+          \ [longs .. 'a', 'sa'], [kelvin .. 'a', 'ka'],
+          \ ['s' .. longs, 'ss'], ['k' .. kelvin, 'kk'],
+          \ ['sa', longs .. 'a'], ['ka', kelvin .. 'a'],
+          \ ['Sa', 'sa'], ["\u00e9a", "\u00c9a"]]
+      for engine in [1, 2]
+        let pat = '\%#=' .. engine .. '\c' .. literal
+        let context = string([text, literal, engine])
+        call assert_equal([text, 0, strlen(text)], matchstrpos(text, pat),
+              \ context)
+        call assert_equal('X', substitute(text, pat, 'X', ''), context)
+        call assert_equal('X', substitute(text, pat, 'X', 'g'), context)
+        call setline(1, text)
+        execute 's/' .. pat .. '/X/'
+        call assert_equal('X', getline(1), context)
+      endfor
+    endfor
+
+    " The helper also supplies the byte length consumed by backreferences.
+    for engine in [1, 2]
+      let pat = '\%#=' .. engine .. '\c\([sk]\)\1'
+      for text in ['s' .. longs, 'k' .. kelvin, longs .. 's', kelvin .. 'k']
+        call assert_equal([text, 0, strlen(text)], matchstrpos(text, pat),
+              \ string([text, engine]))
+        call assert_equal('X', substitute(text, pat, 'X', ''),
+              \ string([text, engine]))
+      endfor
+    endfor
+  finally
+    bwipe!
+    let &encoding = save_encoding
+  endtry
+endfunc
+
+" A literal followed by "\%C" must match a character followed by composing
+" characters also with 'ignorecase' or "\c": the comparison of the literal in
+" cstrncmp() must not consume the composing characters that follow it in the
+" text, so that they are left for the "\%C" atom to skip (or for the
+" composing check to reject the match when there is no atom).  The NFA
+" engine already behaves this way.
+func Test_composing_after_literal_ignorecase()
+  CheckFeature multi_byte
+  let save_re = &regexpengine
+  let save_ic = &ignorecase
+  let grave = nr2char(0x300)
+  let acute = nr2char(0x301)
+  let text = 'ca' .. grave .. 't'
+  let text2 = 'ca' .. grave .. acute .. 't'
+  try
+    for engine in [0, 1, 2]
+      for ic in [0, 1]
+        execute 'set regexpengine=' .. engine
+        execute 'set ' .. (ic ? '' : 'no') .. 'ignorecase'
+        let ctx = 'engine=' .. engine .. ' ignorecase=' .. ic
+        " a literal followed by "\%C" matches a base character plus its
+        " composing characters, for every engine and 'ignorecase' value
+        call assert_equal(1, match(text, 'a\%C'), ctx)
+        call assert_equal(1, match(text, '\ca\%C'), ctx)
+        " more than one character before "\%C"
+        call assert_equal(0, match(text, 'ca\%Ct'), ctx)
+        " a collection is compared per character, unaffected
+        call assert_equal(1, match(text, '[a]\%C'), ctx)
+        " "\Z" disables composing character matching, unaffected
+        call assert_equal(1, match(text, 'a\Z'), ctx)
+        " the pattern may include the composing character itself
+        call assert_equal(0, match(text, 'ca' .. grave), ctx)
+        " "\%C" inside a capture group
+        call assert_equal(1, match(text, '\(a\%C\)'), ctx)
+        " a case-folded pattern character matches with 'ignorecase' only
+        call assert_equal(ic ? 1 : -1, match(text, 'A\%C'), ctx)
+        " without "\%C" a literal does not match a character followed by a
+        " composing character
+        call assert_equal(-1, match(text, 'a'), ctx)
+        " text with more than one composing character
+        call assert_equal(1, match(text2, 'a\%C'), ctx)
+        call assert_equal(1, match(text2, 'a' .. grave .. '\%C'), ctx)
+        call assert_equal(0, match(text2, 'ca' .. grave .. acute .. 't'), ctx)
+      endfor
+    endfor
+  finally
+    let &regexpengine = save_re
+    let &ignorecase = save_ic
+  endtry
 endfunc
 
 " vim: shiftwidth=2 sts=2 expandtab

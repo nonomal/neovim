@@ -1,6 +1,8 @@
 local n = require('test.functional.testnvim')()
+local t = require('test.testutil')
 local Screen = require('test.functional.ui.screen')
 
+local describe, it, before_each = t.describe, t.it, t.before_each
 local clear = n.clear
 local feed = n.feed
 local fn = n.fn
@@ -11,7 +13,6 @@ describe(':move', function()
   -- oldtest: Test_move_undo()
   it('redraws correctly when undone', function()
     local screen = Screen.new(60, 10)
-    screen:attach()
 
     fn.setline(1, { 'First', 'Second', 'Third', 'Fourth' })
     feed('gg:move +1<CR>')

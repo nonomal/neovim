@@ -2,47 +2,17 @@ local t = require('test.testutil')
 local n = require('test.functional.testnvim')()
 local Screen = require('test.functional.ui.screen')
 
+local describe, it = t.describe, t.it
 local clear = n.clear
 local command = n.command
 local exec = n.exec
-local exec_lua = n.exec_lua
 local expect_exit = n.expect_exit
 local feed = n.feed
 local fn = n.fn
-local api = n.api
 local read_file = t.read_file
-local source = n.source
 local eq = t.eq
 local write_file = t.write_file
 local is_os = t.is_os
-
-local function sizeoflong()
-  if not exec_lua('return pcall(require, "ffi")') then
-    pending('missing LuaJIT FFI')
-  end
-  return exec_lua('return require("ffi").sizeof(require("ffi").typeof("long"))')
-end
-
-describe('Ex command', function()
-  before_each(clear)
-  after_each(function()
-    eq({}, api.nvim_get_vvar('errors'))
-  end)
-
-  it('checks for address line overflow', function()
-    if sizeoflong() < 8 then
-      pending('Skipped: only works with 64 bit long ints')
-    end
-
-    source [[
-      new
-      call setline(1, 'text')
-      call assert_fails('|.44444444444444444444444', 'E1247:')
-      call assert_fails('|.9223372036854775806', 'E1247:')
-      bwipe!
-    ]]
-  end)
-end)
 
 describe(':confirm command dialog', function()
   local screen
@@ -50,7 +20,6 @@ describe(':confirm command dialog', function()
   local function start_new()
     clear()
     screen = Screen.new(75, 20)
-    screen:attach()
   end
 
   -- Test for the :confirm command dialog
@@ -84,7 +53,7 @@ describe(':confirm command dialog', function()
       {6:Save changes to "Xbar"?}                                                    |
       {6:[Y]es, (N)o, Save (A)ll, (D)iscard All, (C)ancel: }^                         |
     ]])
-    expect_exit(1000, feed, 'A')
+    expect_exit(n.load_adjust(1000), feed, 'A')
 
     eq('foo2\n', read_file('Xfoo'))
     eq('bar2\n', read_file('Xbar'))
@@ -114,7 +83,7 @@ describe(':confirm command dialog', function()
       {6:Save changes to "Xbar"?}                                                    |
       {6:[Y]es, (N)o, Save (A)ll, (D)iscard All, (C)ancel: }^                         |
     ]])
-    expect_exit(1000, feed, 'D')
+    expect_exit(n.load_adjust(1000), feed, 'D')
 
     eq('foo2\n', read_file('Xfoo'))
     eq('bar2\n', read_file('Xbar'))
@@ -160,7 +129,7 @@ describe(':confirm command dialog', function()
       {6:Save changes to "Xfoo"?}                                                    |
       {6:[Y]es, (N)o, (C)ancel: }^                                                    |
     ]])
-    expect_exit(1000, feed, 'Y')
+    expect_exit(n.load_adjust(1000), feed, 'Y')
 
     eq('foo4\n', read_file('Xfoo'))
     eq('bar2\n', read_file('Xbar'))
@@ -294,7 +263,7 @@ describe(':confirm command dialog', function()
       fooba^r                                                                     |
       {1:~                                                                          }|*5
                                                                                  |
-                                                               1,6           All |
+                                                               1,6            All|
     ]])
     eq('foo\n', read_file('Xconfirm_write_ro'))
 
@@ -408,7 +377,7 @@ describe(':confirm command dialog', function()
       d                                                                          |
       {1:~                                                                          }|*2
                                                                                  |
-                                                               1,1           All |
+                                                               1,1            All|
     ]])
     eq('a\nb\nc\nd\n', read_file('Xwrite_partial'))
     os.remove('Xwrite_partial')

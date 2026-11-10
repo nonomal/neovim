@@ -1,17 +1,18 @@
 local t = require('test.testutil')
 local n = require('test.functional.testnvim')()
 
+local describe, it, setup = t.describe, t.it, t.setup
 local clear = n.clear
 local api = n.api
 local eq = t.eq
+local pcall_err = t.pcall_err
 local nvim_eval = n.eval
 local nvim_command = n.command
-local exc_exec = n.exc_exec
 local ok = t.ok
 local NIL = vim.NIL
 
 describe('autoload/msgpack.vim', function()
-  before_each(function()
+  setup(function()
     clear { args = { '-u', 'NORC' } }
   end)
 
@@ -58,23 +59,11 @@ describe('autoload/msgpack.vim', function()
       msgpack_eq(1, '"abc\\ndef"', '"abc\\ndef"')
       msgpack_eq(0, '"abc\\ndef"', '"abc\\nghi"')
     end)
-    it('compares binary specials correctly', function()
-      msgpack_eq(1, sp('binary', '["abc\\n", "def"]'), sp('binary', '["abc\\n", "def"]'))
-      msgpack_eq(0, sp('binary', '["abc", "def"]'), sp('binary', '["abc\\n", "def"]'))
-    end)
-    it('compares binary specials with raw binaries correctly', function()
-      msgpack_eq(1, sp('binary', '["abc", "def"]'), '"abc\\ndef"')
-      msgpack_eq(0, sp('binary', '["abc", "def"]'), '"abcdef"')
-    end)
     it('compares string specials correctly', function()
       msgpack_eq(1, sp('string', '["abc\\n", "def"]'), sp('string', '["abc\\n", "def"]'))
       msgpack_eq(0, sp('string', '["abc", "def"]'), sp('string', '["abc\\n", "def"]'))
-    end)
-    it('compares string specials with binary correctly', function()
-      msgpack_eq(0, sp('string', '["abc\\n", "def"]'), sp('binary', '["abc\\n", "def"]'))
-      msgpack_eq(0, sp('string', '["abc", "def"]'), '"abc\\ndef"')
-      msgpack_eq(0, sp('binary', '["abc\\n", "def"]'), sp('string', '["abc\\n", "def"]'))
-      msgpack_eq(0, '"abc\\ndef"', sp('string', '["abc", "def"]'))
+      msgpack_eq(1, sp('string', '["abc", "def"]'), '"abc\\ndef"')
+      msgpack_eq(1, '"abc\\ndef"', sp('string', '["abc", "def"]'))
     end)
     it('compares ext specials correctly', function()
       msgpack_eq(1, sp('ext', '[1, ["", "ac"]]'), sp('ext', '[1, ["", "ac"]]'))
@@ -92,20 +81,16 @@ describe('autoload/msgpack.vim', function()
     end)
     it('compares map specials correctly', function()
       msgpack_eq(1, mapsp(), mapsp())
-      msgpack_eq(1, mapsp(sp('binary', '[""]'), '""'), mapsp(sp('binary', '[""]'), '""'))
       msgpack_eq(
         1,
         mapsp(mapsp('1', '1'), mapsp('1', '1')),
         mapsp(mapsp('1', '1'), mapsp('1', '1'))
       )
       msgpack_eq(0, mapsp(), mapsp('1', '1'))
-      msgpack_eq(0, mapsp(sp('binary', '["a"]'), '""'), mapsp(sp('binary', '[""]'), '""'))
-      msgpack_eq(0, mapsp(sp('binary', '[""]'), '"a"'), mapsp(sp('binary', '[""]'), '""'))
-      msgpack_eq(0, mapsp(sp('binary', '["a"]'), '"a"'), mapsp(sp('binary', '[""]'), '""'))
       msgpack_eq(
         0,
         mapsp(mapsp('1', '1'), mapsp('1', '1')),
-        mapsp(sp('binary', '[""]'), mapsp('1', '1'))
+        mapsp(sp('string', '[""]'), mapsp('1', '1'))
       )
       msgpack_eq(
         0,
@@ -138,7 +123,7 @@ describe('autoload/msgpack.vim', function()
       msgpack_eq(1, mapsp(sp('string', '["1"]'), '1'), '{"1": 1}')
       msgpack_eq(1, mapsp(sp('string', '["1"]'), sp('integer', '[1, 0, 0, 1]')), '{"1": 1}')
       msgpack_eq(0, mapsp(sp('integer', '[1, 0, 0, 1]'), sp('string', '["1"]')), '{1: "1"}')
-      msgpack_eq(0, mapsp('"1"', sp('integer', '[1, 0, 0, 1]')), '{"1": 1}')
+      msgpack_eq(1, mapsp('"1"', sp('integer', '[1, 0, 0, 1]')), '{"1": 1}')
       msgpack_eq(0, mapsp(sp('string', '["1"]'), '1', sp('string', '["2"]'), '2'), '{"1": 1}')
       msgpack_eq(0, mapsp(sp('string', '["1"]'), '1'), '{"1": 1, "2": 2}')
     end)
@@ -290,7 +275,6 @@ describe('autoload/msgpack.vim', function()
 
     it('works for special dictionaries', function()
       type_eq('string', sp('string', '[""]'))
-      type_eq('binary', sp('binary', '[""]'))
       type_eq('ext', sp('ext', '[1, [""]]'))
       type_eq('array', sp('array', '[]'))
       type_eq('map', sp('map', '[]'))
@@ -301,7 +285,7 @@ describe('autoload/msgpack.vim', function()
     end)
 
     it('works for regular values', function()
-      type_eq('binary', '""')
+      type_eq('string', '""')
       type_eq('array', '[]')
       type_eq('map', '{}')
       type_eq('integer', '1')
@@ -319,7 +303,6 @@ describe('autoload/msgpack.vim', function()
 
     it('works for special dictionaries', function()
       sp_type_eq('string', sp('string', '[""]'))
-      sp_type_eq('binary', sp('binary', '[""]'))
       sp_type_eq('ext', sp('ext', '[1, [""]]'))
       sp_type_eq('array', sp('array', '[]'))
       sp_type_eq('map', sp('map', '[]'))
@@ -347,12 +330,9 @@ describe('autoload/msgpack.vim', function()
     end
 
     it('works for special dictionaries', function()
-      string_eq('=""', sp('string', '[""]'))
-      string_eq('="\\n"', sp('string', '["", ""]'))
-      string_eq('="ab\\0c\\nde"', sp('string', '["ab\\nc", "de"]'))
-      string_eq('""', sp('binary', '[""]'))
-      string_eq('"\\n"', sp('binary', '["", ""]'))
-      string_eq('"ab\\0c\\nde"', sp('binary', '["ab\\nc", "de"]'))
+      string_eq('""', sp('string', '[""]'))
+      string_eq('"\\n"', sp('string', '["", ""]'))
+      string_eq('"ab\\0c\\nde"', sp('string', '["ab\\nc", "de"]'))
       string_eq('+(2)""', sp('ext', '[2, [""]]'))
       string_eq('+(2)"\\n"', sp('ext', '[2, ["", ""]]'))
       string_eq('+(2)"ab\\0c\\nde"', sp('ext', '[2, ["ab\\nc", "de"]]'))
@@ -397,8 +377,8 @@ describe('autoload/msgpack.vim', function()
       string_eq('[]', '[]')
       string_eq('[[[{}]]]', '[[[{}]]]')
       string_eq('{}', '{}')
-      string_eq('{="2": 10}', '{2: 10}')
-      string_eq('{="2": [{}]}', '{2: [{}]}')
+      string_eq('{"2": 10}', '{2: 10}')
+      string_eq('{"2": [{}]}', '{2: [{}]}')
       string_eq('1', '1')
       string_eq('0.0', '0.0')
       string_eq('inf', '(1.0/0.0)')
@@ -422,7 +402,6 @@ describe('autoload/msgpack.vim', function()
       nvim_command('let spflt = ' .. sp('float', '1.0'))
       nvim_command('let spext = ' .. sp('ext', '[2, ["abc", "def"]]'))
       nvim_command('let spstr = ' .. sp('string', '["abc", "def"]'))
-      nvim_command('let spbin = ' .. sp('binary', '["abc", "def"]'))
       nvim_command('let spbln = ' .. sp('boolean', '0'))
       nvim_command('let spnil = ' .. sp('nil', '0'))
 
@@ -432,7 +411,6 @@ describe('autoload/msgpack.vim', function()
       nvim_command('let spflt2 = msgpack#deepcopy(spflt)')
       nvim_command('let spext2 = msgpack#deepcopy(spext)')
       nvim_command('let spstr2 = msgpack#deepcopy(spstr)')
-      nvim_command('let spbin2 = msgpack#deepcopy(spbin)')
       nvim_command('let spbln2 = msgpack#deepcopy(spbln)')
       nvim_command('let spnil2 = msgpack#deepcopy(spnil)')
 
@@ -442,7 +420,6 @@ describe('autoload/msgpack.vim', function()
       eq('float', nvim_eval('msgpack#type(spflt2)'))
       eq('ext', nvim_eval('msgpack#type(spext2)'))
       eq('string', nvim_eval('msgpack#type(spstr2)'))
-      eq('binary', nvim_eval('msgpack#type(spbin2)'))
       eq('boolean', nvim_eval('msgpack#type(spbln2)'))
       eq('nil', nvim_eval('msgpack#type(spnil2)'))
 
@@ -457,7 +434,6 @@ describe('autoload/msgpack.vim', function()
       nvim_command('let spext._VAL[0] = 3')
       nvim_command('let spext._VAL[1][0] = "gh"')
       nvim_command('let spstr._VAL[0] = "gh"')
-      nvim_command('let spbin._VAL[0] = "gh"')
       nvim_command('let spbln._VAL = 1')
       nvim_command('let spnil._VAL = 1')
 
@@ -467,7 +443,6 @@ describe('autoload/msgpack.vim', function()
       eq({ _TYPE = {}, _VAL = 1.0 }, nvim_eval('spflt2'))
       eq({ _TYPE = {}, _VAL = { 2, { 'abc', 'def' } } }, nvim_eval('spext2'))
       eq({ _TYPE = {}, _VAL = { 'abc', 'def' } }, nvim_eval('spstr2'))
-      eq({ _TYPE = {}, _VAL = { 'abc', 'def' } }, nvim_eval('spbin2'))
       eq({ _TYPE = {}, _VAL = 0 }, nvim_eval('spbln2'))
       eq({ _TYPE = {}, _VAL = 0 }, nvim_eval('spnil2'))
 
@@ -477,7 +452,6 @@ describe('autoload/msgpack.vim', function()
       nvim_command('let spflt._TYPE = []')
       nvim_command('let spext._TYPE = []')
       nvim_command('let spstr._TYPE = []')
-      nvim_command('let spbin._TYPE = []')
       nvim_command('let spbln._TYPE = []')
       nvim_command('let spnil._TYPE = []')
 
@@ -487,7 +461,6 @@ describe('autoload/msgpack.vim', function()
       eq('float', nvim_eval('msgpack#special_type(spflt2)'))
       eq('ext', nvim_eval('msgpack#special_type(spext2)'))
       eq('string', nvim_eval('msgpack#special_type(spstr2)'))
-      eq('binary', nvim_eval('msgpack#special_type(spbin2)'))
       eq('boolean', nvim_eval('msgpack#special_type(spbln2)'))
       eq('nil', nvim_eval('msgpack#special_type(spnil2)'))
     end)
@@ -509,7 +482,7 @@ describe('autoload/msgpack.vim', function()
       eq('map', nvim_eval('msgpack#type(map2)'))
       eq('integer', nvim_eval('msgpack#type(int2)'))
       eq('float', nvim_eval('msgpack#type(flt2)'))
-      eq('binary', nvim_eval('msgpack#type(bin2)'))
+      eq('string', nvim_eval('msgpack#type(bin2)'))
 
       nvim_command('call add(arr, 0)')
       nvim_command('call add(arr[0], 0)')
@@ -565,21 +538,6 @@ describe('autoload/msgpack.vim', function()
       end
       nvim_command('unlet g:__val')
     end
-
-    it('correctly loads binary strings', function()
-      eval_eq('binary', { 'abcdef' }, '"abcdef"')
-      eval_eq('binary', { 'abc', 'def' }, '"abc\\ndef"')
-      eval_eq('binary', { 'abc\ndef' }, '"abc\\0def"')
-      eval_eq('binary', { '\nabc\ndef\n' }, '"\\0abc\\0def\\0"')
-      eval_eq('binary', { 'abc\n\n\ndef' }, '"abc\\0\\0\\0def"')
-      eval_eq('binary', { 'abc\n', '\ndef' }, '"abc\\0\\n\\0def"')
-      eval_eq('binary', { 'abc', '', '', 'def' }, '"abc\\n\\n\\ndef"')
-      eval_eq('binary', { 'abc', '', '', 'def', '' }, '"abc\\n\\n\\ndef\\n"')
-      eval_eq('binary', { '', 'abc', '', '', 'def' }, '"\\nabc\\n\\n\\ndef"')
-      eval_eq('binary', { '' }, '""')
-      eval_eq('binary', { '"' }, '"\\""')
-      eval_eq('binary', { 'py3 print(sys.version_info)' }, '"py3 print(sys.version_info)"')
-    end)
 
     it('correctly loads strings', function()
       eval_eq('string', { 'abcdef' }, '="abcdef"')
@@ -717,39 +675,85 @@ describe('autoload/msgpack.vim', function()
     end)
 
     it('errors out when needed', function()
-      eq('empty:Parsed string is empty', exc_exec('call msgpack#eval("", {})'))
-      eq('unknown:Invalid non-space character: ^', exc_exec('call msgpack#eval("^", {})'))
-      eq(
-        "char-invalid:Invalid integer character literal format: ''",
-        exc_exec('call msgpack#eval("\'\'", {})')
+      t.matches(
+        'empty:Parsed string is empty',
+        pcall_err(nvim_command, 'call msgpack#eval("", {})')
       )
-      eq(
-        "char-invalid:Invalid integer character literal format: 'ab'",
-        exc_exec('call msgpack#eval("\'ab\'", {})')
+      t.matches(
+        'unknown:Invalid non%-space character: %^',
+        pcall_err(nvim_command, 'call msgpack#eval("^", {})')
       )
-      eq(
-        "char-invalid:Invalid integer character literal format: '",
-        exc_exec('call msgpack#eval("\'", {})')
+      t.matches(
+        "char%-invalid:Invalid integer character literal format: ''",
+        pcall_err(nvim_command, 'call msgpack#eval("\'\'", {})')
       )
-      eq('"-invalid:Invalid string: "', exc_exec('call msgpack#eval("\\"", {})'))
-      eq('"-invalid:Invalid string: ="', exc_exec('call msgpack#eval("=\\"", {})'))
-      eq('"-invalid:Invalid string: +(0)"', exc_exec('call msgpack#eval("+(0)\\"", {})'))
-      eq(
-        '0.-nodigits:Decimal dot must be followed by digit(s): .e1',
-        exc_exec('call msgpack#eval("0.e1", {})')
+      t.matches(
+        "char%-invalid:Invalid integer character literal format: 'ab'",
+        pcall_err(nvim_command, 'call msgpack#eval("\'ab\'", {})')
       )
-      eq(
-        '0x-long:Must have at most 16 hex digits: FEDCBA98765432100',
-        exc_exec('call msgpack#eval("0xFEDCBA98765432100", {})')
+      t.matches(
+        "char%-invalid:Invalid integer character literal format: '",
+        pcall_err(nvim_command, 'call msgpack#eval("\'", {})')
       )
-      eq('0x-empty:Must have number after 0x: ', exc_exec('call msgpack#eval("0x", {})'))
-      eq('name-unknown:Unknown name FOO: FOO', exc_exec('call msgpack#eval("FOO", {})'))
+      t.matches(
+        '"%-invalid:Invalid string: "',
+        pcall_err(nvim_command, 'call msgpack#eval("\\"", {})')
+      )
+      t.matches(
+        '"%-invalid:Invalid string: ="',
+        pcall_err(nvim_command, 'call msgpack#eval("=\\"", {})')
+      )
+      t.matches(
+        '"%-invalid:Invalid string: %+%(0%)"',
+        pcall_err(nvim_command, 'call msgpack#eval("+(0)\\"", {})')
+      )
+      t.matches(
+        '0%.%-nodigits:Decimal dot must be followed by digit%(s%): %.e1',
+        pcall_err(nvim_command, 'call msgpack#eval("0.e1", {})')
+      )
+      t.matches(
+        '0x%-long:Must have at most 16 hex digits: FEDCBA98765432100',
+        pcall_err(nvim_command, 'call msgpack#eval("0xFEDCBA98765432100", {})')
+      )
+      t.matches(
+        '0x%-empty:Must have number after 0x: ',
+        pcall_err(nvim_command, 'call msgpack#eval("0x", {})')
+      )
+      t.matches(
+        'name%-unknown:Unknown name FOO: FOO',
+        pcall_err(nvim_command, 'call msgpack#eval("FOO", {})')
+      )
 
-      eq(
-        'name-unknown:Unknown name py3: py3 print(sys.version_info)',
-        exc_exec('call msgpack#eval("py3 print(sys.version_info)", {})')
+      t.matches(
+        'name%-unknown:Unknown name py3: py3 print%(sys%.version_info%)',
+        pcall_err(nvim_command, 'call msgpack#eval("py3 print(sys.version_info)", {})')
       )
-      eq('name-unknown:Unknown name o: o', exc_exec('call msgpack#eval("-info", {})'))
+      t.matches(
+        'name%-unknown:Unknown name o: o',
+        pcall_err(nvim_command, 'call msgpack#eval("-info", {})')
+      )
+    end)
+  end)
+end)
+
+describe('autoload/msgpack.vim in an eastern timezone', function()
+  setup(function()
+    clear({
+      -- msgpack#strptime() prefers a Python implementation and only falls back to the
+      -- Vimscript one, which is the one under test, when no provider answers.
+      args = { '-u', 'NORC', '--cmd', 'let g:loaded_python3_provider = 0' },
+      -- POSIX TZ signs are inverted: GMT-14 is UTC+14, the easternmost offset.
+      env = { TZ = 'GMT-14' },
+    })
+  end)
+
+  describe('function msgpack#strptime', function()
+    it('works east of UTC+12 #7625', function()
+      eq(0, nvim_eval('has("python3")'))
+      for _, v in ipairs({ 0, 10, 100000, 204, 1000000000 }) do
+        local time = nvim_eval(('strftime("%%Y-%%m-%%dT%%H:%%M:%%S", %d)'):format(v))
+        eq(v, nvim_eval(('msgpack#strptime("%%Y-%%m-%%dT%%H:%%M:%%S", "%s")'):format(time)))
+      end
     end)
   end)
 end)

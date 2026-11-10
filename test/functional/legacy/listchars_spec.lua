@@ -1,8 +1,10 @@
 -- Tests for 'listchars' display with 'list' and :list.
 
 local n = require('test.functional.testnvim')()
+local t = require('test.testutil')
 local Screen = require('test.functional.ui.screen')
 
+local describe, it, before_each = t.describe, t.it, t.before_each
 local feed, insert, exec = n.feed, n.insert, n.exec
 local clear, feed_command, expect = n.clear, n.feed_command, n.expect
 
@@ -62,12 +64,12 @@ describe("'listchars'", function()
       ..bb>---<<$
       ...cccc><$
       dd........ee<<>-$
-      <$
+      $
       >-------aa>-----$
       ..bb>---..$
       ...cccc>.$
       dd........ee..>-$
-      .$]])
+      $]])
   end)
 
   it('works with :list', function()
@@ -103,7 +105,6 @@ describe("'listchars'", function()
 
   it('"exceeds" character does not appear in foldcolumn vim-patch:8.2.3121', function()
     local screen = Screen.new(60, 10)
-    screen:attach()
     exec([[
       call setline(1, ['aaa', '', 'a', 'aaaaaa'])
       vsplit

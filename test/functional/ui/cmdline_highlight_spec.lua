@@ -2,6 +2,7 @@ local t = require('test.testutil')
 local n = require('test.functional.testnvim')()
 local Screen = require('test.functional.ui.screen')
 
+local describe, it, before_each = t.describe, t.it, t.before_each
 local eq = t.eq
 local feed = n.feed
 local clear = n.clear
@@ -24,7 +25,6 @@ end
 before_each(function()
   clear()
   screen = Screen.new(40, 8)
-  screen:attach()
   source([[
     highlight RBP1 guibg=Red
     highlight RBP2 guibg=Yellow
@@ -158,7 +158,7 @@ end)
 
 local function set_color_cb(funcname, callback_return, id)
   api.nvim_set_var('id', id or '')
-  if id and id ~= '' and fn.exists('*' .. funcname .. 'N') then
+  if id and id ~= '' and fn.exists('*' .. funcname .. 'N') == 1 then
     command(('let g:Nvim_color_input%s = {cmdline -> %sN(%s, cmdline)}'):format(id, funcname, id))
     if callback_return then
       api.nvim_set_var('callback_return' .. id, callback_return)
@@ -478,7 +478,7 @@ describe('Command-line coloring', function()
       :++^                                     |
     ]])
   end)
-  it('does not error out when called from a errorred out cycle', function()
+  it('does not error out when called from a errored out cycle', function()
     set_color_cb('ReturningGlobal', { { 0, 1, 'Normal' } })
     feed(dedent([[
       :set regexpengine=2
@@ -629,7 +629,7 @@ describe('Ex commands coloring', function()
     local msg = 'E5405: Chunk 0 start 10 splits multibyte character'
     eq('\n' .. msg, fn.execute('messages'))
   end)
-  it('does not error out when called from a errorred out cycle', function()
+  it('does not error out when called from a errored out cycle', function()
     -- Apparently when there is a cycle in which one of the commands errors out
     -- this error may be caught by color_cmdline before it is presented to the
     -- user.
@@ -687,7 +687,7 @@ describe('Ex commands coloring', function()
       {EOB:~                                       }|*2
       {MSEP:                                        }|
       :#                                      |
-      {ERR:Error detected while processing :}       |
+      {ERR:Error in :}                              |
       {ERR:E605: Exception not caught: 42}          |
       :#^                                      |
     ]])
@@ -697,16 +697,13 @@ describe('Ex commands coloring', function()
       {EOB:~                                       }|
       {MSEP:                                        }|
       :#                                      |
-      {ERR:Error detected while processing :}       |
+      {ERR:Error in :}                              |
       {ERR:E605: Exception not caught: 42}          |
       {ERR:E749: Empty buffer}                      |
       {PE:Press ENTER or type command to continue}^ |
     ]])
     feed('<CR>')
-    eq(
-      'Error detected while processing :\nE605: Exception not caught: 42\nE749: Empty buffer',
-      exec_capture('messages')
-    )
+    eq('Error in :\nE605: Exception not caught: 42\nE749: Empty buffer', exec_capture('messages'))
   end)
   it('errors out when failing to get callback', function()
     api.nvim_set_var('Nvim_color_cmdline', 42)

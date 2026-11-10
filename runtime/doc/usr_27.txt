@@ -1,13 +1,17 @@
 *usr_27.txt*	Nvim
 
-		     VIM USER MANUAL - by Bram Moolenaar
 
-			 Search commands and patterns
+		     VIM USER MANUAL	by Bram Moolenaar
+
+
+==============================================================================
+Search commands and patterns
 
 
 In chapter 3 a few simple search patterns were mentioned |03.9|.  Vim can do
 much more complex searches.  This chapter explains the most often used ones.
 A detailed specification can be found here: |pattern|
+Options affecting how search is done can be found here: |search-options|
 
 |27.1|	Ignoring case
 |27.2|	Wrapping around the file end
@@ -314,7 +318,7 @@ This matches "axb" in "axbxb".  If this pattern would be used: >
 
 	/a.*b
 
-It would try to match as many characters as possible with ".*", thus it
+It would try to match as many characters as possible with `.*`, thus it
 matches "axbxb" as a whole.
 
 ==============================================================================
@@ -409,8 +413,8 @@ few more of these:
 	\D	non-digit		[^0-9]
 	\x	hex digit		[0-9a-fA-F]
 	\X	non-hex digit		[^0-9a-fA-F]
-	\s	white space		[ 	]     (<Tab> and <Space>)
-	\S	non-white characters	[^ 	]     (not <Tab> and <Space>)
+	\s	white space		[ \t]     (<Tab> and <Space>)
+	\S	non-white characters	[^ \t]     (not <Tab> and <Space>)
 	\l	lowercase alpha		[a-z]
 	\L	non-lowercase alpha	[^a-z]
 	\u	uppercase alpha		[A-Z]
@@ -461,7 +465,7 @@ The character classes are:
 	\I	like \i, excluding digits
 	\k	keyword characters		'iskeyword'
 	\K	like \k, excluding digits
-	\p	printable characters		'isprint'
+	\p	printable characters
 	\P	like \p, excluding digits
 	\f	file name characters		'isfname'
 	\F	like \f, excluding digits
@@ -478,7 +482,7 @@ break.
 
 This will match at a line that ends in "one" and the next line starts with
 "two".  To match "one two" as well, you need to match a space or a line
-break.  The item to use for it is "\_s": >
+break.  The item to use for it is `\_s`: >
 
 	/one\_stwo
 
@@ -498,10 +502,10 @@ Many other items can be made to match a line break by prepending "\_".  For
 example: "\_." matches any character or a line break.
 
 	Note:
-	"\_.*" matches everything until the end of the file.  Be careful with
+	`\_.*` matches everything until the end of the file.  Be careful with
 	this, it can make a search command very slow.
 
-Another example is "\_[]", a character range that includes a line break: >
+Another example is `\_[]`, a character range that includes a line break: >
 
 	/"\_[^"]*"
 
@@ -560,4 +564,6 @@ and "\w" for "[0-9A-Za-z_]".
 
 Next chapter: |usr_28.txt|  Folding
 
-Copyright: see |manual-copyright|  vim:tw=78:ts=8:noet:ft=help:norl:
+Copyright: see |manual-copyright|
+
+vim:tw=78:ts=8:noet:ft=help:norl:

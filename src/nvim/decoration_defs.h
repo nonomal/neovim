@@ -10,7 +10,7 @@
 
 typedef struct {
   char *text;
-  int hl_id;
+  int hl_id;  ///< -1 if not specified
 } VirtTextChunk;
 
 typedef kvec_t(VirtTextChunk) VirtText;
@@ -19,15 +19,29 @@ typedef kvec_t(VirtTextChunk) VirtText;
 /// Keep in sync with virt_text_pos_str[] in decoration.h
 typedef enum {
   kVPosEndOfLine,
-  kVPosOverlay,
-  kVPosWinCol,
-  kVPosRightAlign,
+  kVPosEndOfLineRightAlign,
   kVPosInline,
+  kVPosOverlay,
+  kVPosRightAlign,
+  kVPosWinCol,
 } VirtTextPos;
 
-typedef kvec_t(struct virt_line { VirtText line; bool left_col; }) VirtLines;
+/// Flags for virtual lines
+enum {
+  kVLLeftcol = 1,  ///< Start at left window edge, ignoring number column, etc.
+};
+
+typedef enum {
+  kVLOverflowTrunc,    ///< Truncate with 'nowrap'
+  kVLOverflowScroll,   ///< Scroll horizontally with 'nowrap'
+  kVLOverflowWrap,     ///< Wrap onto extra rows
+  kVLOverflowAuto,     ///< Scroll with 'nowrap'; wrap with 'wrap'
+} VirtLineOverflow;
+
+typedef kvec_t(struct virt_line { VirtText line; int flags; VirtLineOverflow overflow; }) VirtLines;
 
 typedef uint16_t DecorPriority;
+typedef uint32_t DecorPriorityInternal;
 #define DECOR_PRIORITY_BASE 0x1000
 
 /// Keep in sync with hl_mode_str[] in decoration.h
@@ -46,6 +60,9 @@ enum {
   kSHSpellOn = 16,
   kSHSpellOff = 32,
   kSHConceal = 64,
+  kSHConcealLines = 128,
+  kSHConcealOff = 256,
+  kSHConcealCont = 512,  ///< Continuation of a conceal range: no replacement at its start.
 };
 
 typedef struct {
@@ -55,7 +72,8 @@ typedef struct {
   schar_T conceal_char;
 } DecorHighlightInline;
 
-#define DECOR_HIGHLIGHT_INLINE_INIT { 0, DECOR_PRIORITY_BASE, 0,  0 }
+#define DECOR_HIGHLIGHT_INLINE_INIT { 0, DECOR_PRIORITY_BASE, 0, 0 }
+
 typedef struct {
   uint16_t flags;
   DecorPriority priority;
@@ -135,15 +153,29 @@ typedef struct {
     kDecorProviderDisabled = 4,
   } state;
 
+  int win_skip_row;
+  int win_skip_col;
+
   LuaRef redraw_start;
   LuaRef redraw_buf;
   LuaRef redraw_win;
   LuaRef redraw_line;
+  LuaRef redraw_range;
   LuaRef redraw_end;
   LuaRef hl_def;
   LuaRef spell_nav;
+  LuaRef conceal_line;
+  LuaRef conceal;
   int hl_valid;
   bool hl_cached;
 
   uint8_t error_count;
 } DecorProvider;
+
+#define DECORATION_PROVIDER_INIT(ns) (DecorProvider) \
+  { .ns_id = (ns), .state = kDecorProviderDisabled, \
+    .redraw_start = LUA_NOREF, .redraw_buf = LUA_NOREF, \
+    .redraw_win = LUA_NOREF, .redraw_line = LUA_NOREF, \
+    .redraw_range = LUA_NOREF, .redraw_end = LUA_NOREF, \
+    .hl_def = LUA_NOREF, .spell_nav = LUA_NOREF, .conceal_line = LUA_NOREF, \
+    .conceal = LUA_NOREF, .hl_valid = -1 }

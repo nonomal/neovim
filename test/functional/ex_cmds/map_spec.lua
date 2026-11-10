@@ -2,6 +2,7 @@ local t = require('test.testutil')
 local n = require('test.functional.testnvim')()
 local Screen = require('test.functional.ui.screen')
 
+local describe, it, before_each = t.describe, t.it, t.before_each
 local eq = t.eq
 local exec = n.exec
 local exec_capture = n.exec_capture
@@ -103,7 +104,6 @@ describe('Screen', function()
   before_each(function()
     clear()
     screen = Screen.new(20, 5)
-    screen:attach()
   end)
 
   it('cursor is restored after :map <expr> which calls input()', function()
@@ -194,7 +194,7 @@ describe('Screen', function()
     screen:expect([[
                                               |
       {3:                                        }|
-      {9:Error detected while processing :}       |
+      {9:Error in :}                              |
       {9:E605: Exception not caught: 42}          |
       {6:Press ENTER or type command to continue}^ |
     ]])
@@ -219,7 +219,7 @@ describe('Screen', function()
     screen:expect([[
       {3:                                        }|
       :echo "foo                              |
-      {9:Error detected while processing :}       |
+      {9:Error in :}                              |
       {9:E605: Exception not caught: 42}          |
       :echo "foo^                              |
     ]])
@@ -227,14 +227,14 @@ describe('Screen', function()
     screen:expect([[
       {3:                                        }|
       :echo "foo                              |
-      {9:Error detected while processing :}       |
+      {9:Error in :}                              |
       {9:E605: Exception not caught: 42}          |
       :echo "foo"^                             |
     ]])
     feed('\n')
     screen:expect([[
       :echo "foo                              |
-      {9:Error detected while processing :}       |
+      {9:Error in :}                              |
       {9:E605: Exception not caught: 42}          |
       foo                                     |
       {6:Press ENTER or type command to continue}^ |

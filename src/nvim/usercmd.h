@@ -22,6 +22,7 @@ typedef struct {
   LuaRef uc_compl_luaref;    ///< Reference to Lua completion function
   LuaRef uc_preview_luaref;  ///< Reference to Lua preview function
   LuaRef uc_luaref;          ///< Reference to Lua function
+  char *uc_desc;             ///< Command description
 } ucmd_T;
 
 enum { UC_BUFFER = 1, };  ///< -buffer: local to current buffer
@@ -31,6 +32,4 @@ extern garray_T ucmds;
 #define USER_CMD(i) (&((ucmd_T *)(ucmds.ga_data))[i])
 #define USER_CMD_GA(gap, i) (&((ucmd_T *)((gap)->ga_data))[i])
 
-#ifdef INCLUDE_GENERATED_DECLARATIONS
-# include "usercmd.h.generated.h"
-#endif
+#include "usercmd.h.generated.h"

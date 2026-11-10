@@ -643,8 +643,8 @@ msgstr " Кориснички дефинисано довршавање (^U^N^P)
 msgid " Omni completion (^O^N^P)"
 msgstr " Omni довршавање (^O^N^P)"
 
-msgid " Spelling suggestion (s^N^P)"
-msgstr " Правописни предлог (s^N^P)"
+msgid " Spelling suggestion (^S^N^P)"
+msgstr " Правописни предлог (^S^N^P)"
 
 msgid " Keyword Local completion (^N^P)"
 msgstr " Довршавање локалне кључне речи (^N^P)"
@@ -1201,8 +1201,8 @@ msgid "E146: Regular expressions can't be delimited by letters"
 msgstr "E146: Регуларни изрази не могу да се раздвајају словима"
 
 #, c-format
-msgid "replace with %s (y/n/a/q/l/^E/^Y)?"
-msgstr "заменити са %s (y/n/a/q/l/^E/^Y)?"
+msgid "replace with %s? (y)es/(n)o/(a)ll/(q)uit/(l)ast/scroll up(^E)/down(^Y)"
+msgstr "заменити са %s? (y)es/(n)o/(a)ll/(q)uit/(l)ast/scroll up(^E)/down(^Y)"
 
 msgid "(Interrupted) "
 msgstr "(Прекинуто)"
@@ -1246,16 +1246,16 @@ msgid "E478: Don't panic!"
 msgstr "E478: Не паничите!"
 
 #, c-format
-msgid "E661: Sorry, no '%s' help for %s"
-msgstr "E661: Жао нам је, нема '%s' помоћи за %s"
+msgid "E661: No '%s' help for %s"
+msgstr "E661: Нема '%s' помоћи за %s"
 
 #, c-format
-msgid "E149: Sorry, no help for %s"
-msgstr "E149: Жао нам је, нема помоћи за %s"
+msgid "E149: No help for %s"
+msgstr "E149: Нема помоћи за %s"
 
 #, c-format
-msgid "Sorry, help file \"%s\" not found"
-msgstr "Жао нам је, датотека помоћи \"%s\" није пронађена"
+msgid "Help file \"%s\" not found"
+msgstr "Датотека помоћи \"%s\" није пронађена"
 
 #, c-format
 msgid "E151: No match: %s"
@@ -3002,8 +3002,8 @@ msgstr " Кориснички дефинисано довршавање (^U^N^P)
 msgid " Omni completion (^O^N^P)"
 msgstr " Omni довршавање (^O^N^P)"
 
-msgid " Spelling suggestion (s^N^P)"
-msgstr " Правописни предлог (s^N^P)"
+msgid " Spelling suggestion (^S^N^P)"
+msgstr " Правописни предлог (^S^N^P)"
 
 msgid " Keyword Local completion (^N^P)"
 msgstr " Довршавање локалне кључне речи (^N^P)"
@@ -4021,12 +4021,8 @@ msgstr "E773: Symlink петља за \"%s\""
 msgid "E325: ATTENTION"
 msgstr "E325: ПАЖЊА"
 
-msgid ""
-"\n"
-"Found a swap file by the name \""
-msgstr ""
-"\n"
-"Пронађена је swap датотека под именом \""
+msgid "Found a swap file by the name \""
+msgstr "Пронађена је swap датотека под именом \""
 
 msgid "While opening file \""
 msgstr "Док се отварала датотекa \""
@@ -4048,8 +4044,8 @@ msgstr ""
 msgid "(2) An edit session for this file crashed.\n"
 msgstr "(2) Сесија уређивања ове датотеке се срушила.\n"
 
-msgid "    If this is the case, use \":recover\" or \"vim -r "
-msgstr "    Ако је ово случај, користите \":recover\" или \"vim -r "
+msgid "    If this is the case, use \":recover\" or \"nvim -r "
+msgstr "    Ако је ово случај, користите \":recover\" или \"nvim -r "
 
 msgid ""
 "\"\n"
@@ -4737,12 +4733,8 @@ msgstr ""
 "\n"
 "Командно окружење sh не може да се изврши\n"
 
-msgid ""
-"\n"
-"shell returned "
-msgstr ""
-"\n"
-"командно окружење је вратило "
+msgid "shell returned "
+msgstr "командно окружење је вратило "
 
 msgid ""
 "\n"
@@ -6816,10 +6808,6 @@ msgstr "E471: Потребан је аргумент"
 
 msgid "E10: \\ should be followed by /, ? or &"
 msgstr "E10: Иза \\ треба да је /, ? или &"
-
-msgid "E11: Invalid in command-line window; <CR> executes, CTRL-C quits"
-msgstr ""
-"E11: Неважеће у прозору командне линије; <CR> извршава, CTRL-C отказује"
 
 msgid "E12: Command not allowed from exrc/vimrc in current dir or tag search"
 msgstr ""

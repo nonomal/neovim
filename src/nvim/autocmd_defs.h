@@ -7,24 +7,7 @@
 #include "nvim/buffer_defs.h"
 #include "nvim/ex_cmds_defs.h"
 
-#ifdef INCLUDE_GENERATED_DECLARATIONS
-# include "auevents_enum.generated.h"
-#endif
-
-/// Struct to save values in before executing autocommands for a buffer that is
-/// not the current buffer.
-typedef struct {
-  int use_aucmd_win_idx;          ///< index in aucmd_win[] if >= 0
-  handle_T save_curwin_handle;    ///< ID of saved curwin
-  handle_T new_curwin_handle;     ///< ID of new curwin
-  handle_T save_prevwin_handle;   ///< ID of saved prevwin
-  bufref_T new_curbuf;            ///< new curbuf
-  char *tp_localdir;              ///< saved value of tp_localdir
-  char *globaldir;                ///< saved value of globaldir
-  bool save_VIsual_active;        ///< saved VIsual_active
-  int save_State;                 ///< saved State
-  int save_prompt_insert;         ///< saved b_prompt_insert
-} aco_save_T;
+#include "auevents_enum.generated.h"
 
 typedef struct {
   size_t refcount;          ///< Reference count (freed when reaches zero)
@@ -37,10 +20,11 @@ typedef struct {
 } AutoPat;
 
 typedef struct {
-  AucmdExecutable exec;     ///< Command or callback function
   AutoPat *pat;             ///< Pattern reference (NULL when autocmd was removed)
   int64_t id;               ///< ID used for uniquely tracking an autocmd
   char *desc;               ///< Description for the autocmd
+  char *handler_cmd;        ///< Handler Ex command (NULL if handler is a function).
+  Callback handler_fn;      ///< Handler callback (ignored if `handler_cmd` is not NULL).
   sctx_T script_ctx;        ///< Script context where it is defined
   bool once;                ///< "One shot": removed after execution
   bool nested;              ///< If autocommands nest here
@@ -52,6 +36,7 @@ struct AutoPatCmd_S {
   AutoPat *lastpat;         ///< Last matched AutoPat
   size_t auidx;             ///< Current autocmd index to execute
   size_t ausize;            ///< Saved AutoCmd vector size
+  char *afile_orig;         ///< Unexpanded <afile>
   char *fname;              ///< Fname to match with
   char *sfname;             ///< Sfname to match with
   char *tail;               ///< Tail of fname
@@ -64,3 +49,13 @@ struct AutoPatCmd_S {
 };
 
 typedef kvec_t(AutoCmd) AutoCmdVec;
+
+typedef struct {
+  event_T event;
+  char *fname;
+  char *fname_io;
+  Buffer buf;
+  int group;
+  exarg_T *eap;
+  Object *data;
+} AutoCmdEvent;  // Used for "deferred" events, but can represent any event.

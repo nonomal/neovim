@@ -110,6 +110,7 @@
   "cnext"
   "cprevious"
   "cNext"
+  "tab"
   "vertical"
   "leftabove"
   "aboveleft"
@@ -126,6 +127,8 @@
   "view"
   "eval"
   "sign"
+  "abort"
+  "substitute"
 ] @keyword
 
 (map_statement
@@ -251,6 +254,9 @@
 (heredoc
   (parameter) @keyword)
 
+(script
+  (parameter) @keyword)
+
 [
   (marker_definition)
   (endmarker)
@@ -277,8 +283,6 @@
   "/"
   "%"
   ".."
-  "is"
-  "isnot"
   "=="
   "!="
   ">"
@@ -288,6 +292,7 @@
   "=~"
   "!~"
   "="
+  "^="
   "+="
   "-="
   "*="
@@ -297,8 +302,14 @@
   "..="
   "<<"
   "=<<"
+  "->"
   (match_case)
 ] @operator
+
+[
+  "is"
+  "isnot"
+] @keyword.operator
 
 ; Some characters have different meanings based on the context
 (unary_operation
@@ -306,6 +317,9 @@
 
 (binary_operation
   "." @operator)
+
+(lua_statement
+  "=" @keyword)
 
 ; Punctuation
 [

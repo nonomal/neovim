@@ -3,6 +3,7 @@ local t = require('test.testutil')
 local n = require('test.functional.testnvim')()
 local Screen = require('test.functional.ui.screen')
 
+local describe, it, before_each, after_each = t.describe, t.it, t.before_each, t.after_each
 local eq = t.eq
 local NIL = vim.NIL
 local eval = n.eval
@@ -16,7 +17,6 @@ local fn = n.fn
 local source = n.source
 local dedent = t.dedent
 local command = n.command
-local exc_exec = n.exc_exec
 local pcall_err = t.pcall_err
 local write_file = t.write_file
 local remove_trace = t.remove_trace
@@ -59,22 +59,36 @@ describe(':lua', function()
   it('throws catchable errors', function()
     eq('Vim(lua):E471: Argument required', pcall_err(command, 'lua'))
     eq(
-      [[Vim(lua):E5107: Error loading lua [string ":lua"]:0: unexpected symbol near ')']],
+      [[Vim(lua):E5107: Lua: [string ":lua"]:0: unexpected symbol near ')']],
       pcall_err(command, 'lua ()')
     )
     eq(
-      [[Vim(lua):E5108: Error executing lua [string ":lua"]:1: TEST]],
-      remove_trace(exc_exec('lua error("TEST")'))
+      [[Vim(lua):E5108: Lua: [string ":lua"]:0: TEST]],
+      remove_trace(pcall_err(command, 'lua error("TEST")'))
     )
     eq(
-      [[Vim(lua):E5108: Error executing lua [string ":lua"]:1: Invalid buffer id: -10]],
-      remove_trace(exc_exec('lua vim.api.nvim_buf_set_lines(-10, 1, 1, false, {"TEST"})'))
+      [[Vim(lua):E5108: Lua: [string ":lua"]:0: Invalid buffer id: -10]],
+      remove_trace(pcall_err(command, 'lua vim.api.nvim_buf_set_lines(-10, 1, 1, false, {"TEST"})'))
     )
     eq({ '' }, api.nvim_buf_get_lines(0, 0, 100, false))
   end)
 
-  it('works with NULL errors', function()
-    eq([=[Vim(lua):E5108: Error executing lua [NULL]]=], exc_exec('lua error(nil)'))
+  it('works with nil errors', function()
+    eq([=[Vim(lua):E5108: Lua: nil]=], pcall_err(command, 'lua error(nil)'))
+  end)
+
+  it('works with errors with __tostring failure', function()
+    eq(
+      [=[Vim(lua):E5108: Lua: [UNPRINTABLE ERROR]]=],
+      pcall_err(command, 'lua error(setmetatable({}, {__tostring=error}))')
+    )
+  end)
+
+  it('works with printable errors', function()
+    eq([=[Vim(lua):E5108: Lua: false]=], pcall_err(command, 'lua error(false)'))
+    -- numbers get the location prefixed because numbers are almost strings (know the workplace rules)
+    eq([=[Vim(lua):E5108: Lua: [string ":lua"]:0: 39]=], pcall_err(command, 'lua error(39)'))
+    matches([=[Vim%(lua%):E5108: Lua: table: 0x%x+]=], pcall_err(command, 'lua error({})'))
   end)
 
   it('accepts embedded NLs without heredoc', function()
@@ -100,7 +114,7 @@ describe(':lua', function()
     local s = ('x'):rep(100500)
 
     eq(
-      'Vim(lua):E5107: Error loading lua [string ":lua"]:0: unfinished string near \'<eof>\'',
+      'Vim(lua):E5107: Lua: [string ":lua"]:0: unfinished string near \'<eof>\'',
       pcall_err(command, ('lua vim.api.nvim_buf_set_lines(1, 1, 2, false, {"%s})'):format(s))
     )
     eq({ '' }, api.nvim_buf_get_lines(0, 0, -1, false))
@@ -111,7 +125,6 @@ describe(':lua', function()
 
   it('can show multiline error messages', function()
     local screen = Screen.new(40, 10)
-    screen:attach()
     screen:set_default_attr_ids({
       [1] = { bold = true, foreground = Screen.colors.Blue1 },
       [2] = { bold = true, reverse = true },
@@ -120,11 +133,10 @@ describe(':lua', function()
     })
 
     feed(':lua error("fail\\nmuch error\\nsuch details")<cr>')
-    screen:expect {
-      grid = [[
+    screen:expect([[
+                                              |
       {2:                                        }|
-      {3:E5108: Error executing lua [string ":lua}|
-      {3:"]:1: fail}                              |
+      {3:E5108: Lua: [string ":lua"]:1: fail}     |
       {3:much error}                              |
       {3:such details}                            |
       {3:stack traceback:}                        |
@@ -132,8 +144,7 @@ describe(':lua', function()
       {3:        [string ":lua"]:1: in main chunk}|
                                               |
       {4:Press ENTER or type command to continue}^ |
-    ]],
-    }
+    ]])
     feed('<cr>')
     screen:expect {
       grid = [[
@@ -143,22 +154,18 @@ describe(':lua', function()
     ]],
     }
     eq(
-      'E5108: Error executing lua [string ":lua"]:1: fail\nmuch error\nsuch details',
+      'E5108: Lua: [string ":lua"]:1: fail\nmuch error\nsuch details',
       remove_trace(eval('v:errmsg'))
     )
 
-    local status, err = pcall(command, 'lua error("some error\\nin a\\nAPI command")')
-    local expected =
-      'Vim(lua):E5108: Error executing lua [string ":lua"]:1: some error\nin a\nAPI command'
-    eq(false, status)
-    eq(expected, string.sub(remove_trace(err), -string.len(expected)))
+    local expected = 'Vim(lua):E5108: Lua: [string ":lua"]:0: some error\nin a\nAPI command'
+    eq(expected, remove_trace(pcall_err(command, 'lua error("some error\\nin a\\nAPI command")')))
 
     feed(':messages<cr>')
-    screen:expect {
-      grid = [[
+    screen:expect([[
+                                              |
       {2:                                        }|
-      {3:E5108: Error executing lua [string ":lua}|
-      {3:"]:1: fail}                              |
+      {3:E5108: Lua: [string ":lua"]:1: fail}     |
       {3:much error}                              |
       {3:such details}                            |
       {3:stack traceback:}                        |
@@ -166,48 +173,54 @@ describe(':lua', function()
       {3:        [string ":lua"]:1: in main chunk}|
                                               |
       {4:Press ENTER or type command to continue}^ |
-    ]],
-    }
+    ]])
   end)
 
   it('prints result of =expr', function()
     exec_lua('x = 5')
     eq('5', exec_capture(':lua =x'))
     eq('5', exec_capture('=x'))
+    exec_lua('x = "5"')
+    eq('"5"', exec_capture(':lua =x'))
+    eq('"5"', exec_capture('=x'))
     exec_lua("function x() return 'hello' end")
-    eq('hello', exec_capture(':lua = x()'))
+    eq('"hello"', exec_capture(':lua = x()'))
+    exec_lua("function x() return 'hello ' end")
+    eq('"hello "', exec_capture(':lua = x()'))
     exec_lua('x = {a = 1, b = 2}')
     eq('{\n  a = 1,\n  b = 2\n}', exec_capture(':lua  =x'))
-    exec_lua([[function x(success)
-      if success then
-        return true, "Return value"
-      else
-        return false, nil, "Error message"
+    exec_lua(function()
+      function _G.x(success)
+        if success then
+          return true, 'Return value'
+        else
+          return false, nil, 'Error message'
+        end
       end
-    end]])
+    end)
     eq(
       dedent [[
       true
-      Return value]],
+      "Return value"]],
       exec_capture(':lua  =x(true)')
     )
     eq(
       dedent [[
       false
       nil
-      Error message]],
+      "Error message"]],
       exec_capture('=x(false)')
     )
   end)
 
   it('with range', function()
     local screen = Screen.new(40, 10)
-    screen:attach()
     api.nvim_buf_set_lines(0, 0, 0, 0, { 'nonsense', 'function x() print "hello" end', 'x()' })
 
     -- ":{range}lua" fails on invalid Lua code.
     eq(
-      [[:{range}lua: Vim(lua):E5107: Error loading lua [string ":{range}lua"]:0: '=' expected near '<eof>']],
+      [[:{range}lua buffer=1: Vim(lua):E5107: Lua: ]]
+        .. [[[string ":{range}lua buffer=1"]:0: '=' expected near '<eof>']],
       pcall_err(command, '1lua')
     )
 
@@ -273,17 +286,17 @@ describe(':luado command', function()
 
   it('fails on errors', function()
     eq(
-      [[Vim(luado):E5109: Error loading lua: [string ":luado"]:0: unexpected symbol near ')']],
+      [[Vim(luado):E5109: Lua: [string ":luado"]:0: unexpected symbol near ')']],
       pcall_err(command, 'luado ()')
     )
     eq(
-      [[Vim(luado):E5111: Error calling lua: [string ":luado"]:0: attempt to perform arithmetic on global 'liness' (a nil value)]],
+      [[Vim(luado):E5111: Lua: [string ":luado"]:0: attempt to perform arithmetic on global 'liness' (a nil value)]],
       pcall_err(command, 'luado return liness + 1')
     )
   end)
 
-  it('works with NULL errors', function()
-    eq([=[Vim(luado):E5111: Error calling lua: [NULL]]=], exc_exec('luado error(nil)'))
+  it('works with nil errors', function()
+    eq([=[Vim(luado):E5111: Lua: nil]=], pcall_err(command, 'luado error(nil)'))
   end)
 
   it('fails in sandbox when needed', function()
@@ -299,7 +312,7 @@ describe(':luado command', function()
     local s = ('x'):rep(100500)
 
     eq(
-      'Vim(luado):E5109: Error loading lua: [string ":luado"]:0: unfinished string near \'<eof>\'',
+      'Vim(luado):E5109: Lua: [string ":luado"]:0: unfinished string near \'<eof>\'',
       pcall_err(command, ('luado return "%s'):format(s))
     )
     eq({ '' }, api.nvim_buf_get_lines(0, 0, -1, false))
@@ -332,25 +345,20 @@ describe(':luafile', function()
   it('correctly errors out', function()
     write_file(fname, '()')
     eq(
-      ("Vim(luafile):E5112: Error while creating lua chunk: %s:1: unexpected symbol near ')'"):format(
-        fname
-      ),
-      exc_exec('luafile ' .. fname)
+      ("Vim(luafile):E5112: Lua chunk: %s:1: unexpected symbol near ')'"):format(fname),
+      pcall_err(command, 'luafile ' .. fname)
     )
     write_file(fname, 'vimm.api.nvim_buf_set_lines(1, 1, 2, false, {"ETTS"})')
     eq(
-      ("Vim(luafile):E5113: Error while calling lua chunk: %s:1: attempt to index global 'vimm' (a nil value)"):format(
+      ("Vim(luafile):E5113: Lua chunk: %s:1: attempt to index global 'vimm' (a nil value)"):format(
         fname
       ),
-      remove_trace(exc_exec('luafile ' .. fname))
+      remove_trace(pcall_err(command, 'luafile ' .. fname))
     )
   end)
 
-  it('works with NULL errors', function()
+  it('works with nil errors', function()
     write_file(fname, 'error(nil)')
-    eq(
-      [=[Vim(luafile):E5113: Error while calling lua chunk: [NULL]]=],
-      exc_exec('luafile ' .. fname)
-    )
+    eq([=[Vim(luafile):E5113: Lua chunk: nil]=], pcall_err(command, 'luafile ' .. fname))
   end)
 end)

@@ -2,9 +2,9 @@
 " Language:		eRuby
 " Maintainer:		Tim Pope <vimNOSPAM@tpope.org>
 " URL:			https://github.com/vim-ruby/vim-ruby
-" Release Coordinator:	Doug Kearns <dougkearns@gmail.com>
 " Last Change:		2022 May 15
 "			2024 Jan 14 by Vim Project (browsefilter)
+"			2024 May 23 by Riley Bruins <ribru17@gmail.com> ('commentstring')
 
 " Only do this when not done yet for this buffer
 if exists("b:did_ftplugin")
@@ -52,9 +52,9 @@ elseif !exists("b:eruby_subtype")
 endif
 
 if exists("b:eruby_subtype") && b:eruby_subtype != '' && b:eruby_subtype !=? 'eruby'
-  exe "runtime! ftplugin/".b:eruby_subtype.".vim ftplugin/".b:eruby_subtype."_*.vim ftplugin/".b:eruby_subtype."/*.vim"
+  exe "runtime! ftplugin/".b:eruby_subtype."[.]{vim,lua} ftplugin/".b:eruby_subtype."_*.{vim,lua} ftplugin/".b:eruby_subtype."/*.{vim,lua}"
 else
-  runtime! ftplugin/html.vim ftplugin/html_*.vim ftplugin/html/*.vim
+  runtime! ftplugin/html[.]{vim,lua} ftplugin/html_*.{vim,lua} ftplugin/html/*.{vim,lua}
 endif
 unlet! b:did_ftplugin
 
@@ -87,7 +87,7 @@ let s:include = &l:include
 let s:path = &l:path
 let s:suffixesadd = &l:suffixesadd
 
-runtime! ftplugin/ruby.vim ftplugin/ruby_*.vim ftplugin/ruby/*.vim
+runtime! ftplugin/ruby[.]{vim,lua} ftplugin/ruby_*.{vim,lua} ftplugin/ruby/*.{vim,lua}
 let b:did_ftplugin = 1
 
 " Combine the new set of values with those previously included.
@@ -125,7 +125,7 @@ if exists("loaded_matchit")
 endif
 
 " TODO: comments=
-setlocal commentstring=<%#%s%>
+setlocal commentstring=<%#\ %s\ %>
 
 let b:undo_ftplugin = "setl cms< " .
       \ " | unlet! b:browsefilter b:match_words | " . b:undo_ftplugin

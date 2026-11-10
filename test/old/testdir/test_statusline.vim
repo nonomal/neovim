@@ -16,7 +16,15 @@ func TearDown()
 endfunc
 
 func s:get_statusline()
-  return ScreenLines(&lines - 1, &columns)[0]
+  redraw!
+  if has('gui_running')
+    sleep 1m
+  endif
+  " Read the screen directly after redraw! instead of going through
+  " ScreenLines(), whose own redraw! may process events and change the window
+  " layout between here and the screenstring() calls.
+  let row = &lines - 1
+  return join(map(range(1, &columns), 'screenstring(row, v:val)'), '')
 endfunc
 
 func StatuslineWithCaughtError()
@@ -60,7 +68,9 @@ func Test_statusline_will_be_disabled_with_error()
   catch
   endtry
   call assert_true(s:func_in_statusline_called)
-  call assert_equal('', &statusline)
+  " Nvim: resets to default value instead.
+  " call assert_equal('', &statusline)
+  call assert_equal(nvim_get_option_info2('statusline', {}).default, &statusline)
   set statusline=
 endfunc
 
@@ -114,10 +124,30 @@ func Test_statusline()
   call assert_match('^    Xstatusline\s*$', s:get_statusline())
   set statusline=%.6(%f%)
   call assert_match('^<sline\s*$', s:get_statusline())
+  set statusline=%.5(1234567%),%2.5(1234567%),%5.5(1234567%),%50.5(1234567%)
+  call assert_match('^<4567,<4567,<4567,<4567\s*$', s:get_statusline())
   set statusline=%14f
   call assert_match('^   Xstatusline\s*$', s:get_statusline())
   set statusline=%.4L
   call assert_match('^10>3\s*$', s:get_statusline())
+  for filler in ['-', '∙']
+    exec 'set fillchars+=stl:'..filler
+    set statusline=%-5(x%),%-5.(x%),%-5.5(x%),%-5.10(x%);
+    call assert_match(substitute('^x____,x____,x____,x____;_*$', '_', filler, 'g'), s:get_statusline())
+    set statusline=%5(x%),%5.(x%),%5.5(x%),%5.10(x%);
+    call assert_match(substitute('^____x,____x,____x,____x;_*$', '_', filler, 'g'), s:get_statusline())
+    set statusline=%.5(12🙂345%),%4.5(12🙂345%),%5.5(12🙂345%),%50.5(12🙂345%);
+    call assert_match(substitute('^<345,<345,<345_,<345_;_*$', '_', filler, 'g'), s:get_statusline())
+  endfor
+  if has('linux')
+    " This assumes MAXPATHL is 4096 bytes.
+    set stl=%{%repeat('x',4096-6)%}%10(X%)
+    set fillchars+=stl:-
+    call assert_match('^<x\+----X$', s:get_statusline())
+    set fillchars+=stl:∙
+    call assert_match('^<x\+∙X$', s:get_statusline())
+  endif
+  set fillchars&
 
   " %h: Help buffer flag, text is "[help]".
   " %H: Help buffer flag, text is ",HLP".
@@ -166,9 +196,16 @@ func Test_statusline()
   call assert_match('^0,Top\s*$', s:get_statusline())
   norm G
   call assert_match('^100,Bot\s*$', s:get_statusline())
-  9000
-  " Don't check the exact percentage as it depends on the window size
-  call assert_match('^90,\(Top\|Bot\|\d\+%\)\s*$', s:get_statusline())
+  " The exact percentage depends on the window height, so create a window with
+  " known height.
+  9000 | botright 10split | setlocal scrolloff=0 | normal! zb
+  call assert_match('^90,89%\s*$', s:get_statusline())
+  normal! zt
+  call assert_match('^90,90%\s*$', s:get_statusline())
+  " %P should result in a string with 3 in length when not translated.
+  normal! 500zb
+  call assert_match('^5, 4%\s*$', s:get_statusline())
+  close
 
   " %q: "[Quickfix List]", "[Location List]" or empty.
   set statusline=%q
@@ -217,6 +254,10 @@ func Test_statusline()
   set statusline=%w%W
   call assert_match('^\s*$', s:get_statusline())
   pedit
+  wincmd j
+  call assert_match('^\[Preview\],PRV\s*$', s:get_statusline())
+  pclose
+  pbuffer
   wincmd j
   call assert_match('^\[Preview\],PRV\s*$', s:get_statusline())
   pclose
@@ -269,6 +310,16 @@ func Test_statusline()
   call assert_match('^vimLineComment\s*$', s:get_statusline())
   syntax off
 
+  " %0{: result of expression is inserted verbatim
+  set statusline=%{'\ x'}
+  call assert_match('^x\s*$', s:get_statusline())
+  set statusline=%0{'\ x'}
+  call assert_match('^ x\s*$', s:get_statusline())
+  set statusline=%{'000'}
+  call assert_match('^0\s*$', s:get_statusline())
+  set statusline=%0{'000'}
+  call assert_match('^000\s*$', s:get_statusline())
+
   "%{%expr%}: evaluates expressions present in result of expr
   func! Inner_eval()
     return '%n some other text'
@@ -311,6 +362,8 @@ func Test_statusline()
   call assert_equal(sa3, screenattr(&lines - 1, 7))
 
   " %*: Set highlight group to User{N}
+  " Nvim: Combined with hl-StatusLine so needs to be set.
+  hi link User1 ErrorMsg
   set statusline=a%1*b%0*c
   call assert_match('^abc\s*$', s:get_statusline())
   let sa1=screenattr(&lines - 1, 1)
@@ -417,7 +470,7 @@ func Test_statusline()
   " Test statusline works with 80+ items
   function! StatusLabel()
     redrawstatus
-    return '[label]'	
+    return '[label]'
   endfunc
   let statusline = '%{StatusLabel()}'
   for i in range(150)
@@ -483,14 +536,13 @@ func Test_statusline_removed_group()
     set laststatus=2
     let &statusline = '%#StatColorHi2#%(✓%#StatColorHi2#%) Q≡'
   END
-  call writefile(lines, 'XTest_statusline')
+  call writefile(lines, 'XTest_statusline', 'D')
 
   let buf = RunVimInTerminal('-S XTest_statusline', {'rows': 10, 'cols': 50})
   call VerifyScreenDump(buf, 'Test_statusline_1', {})
 
   " clean up
   call StopVimInTerminal(buf)
-  call delete('XTest_statusline')
 endfunc
 
 func Test_statusline_using_mode()
@@ -501,7 +553,7 @@ func Test_statusline_using_mode()
     split
     setlocal statusline=+%{mode()}+
   END
-  call writefile(lines, 'XTest_statusline')
+  call writefile(lines, 'XTest_statusline', 'D')
 
   let buf = RunVimInTerminal('-S XTest_statusline', {'rows': 7, 'cols': 50})
   call VerifyScreenDump(buf, 'Test_statusline_mode_1', {})
@@ -512,7 +564,6 @@ func Test_statusline_using_mode()
   " clean up
   call term_sendkeys(buf, "close\<CR>")
   call StopVimInTerminal(buf)
-  call delete('XTest_statusline')
 endfunc
 
 func Test_statusline_after_split_vsplit()
@@ -567,13 +618,12 @@ func Test_statusline_highlight_truncate()
     hi! link User2 ErrorMsg
     set statusline=%.5(%1*ABC%2*DEF%1*GHI%)
   END
-  call writefile(lines, 'XTest_statusline')
+  call writefile(lines, 'XTest_statusline', 'D')
 
   let buf = RunVimInTerminal('-S XTest_statusline', {'rows': 6})
   call VerifyScreenDump(buf, 'Test_statusline_hl', {})
 
   call StopVimInTerminal(buf)
-  call delete('XTest_statusline')
 endfunc
 
 func Test_statusline_showcmd()
@@ -617,6 +667,49 @@ func Test_statusline_showcmd()
   call StopVimInTerminal(buf)
 endfunc
 
+func Test_statusline_showcmd_cmd_mapping()
+  set showcmd
+  set statusline=AAA%SBBB
+  set showcmdloc=statusline
+  try
+    let g:showcmd_statusline = ''
+    nnoremap <F3> <Cmd>let g:showcmd_statusline = <SID>get_statusline()<CR>
+    call feedkeys("\<F3>", 'xt')
+    call assert_equal('AAABBB', trim(g:showcmd_statusline))
+    let g:showcmd_statusline = ''
+    nunmap <F3>
+
+    "nnoremap <F3> <ScriptCmd>let g:showcmd_statusline = <SID>get_statusline()<CR>
+    "call feedkeys("\<F3>", 'xt')
+    "call assert_equal('AAABBB', trim(g:showcmd_statusline))
+  finally
+    silent! nunmap <F3>
+    unlet! g:showcmd_statusline
+    set showcmd&
+    set statusline&
+    set showcmdloc&
+  endtry
+endfunc
+
+func Test_statusline_showcmd_nop_map()
+  CheckRunVimInTerminal
+
+  let lines =<< trim END
+    set timeoutlen=500 showcmdloc=statusline laststatus=2
+    nnoremap <space> <nop>
+    nnoremap <space><space> <nop>
+  END
+  call writefile(lines, 'XTest_statusline_showcmd_nop', 'D')
+
+  let buf = RunVimInTerminal('-S XTest_statusline_showcmd_nop', {'rows': 6})
+  call term_sendkeys(buf, ' ')
+  call WaitForAssert({-> assert_match('<20>', term_getline(buf, 5))}, 400)
+  sleep 500m
+  call WaitForAssert({-> assert_notmatch('<20>', term_getline(buf, 5))}, 400)
+
+  call StopVimInTerminal(buf)
+endfunc
+
 func Test_statusline_highlight_group_cleared()
   CheckScreendump
 
@@ -636,6 +729,93 @@ func Test_statusline_highlight_group_cleared()
   call VerifyScreenDump(buf, 'Test_statusline_stl_1', {})
 
   call StopVimInTerminal(buf)
+endfunc
+
+" Test for setting both global and local 'statusline' values in a sandbox
+func Test_statusline_in_sandbox()
+  func SandboxStatusLine()
+    call writefile(['after'], 'Xsandboxstatusline_write')
+    return "status line"
+  endfunc
+
+  func Check_statusline_in_sandbox(set_cmd0, set_cmd1)
+    only
+    11new | 20vsplit
+    call setline(1, 'foo')
+    windo setlocal statusline=SomethingElse
+    wincmd t
+    setlocal statusline=
+    call writefile(['before'], 'Xsandboxstatusline_write', 'D')
+
+    exe 'sandbox' a:set_cmd0 'statusline=%!SandboxStatusLine()'
+    call assert_equal('', &l:statusline)
+    sandbox setlocal statusline=%!SandboxStatusLine()
+    call assert_fails('redrawstatus', 'E48:')
+    call assert_equal(['before'], readfile('Xsandboxstatusline_write'))
+    wincmd b
+    call assert_fails('redrawstatus!', 'E48:')
+    call assert_equal(['before'], readfile('Xsandboxstatusline_write'))
+    wincmd t
+
+    5split
+    call assert_fails('redrawstatus!', 'E48:')
+    call assert_equal(['before'], readfile('Xsandboxstatusline_write'))
+    close
+
+    setlocal statusline=%!SandboxStatusLine() | redrawstatus
+    call assert_equal('status line', Screenline(12))
+    call assert_equal(['after'], readfile('Xsandboxstatusline_write'))
+
+    call writefile(['before'], 'Xsandboxstatusline_write')
+    setlocal statusline=
+    call assert_fails('redrawstatus', 'E48:')
+    call assert_equal(['before'], readfile('Xsandboxstatusline_write'))
+
+    5split
+    call assert_fails('redrawstatus!', 'E48:')
+    call assert_equal(['before'], readfile('Xsandboxstatusline_write'))
+
+    exe a:set_cmd1 'statusline=%!SandboxStatusLine()' | redrawstatus!
+    call assert_equal('', &l:statusline)
+    call assert_equal('status line', Screenline(6))
+    call assert_equal('status line', Screenline(12))
+    call assert_equal(['after'], readfile('Xsandboxstatusline_write'))
+    bwipe!
+  endfunc
+
+  set noequalalways
+  call Check_statusline_in_sandbox('setglobal', 'setglobal')
+  call Check_statusline_in_sandbox('setglobal', 'set')
+  call Check_statusline_in_sandbox('set', 'setglobal')
+  call Check_statusline_in_sandbox('set', 'set')
+
+  set equalalways& statusline&
+  delfunc SandboxStatusLine
+  delfunc Check_statusline_in_sandbox
+endfunc
+
+" This used to call memmove with a negative size and crash Vim
+func Test_statusline_singlebyte_negative()
+  let [_columns, _ls, _stl, _enc]  = [&columns, &ls, &stl, &enc]
+  " set encoding=latin1
+  set laststatus=2 columns=15
+  setl stl=%#ErrorMsg#abcdtàØ?}}o@`s`ÿæCú\xE%#Normal#
+  vsp
+  setl stl=%#ErrorMsg#abcdtàØ?}}o@`s`ÿæCú\xE%#Normal#
+  redraw!
+  redrawstatus
+  bw!
+  let [&columns, &ls, &stl, &enc] = [_columns, _ls, _stl, _enc]
+endfunc
+
+func Test_statusline_empty()
+  set laststatus=2 statusline=%!'%{}%'
+  try
+  redraw!
+  catch
+  endtry
+  set laststatus&
+  set statusline&
 endfunc
 
 " vim: shiftwidth=2 sts=2 expandtab

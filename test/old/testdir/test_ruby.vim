@@ -282,7 +282,7 @@ func Test_ruby_Vim_buffer_get()
   call assert_match('Xfoo1$', rubyeval('Vim::Buffer[1].name'))
   call assert_match('Xfoo2$', rubyeval('Vim::Buffer[2].name'))
   call assert_fails('ruby print Vim::Buffer[3].name',
-        \           "NoMethodError: undefined method `name' for nil:NilClass")
+        \           "NoMethodError")
   %bwipe
 endfunc
 
@@ -319,6 +319,9 @@ func Test_ruby_Vim_evaluate()
   call assert_equal('foo',      rubyeval('Vim::evaluate("\"foo\"")'))
   call assert_equal('String',   rubyeval('Vim::evaluate("\"foo\"").class'))
 
+  call assert_equal(["\x01\xAB"],   rubyeval('Vim::evaluate("0z01ab").unpack("M")'))
+  call assert_equal('String',       rubyeval('Vim::evaluate("0z01ab").class'))
+
   call assert_equal([1, 2],     rubyeval('Vim::evaluate("[1, 2]")'))
   call assert_equal('Array',    rubyeval('Vim::evaluate("[1, 2]").class'))
 
@@ -335,6 +338,14 @@ func Test_ruby_Vim_evaluate()
   call assert_equal('TrueClass', rubyeval('Vim::evaluate("v:true").class'))
   call assert_equal(v:false,     rubyeval('Vim::evaluate("v:false")'))
   call assert_equal('FalseClass',rubyeval('Vim::evaluate("v:false").class'))
+endfunc
+
+func Test_ruby_Vim_blob()
+  throw 'skipped: TODO: '
+  call assert_equal('0z',         rubyeval('Vim::blob("")'))
+  call assert_equal('0z31326162', rubyeval('Vim::blob("12ab")'))
+  call assert_equal('0z00010203', rubyeval('Vim::blob("\x00\x01\x02\x03")'))
+  call assert_equal('0z8081FEFF', rubyeval('Vim::blob("\x80\x81\xfe\xff")'))
 endfunc
 
 func Test_ruby_Vim_evaluate_list()
@@ -356,7 +367,7 @@ func Test_ruby_Vim_evaluate_dict()
   redir => l:out
   ruby d = Vim.evaluate("d"); print d
   redir END
-  call assert_equal(['{"a"=>"foo", "b"=>123}'], split(l:out, "\n"))
+  call assert_equal(['{"a"=>"foo","b"=>123}'], split(substitute(l:out, '\s', '', 'g'), "\n"))
 endfunc
 
 " Test Vim::message({msg}) (display message {msg})
@@ -376,7 +387,7 @@ func Test_ruby_print()
   call assert_equal('1.23', RubyPrint('1.23'))
   call assert_equal('Hello World!', RubyPrint('"Hello World!"'))
   call assert_equal('[1, 2]', RubyPrint('[1, 2]'))
-  call assert_equal('{"k1"=>"v1", "k2"=>"v2"}', RubyPrint('({"k1" => "v1", "k2" => "v2"})'))
+  call assert_equal('{"k1"=>"v1","k2"=>"v2"}', substitute(RubyPrint('({"k1" => "v1", "k2" => "v2"})'), '\s', '', 'g'))
   call assert_equal('true', RubyPrint('true'))
   call assert_equal('false', RubyPrint('false'))
   call assert_equal('', RubyPrint('nil'))
@@ -431,7 +442,10 @@ Vim.command('let s ..= "B"')
   ruby << trim eof
     Vim.command('let s ..= "E"')
   eof
-  call assert_equal('ABCDE', s)
+ruby << trimm
+Vim.command('let s ..= "F"')
+trimm
+  call assert_equal('ABCDEF', s)
 endfunc
 
 " vim: shiftwidth=2 sts=2 expandtab
